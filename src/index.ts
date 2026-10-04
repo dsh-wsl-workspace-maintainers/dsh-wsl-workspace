@@ -441,37 +441,114 @@ async function readPresetComposition(
   )
 }
 
+/** The half of the YAML engine this plugin needs, as js-yaml publishes it. */
+interface YamlNamespace {
+  load?(source: string, options: { schema: unknown }): unknown
+  Type?: new (tag: string, options: {
+    kind: string
+    resolve: (data: unknown) => boolean
+    construct: (data: unknown) => unknown
+  }) => unknown
+  JSON_SCHEMA?: { extend?: (type: unknown) => unknown }
+  default?: YamlNamespace
+}
+
+/**
+ * Name the copy of a bare specifier this file is standing on.
+ *
+ * Issue #47 was invisible for as long as it existed because the failure it produced
+ * named nothing: `state.schema.lookupSequenceTag is not a function` says neither
+ * which package, nor which version, nor from where. Every dialect failure below
+ * therefore carries this line, and it is measured rather than asserted — a hoisted
+ * wrong major, a nested copy that was never installed, and a bundler that inlined a
+ * different release all answer differently here.
+ * @param specifier - the bare specifier the loader was asked for.
+ * @returns `name version at path`, or why it could not be said.
+ */
+function describeResolvedCopy(specifier: string): string {
+  const resolve = (import.meta as ImportMeta & { resolve?: (specifier: string) => string }).resolve
+  if (typeof resolve !== 'function') return `${specifier} (this runtime exposes no resolver)`
+  try {
+    let dir = dirname(fileURLToPath(resolve.call(import.meta, specifier)))
+    for (let depth = 0; depth < 8; depth += 1) {
+      const manifestPath = join(dir, 'package.json')
+      if (existsSync(manifestPath)) {
+        const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as { name?: string; version?: string }
+        if (manifest.name === specifier) return `${specifier} ${manifest.version ?? 'version-unknown'} at ${dir}`
+      }
+      const parent = dirname(dir)
+      if (parent === dir) break
+      dir = parent
+    }
+    return `${specifier} resolved to ${dir}, above which no manifest names it`
+  } catch (error) {
+    return `${specifier} did not resolve (${messageOf(error)})`
+  }
+}
+
+/**
+ * Build the entry-list dialect from the engine namespace that will parse with it.
+ *
+ * `@deepseek-ai/cordis-plugin-include` exports an `entryListSchema` precisely so
+ * config tooling can round-trip this dialect, and this plugin used to borrow it at
+ * call time. That borrow cost the plugin its core feature on any host that packages
+ * itself as an archive: a bare `import()` walks the filesystem upward, and an
+ * archive-backed host's tree is not on it (issue #47). Only the load half of that
+ * schema is ever used here — `predicate` and `represent` serve a dump path this
+ * plugin does not take — so the dialect is ~six lines, and building it from the same
+ * namespace that supplies `load()` is what makes it impossible for the schema and
+ * the engine to come from different majors.
+ * @param ns - the js-yaml namespace the same call parses with.
+ * @returns the schema, or undefined when this copy cannot express the dialect.
+ */
+function entryListSchemaFrom(ns: YamlNamespace): unknown | undefined {
+  const Type = ns.Type ?? ns.default?.Type
+  const JsonSchema = ns.JSON_SCHEMA ?? ns.default?.JSON_SCHEMA
+  if (typeof Type !== 'function' || JsonSchema?.extend === undefined) return undefined
+  const jsExpr = new Type('tag:yaml.org,2002:js', {
+    kind: 'scalar',
+    resolve: (data: unknown) => typeof data === 'string',
+    construct: (data: unknown) => ({ __jsExpr: data }),
+  })
+  return JsonSchema.extend(jsExpr)
+}
+
 /**
  * Parse one transformed composition back into declaration rows.
  *
  * The composition is the entry-list YAML dialect, whose `!!js` scalars are
- * expression nodes the Loader evaluates when it activates the row.
- * `@deepseek-ai/cordis-plugin-include` exports `entryListSchema` precisely so
- * config tooling can round-trip that dialect, and it is the same schema the
- * harness parses preset patches with. Parsing the text back is what lets the
- * (text-level) WSL transform keep working unchanged now that a variant is a
- * declaration row instead of a directory of YAML.
+ * expression nodes the Loader evaluates when the row activates; parsing the text
+ * back is what lets the (text-level) WSL transform keep working now that a variant
+ * is a declaration row instead of a directory of YAML.
  *
- * Both modules are resolved at call time rather than at module load: they are
- * Host-provided (`dsh` depends on `cordis-plugin-include`, which depends on
- * `js-yaml`), and a release that ever drops them must fail this one variant
- * rather than refuse to load the whole plugin.
+ * The engine is still resolved at call time rather than at module load: a release
+ * that ever loses it must fail the variants and not refuse to load the whole plugin.
+ * What it no longer borrows is the dialect, so the only thing to be reachable is one
+ * package this plugin now declares for itself.
  * @param content - the variant composition text.
  * @returns the declaration's plugin rows.
  */
 async function parseVariantComposition(content: string): Promise<unknown[]> {
-  const includeSpecifier = '@deepseek-ai/cordis-plugin-include'
-  const yamlSpecifier = 'js-yaml'
-  const [include, yamlModule] = await Promise.all([
-    import(includeSpecifier) as Promise<{ entryListSchema: unknown }>,
-    import(yamlSpecifier) as Promise<{
-      load?(source: string, options: { schema: unknown }): unknown
-      default?: { load(source: string, options: { schema: unknown }): unknown }
-    }>,
-  ])
-  const load = yamlModule.load ?? yamlModule.default?.load
-  if (typeof load !== 'function') throw new Error('js-yaml: no load() export')
-  const rows = load(content, { schema: include.entryListSchema })
+  const specifier = 'js-yaml'
+  const ns = await import(specifier) as YamlNamespace
+  const load = ns.load ?? ns.default?.load
+  if (typeof load !== 'function') throw new Error(`${specifier}: no load() export (${describeResolvedCopy(specifier)})`)
+  const schema = entryListSchemaFrom(ns)
+  if (schema === undefined) {
+    throw new Error(`${specifier}: this copy cannot express the entry-list dialect, which needs the 4.x Type / `
+      + `JSON_SCHEMA.extend API (${describeResolvedCopy(specifier)})`)
+  }
+  // Probe the dialect before anything depends on it. An engine that loads plain
+  // scalars but rejects a schema built by its own sibling API fails INSIDE load()
+  // with an internal message no reader can act on (measured with two real releases:
+  // a 4.x-built schema passed to a 5.x load answers `lookupSequenceTag is not a
+  // function`), so one six-line document turns that into a named, located failure.
+  const probe = load('- id: probe\n  disabled: !!js true\n', { schema }) as unknown
+  const first = Array.isArray(probe) ? probe[0] as { disabled?: { __jsExpr?: unknown } } : undefined
+  if (first?.disabled?.__jsExpr !== 'true') {
+    throw new Error(`${specifier}: the entry-list dialect did not round-trip (${describeResolvedCopy(specifier)})`)
+  }
+  const rows = load(content, { schema })
   if (!Array.isArray(rows)) throw new Error('the transformed composition did not parse as an entry list')
   return toImportableSpecifiers(rows)
 }
@@ -625,78 +702,37 @@ async function materializeVariants(
   const presets = await agentPresets.list()
   const userRoot = join(dshHome, '.agent-presets')
   const generated = new Set<string>()
-  for (const preset of presets) {
-    if (preset.broken !== undefined) continue
-    if (isWslVariantId(preset.id)) continue
+  // A broken roster entry is not this generator's to interpret, and a `wsl-*` entry
+  // is one of its own outputs.
+  const sources = presets.filter(preset => preset.broken === undefined && !isWslVariantId(preset.id))
+  let produced = 0
+  // A variant that failed this boot keeps whatever its PREVIOUS boot published.
+  // Sweeping it would turn a partial failure into a total loss, which is the one
+  // contract `tests/host-materialize.mjs` pins for the directory channel: when the
+  // source directory vanishes mid-update, the complete variant beside it must stay.
+  // Before #47 this held by accident — the abort skipped the sweep entirely.
+  const retained = new Set<string>()
+  for (const preset of sources) {
     const variantId = variantIdFor(preset.id)
-    const composition = await readPresetComposition(agentPresets, preset)
-    const transformed = transformPresetForWsl(composition.content, paths.shell, paths.fs, persistentShell ? {
-      relayPath: paths.relay,
-      nodePath: paths.node,
-      sandboxPath: paths.sandbox,
-    } : undefined, paths.search, paths.jobs)
-    // 0.1.7-alpha.1+ publishes a variant as a declaration row (the composition is
-    // already the exact entry-list dialect the declaration wants, so the only
-    // conversion is YAML back to rows); earlier releases still discover one as
-    // a directory under the roster's scanned user root.
-    if (typeof agentPresets.register === 'function') {
-      const plugins = await parseVariantComposition(transformed)
-      // A shipped mode keeps its bilingual label; a custom preset keeps the
-      // display name it published, falling back to its id.
-      const declaration: PresetDeclaration = {
-        id: variantId,
-        name: variantName(preset.id, composition.name ?? preset.name ?? preset.id),
-        description: variantDescription(preset.id),
-        ...(preset.order === undefined ? {} : { order: preset.order }),
-        plugins,
-      }
-      track(await agentPresets.register(declaration))
-      continue
-    }
-    if (preset.path === undefined) {
-      throw new Error(`agentPresets: roster entry "${preset.id}" carries no path on this release`)
-    }
-    const dir = join(userRoot, variantId)
-    const staging = `${dir}.staging`
-    rmSync(staging, { recursive: true, force: true })
-    // A preset directory is an opaque, self-contained plugin unit. Mirror it
-    // without interpreting local code or asset names, then overwrite only the
-    // two files owned by this generator.
-    cpSync(dirname(preset.path), staging, { recursive: true, force: true })
-    writeFileSync(join(staging, 'agent.cordis.yml'), transformed, 'utf8')
-    const labels = MODE_DISPLAY_LABELS[preset.id]
-    let name = variantName(preset.id, preset.id)
-    let orderLine = ''
     try {
-      const meta = readFileSync(join(dirname(preset.path), 'preset.yml'), 'utf8')
-      if (labels === undefined) {
-        // Custom presets keep their own display name; shipped modes use the
-        // bilingual labels above so both locales can identify the variant.
-        const match = /^name:\s*(.+)$/m.exec(meta)
-        if (match?.[1] !== undefined && match[1].trim() !== '') {
-          // The scalar is copied out of the source's YAML as written, so a
-          // quoted `name: 'Data mode'` would otherwise reach the picker with
-          // its quotes doubled into the variant's own scalar.
-          name = variantName(preset.id, unquoteScalar(match[1].trim()))
-        }
-      }
-      // Inherit the source's declared order so the WSL variants line up with
-      // the local modes in the roster (standard, PTC, minimal, cordis).
-      const orderMatch = /^order:\s*(\d+)\s*$/m.exec(meta)
-      if (orderMatch?.[1] !== undefined) orderLine = `order: ${orderMatch[1]}\n`
-    } catch {
-      // Absent or unreadable display metadata falls back to the id-based name.
+      await materializeOne(agentPresets, preset, userRoot, paths, persistentShell, track, generated)
+      produced += 1
+    } catch (error) {
+      // Until #47 a single failing source aborted this loop: on a real profile that
+      // could not parse one composition, the roster ended with no variant at all AND
+      // with the sweep below unrun, so the leftovers the report read as the symptom
+      // outlived the generation. A failure is one variant's now, reported with its
+      // own cause.
+      retained.add(variantId)
+      console.error(`dsh-wsl-workspace: WSL variant ${variantId} was not published — ${messageOf(error)}`)
     }
-    writeFileSync(
-      join(staging, 'preset.yml'),
-      `name: ${yamlScalar(name)}\n`
-      + orderLine
-      + `description: ${yamlScalar(variantDescription(preset.id))}\n`,
-      'utf8',
-    )
-    publishVariant(staging, dir)
-    generated.add(variantId)
   }
+  // The outcome is on the log, not only the route being alive. A healthy frame says
+  // it without a trouble-word, because the compatibility gate greps this plugin's
+  // own boot lines for one; `n/n` is what that gate counts.
+  console.log(retained.size === 0
+    ? `dsh-wsl-workspace: WSL preset variants: ${produced}/${sources.length} registered`
+    : `dsh-wsl-workspace: WSL preset variants: ${produced}/${sources.length} registered, ${retained.size} not`)
   // Clean up the retired directory mechanism. `generated` holds the
   // directories the directory path wrote on THIS boot; from 0.1.7-alpha.1 on it is
   // always empty, because a variant is a declaration row and the roster no
@@ -708,10 +744,102 @@ async function materializeVariants(
     for (const entry of readdirSync(userRoot, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue
       if (!/^wsl(-[a-z0-9-]+)?$/.test(entry.name)) continue
-      if (generated.has(entry.name)) continue
+      if (generated.has(entry.name) || retained.has(entry.name)) continue
       rmSync(join(userRoot, entry.name), { recursive: true, force: true })
     }
   }
+}
+
+/**
+ * Turn one healthy roster entry into its WSL variant, on whichever channel this
+ * release publishes.
+ * @param agentPresets - the roster face.
+ * @param preset - the source entry to copy and amend.
+ * @param userRoot - `<dshHome>/.agent-presets`, the retired directory root the
+ *                   directory channel still publishes into.
+ * @param paths - this installation's built provider files.
+ * @param persistentShell - whether the world may mount the host PTY stack.
+ * @param track - hand a registration's disposer to the effect that owns it.
+ * @param generated - collects the directories this boot wrote, so the sweep can
+ *                   tell them from leftovers.
+ */
+async function materializeOne(
+  agentPresets: AgentPresetsService,
+  preset: AgentPresetRosterEntry,
+  userRoot: string,
+  paths: { shell: string; fs: string; relay: string; node: string; sandbox: string; search: string; jobs: string },
+  persistentShell: boolean,
+  track: (dispose: unknown) => void,
+  generated: Set<string>,
+): Promise<void> {
+  const variantId = variantIdFor(preset.id)
+  const composition = await readPresetComposition(agentPresets, preset)
+  const transformed = transformPresetForWsl(composition.content, paths.shell, paths.fs, persistentShell ? {
+    relayPath: paths.relay,
+    nodePath: paths.node,
+    sandboxPath: paths.sandbox,
+  } : undefined, paths.search, paths.jobs)
+  // 0.1.7-alpha.1+ publishes a variant as a declaration row (the composition is
+  // already the exact entry-list dialect the declaration wants, so the only
+  // conversion is YAML back to rows); earlier releases still discover one as
+  // a directory under the roster's scanned user root.
+  if (typeof agentPresets.register === 'function') {
+    const plugins = await parseVariantComposition(transformed)
+    // A shipped mode keeps its bilingual label; a custom preset keeps the
+    // display name it published, falling back to its id.
+    const declaration: PresetDeclaration = {
+      id: variantId,
+      name: variantName(preset.id, composition.name ?? preset.name ?? preset.id),
+      description: variantDescription(preset.id),
+      ...(preset.order === undefined ? {} : { order: preset.order }),
+      plugins,
+    }
+    track(await agentPresets.register(declaration))
+    return
+  }
+  if (preset.path === undefined) {
+    throw new Error(`agentPresets: roster entry "${preset.id}" carries no path on this release`)
+  }
+  const dir = join(userRoot, variantId)
+  const staging = `${dir}.staging`
+  rmSync(staging, { recursive: true, force: true })
+  // A preset directory is an opaque, self-contained plugin unit. Mirror it
+  // without interpreting local code or asset names, then overwrite only the
+  // two files owned by this generator.
+  cpSync(dirname(preset.path), staging, { recursive: true, force: true })
+  writeFileSync(join(staging, 'agent.cordis.yml'), transformed, 'utf8')
+  const labels = MODE_DISPLAY_LABELS[preset.id]
+  let name = variantName(preset.id, preset.id)
+  let orderLine = ''
+  try {
+    const meta = readFileSync(join(dirname(preset.path), 'preset.yml'), 'utf8')
+    if (labels === undefined) {
+      // Custom presets keep their own display name; shipped modes use the
+      // bilingual labels above so both locales can identify the variant.
+      const match = /^name:\s*(.+)$/m.exec(meta)
+      if (match?.[1] !== undefined && match[1].trim() !== '') {
+        // The scalar is copied out of the source's YAML as written, so a
+        // quoted `name: 'Data mode'` would otherwise reach the picker with
+        // its quotes doubled into the variant's own scalar.
+        name = variantName(preset.id, unquoteScalar(match[1].trim()))
+      }
+    }
+    // Inherit the source's declared order so the WSL variants line up with
+    // the local modes in the roster (standard, PTC, minimal, cordis).
+    const orderMatch = /^order:\s*(\d+)\s*$/m.exec(meta)
+    if (orderMatch?.[1] !== undefined) orderLine = `order: ${orderMatch[1]}\n`
+  } catch {
+    // Absent or unreadable display metadata falls back to the id-based name.
+  }
+  writeFileSync(
+    join(staging, 'preset.yml'),
+    `name: ${yamlScalar(name)}\n`
+    + orderLine
+    + `description: ${yamlScalar(variantDescription(preset.id))}\n`,
+    'utf8',
+  )
+  publishVariant(staging, dir)
+  generated.add(variantId)
 }
 
 /** Function-plugin plugin contract. */

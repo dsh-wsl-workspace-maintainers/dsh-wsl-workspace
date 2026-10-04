@@ -186,6 +186,30 @@ for VERSION in "$@"; do
       continue
     fi
   fi
+  # An outcome, not only a route: the probe above answers HTTP, which a profile whose
+  # variant generation died on its very first source also did (issue #47 — every route
+  # served, no wsl-* variant existed). The plugin now logs one count line per boot, so
+  # the matrix asserts it. A missing line is NOT VERIFIED rather than a pass: the
+  # release may predate the line, and "we could not read it" is not "it was fine".
+  VARIANTS_LINE="$(grep -o 'WSL preset variants: [0-9]*/[0-9]* registered' "$WORK/boot-with-plugin.log" | tail -1)"
+  V_GOT="$(printf '%s' "$VARIANTS_LINE" | sed -n 's|.*variants: \([0-9]*\)/[0-9]* registered.*|\1|p')"
+  V_EXPECT="$(printf '%s' "$VARIANTS_LINE" | sed -n 's|.*variants: [0-9]*/\([0-9]*\) registered.*|\1|p')"
+  if [ -z "$VARIANTS_LINE" ]; then
+    echo "  ! no variant-outcome line in the boot log — NOT VERIFIED"
+    echo "$VERSION VARIANTS_NOT_VERIFIED unknown" >> "$BASE/verdicts.txt"
+  elif [ "$V_EXPECT" = "0" ]; then
+    # Nothing on the roster to derive a variant from is a broken fixture, not a
+    # compatible release: every shipped profile carries at least one mode preset.
+    echo "  ! the booted roster offered no source preset (0/0) — NOT VERIFIED"
+    echo "$VERSION VARIANTS_NOT_VERIFIED unknown" >> "$BASE/verdicts.txt"
+  elif [ "$V_GOT" != "$V_EXPECT" ]; then
+    echo "  ✖ variant generation published $V_GOT of $V_EXPECT sources: $(tail -1 "$WORK/boot-with-plugin.log")"
+    kill "$SERVER_PID" 2>/dev/null
+    echo "$VERSION VARIANTS_FAIL unknown" >> "$BASE/verdicts.txt"
+    continue
+  else
+    echo "  ✔ $VARIANTS_LINE"
+  fi
   grep -i 'dsh-wsl-workspace.*\(error\|fail\)' "$WORK/boot-with-plugin.log" \
     && echo "  ✖ plugin errors found in the boot log" \
     && { kill "$SERVER_PID" 2>/dev/null; echo "$VERSION LOG_ERRORS unknown" >> "$BASE/verdicts.txt"; continue; }

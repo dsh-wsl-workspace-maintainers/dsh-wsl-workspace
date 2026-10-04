@@ -65,6 +65,10 @@ jobs:
         run: node scripts/typecheck-gate.mjs
       - name: clean npm install of the packed tarball
         run: npm run verify:install
+      # Expected green, and it runs where a green belongs: after `verify:install`, before the
+      # one red-by-design step below. #47's profile-shaped arms.
+      - name: profile-shaped isolation (#47 call-time peer imports)
+        run: npm run test:profile
       # LAST, on purpose. A failing step skips everything after it, and this step is red by
       # design until #44 §6 is fixed — frame 36797162445 proves the cost of getting this wrong:
       # with the seam step in the middle, `typecheck does not grow past its recorded baseline`

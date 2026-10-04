@@ -23,5 +23,7 @@
     "@deepseek-ai/dsh-client-ui-sidebar": "0.2.0-rc.2"
   },
   "unscoped": ["js-yaml"],
-  "unscopedComment": "bare (non-@deepseek-ai) specifiers that src/tests import directly — src/index.ts dynamic-imports js-yaml, host-materialize requires it; these come hoisted from the umbrella tree and only need to be linked, not pinned (their version is governed by the dsh umbrella dependency)."
+  "unscopedComment": "bare (non-@deepseek-ai) specifiers that src/tests import directly — host-materialize requires js-yaml, and src/index.ts resolves it at call time. Since 0.7.6 the engine's version is governed by THIS package's own dependencies, not by the dsh umbrella: install-pinned's link then no-ops, because npm ci already put a satisfying copy at the root. The entry stays so a future import of another bare specifier has an obvious home, and because the umbrella's hoisted 4.3.2 is the release the arms treat as the friendly one.",
+  "conflict": { "js-yaml": "5.4.2" },
+  "conflictComment": "A SECOND tree, ci/deps-conflict, deliberately NEVER linked into the repo root: tests/host-profile-isolation.mjs builds profile-shaped trees whose hoisted js-yaml is the release the umbrella does NOT carry (registry latest, while the umbrella hoists v4-legacy 4.3.2). That hostile major is the shape issue #47 measured on a real DSH Desktop profile, where a sibling plugin's dependency decided which js-yaml the bare specifier 'js-yaml' resolved to. Linking this copy into the root would flip tests/host-materialize.mjs's require('js-yaml') to 5.x and poison the development tree, so the conflict copy stays where only the arm builders can reach it."
 }

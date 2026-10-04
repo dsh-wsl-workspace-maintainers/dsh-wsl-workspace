@@ -2,6 +2,79 @@
 
 All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](README.md); the Chinese record is [CHANGELOG.zh.md](CHANGELOG.zh.md).
 
+## 0.7.6 — 2026-10-01
+
+- **A DSH Desktop profile generated no WSL variant at all (issue #47).** The variant
+  generator asked the host for two modules at call time — the entry-list dialect and the
+  YAML engine under it — on the assumption that host and plugin share a `node_modules`.
+  Desktop ships the host inside an archive, and Node finds a bare specifier by walking the
+  filesystem upward, so that walk never reaches it. The first healthy source preset threw,
+  the throw left the generation loop, and everything after the loop — including the sweep
+  of the retired mechanism's leftovers — was skipped. The dialog's only answer was that no
+  healthy `wsl` preset exists, and the cause sat in one swallowed host-console line.
+  Reproduced on this machine with real packages rather than inferred: a dialect built
+  against the release the host umbrella hoists, loaded through the release a sibling plugin
+  hoists, fails inside the loader, on wording that names neither package, version nor path.
+- **The dialect is built in the plugin now** (`src/index.ts`), from the same engine
+  namespace that parses with it, so schema and engine cannot come from different majors.
+  Only the read half of the published schema was ever used here; its write half serves a
+  path this plugin does not take. Six lines, no new dependency.
+- **The engine is a real dependency** (`js-yaml: ^4.1.0`, resolving to 4.3.2 — the release
+  the host umbrella itself hoists). Declaring it an optional peer with a `*` range had
+  handed the choice of major to whichever release the profile happened to carry, and with
+  `autoInstallPeers` off an optional peer is never installed at all. The sibling plugin that
+  keeps working in the same profile keeps working precisely because it declares a real
+  dependency; this now matches. The two peer entries nothing imports anymore are deleted,
+  so the manifest stops describing an import that does not exist.
+- **One failing source is one variant's failure.** Generation is fault-tolerant per source,
+  the retired-directory sweep runs regardless, and the outcome is a count line —
+  `WSL preset variants: n/m registered` — because proving that routes answer had never
+  proved that anything was generated. On `dsh web` that line is in the boot log and the
+  compatibility matrix now asserts it; **on DSH Desktop it is not persisted anywhere**
+  (measured on a real install: its log directory holds only crash bundles, which embed a
+  child's stderr solely when that child exits non-zero, and capture only *renderer* console
+  output — so a main-process `console.error` has no sink). Making the outcome visible there is
+  issue #47's own recommendation #3 and is now filed as a separate ticket, on measured
+  grounds rather than as polish. Before this change, a source that vanished
+  mid-update preserved the previous complete variant only by accident: the abort skipped
+  the sweep that would otherwise delete it. The accident is gone, the contract stays, and
+  `tests/host-materialize.mjs` caught the difference on the first run.
+- **A dialect failure names what it stood on** — package, version and path. That act is
+  decided on a user's machine by an installer; it has since been measured through a real pnpm
+  layout rather than assumed (see the last bullet), and the line still names the copy so a
+  frame on some other installer carries its own conclusion.
+- **New gate** `tests/host-profile-isolation.mjs` (`npm run test:profile`): profile-shaped
+  trees under the temp dir, each booting the plugin's own copy — the loaned schema absent,
+  the hoisted engine on the wrong major, both at once, and one unreadable source among
+  healthy ones. Its control arm, its dialect-equivalence check against the pinned host
+  schema, and its probe that every provider path a declaration names really imports were
+  green on the *same* frame as the eight reds it was written to produce; three separate
+  mutations of the fix each reddened a different subset, which is what keeps the two
+  defects from being reported as one. `ci/install-pinned.mjs` materialises the hostile
+  engine release in a second tree that is never linked into the repo root.
+- **Two older gates were asking the wrong question.** `scripts/verify-install.mjs` now
+  asserts the installed tree's runtime surface too: every declared dependency must be
+  reachable from the installed `lib/` and on the declared version line, and an empty
+  `dependencies` is itself a refusal — its earlier green was *produced* by the engine being
+  absent, which is the state the issue reported. `scripts/verify-dsh-compat.sh` asserts the
+  outcome count per matrix release: generating less than it was offered is `VARIANTS_FAIL`,
+  and a line that never appears is `VARIANTS_NOT_VERIFIED`, never a pass.
+- **What this machine could not decide, and what it did.** Measured for real, with pnpm's
+  hoisted linker and the reporter's own `autoInstallPeers: false`: the published 0.7.5 in a
+  profile tree whose sibling package hoists `js-yaml` 5.x generates nothing, and this build
+  in that same tree gets its engine nested under itself and registers every source it was
+  offered. The same pair was then run in this machine's own Desktop profile shape — and it
+  turned out the real thing is installed here: `.dsh\profiles\desktop` carries 0.7.5 under
+  exactly those settings with no engine and no include package on its walk-up, which is the
+  report's shortage sitting on a maintainer machine the whole time. Still unmeasured: the
+  packaged host **process** — reading that profile is free, launching a GUI plus its
+  self-updater on a machine its owner is using is not, and it waits for a nod. The
+  reporter's host-console line, which his report nominated as decisive, turns out not to be
+  reachable by him at all: a healthy Desktop boot persists no host output (above), so that
+  check is asked of a maintainer with a shell, and the reply drafted for #47 asks him instead
+  for the observable — whether the dialog lists the variants.
+  Both limits, and the frames that back the rest, are in `docs/compatibility-evidence.md`.
+
 ## 0.7.5 — 2026-09-30
 
 - **The persistent shell works on DSH Desktop again (issue #40).** The Desktop

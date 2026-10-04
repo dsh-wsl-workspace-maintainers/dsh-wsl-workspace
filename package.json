@@ -1,7 +1,7 @@
 {
   "name": "dsh-wsl-workspace",
   "description": "WSL workspace support for DeepSeek Harness: add a WSL workspace from the web GUI and run the whole agent session (bash + file tools) inside the WSL distribution, VS Code Remote-WSL style. No toolchain install inside WSL required. Works on DSH Desktop as well as dsh web.",
-  "version": "0.7.5",
+  "version": "0.7.6",
   "type": "module",
   "packageManager": "npm@11.19.0",
   "repository": {
@@ -29,6 +29,7 @@
     "test:node:fresh": "npm run build && npm run test:node",
     "test:wsl": "node --experimental-strip-types tests/smoke.ts && node --experimental-strip-types tests/exec-shape.mjs && node tests/shell-extra.mjs && node scripts/make-smoke-built.mjs && node --experimental-strip-types tests/smoke-built.ts && node --experimental-strip-types scripts/compatibility/fs-real.mjs && node --experimental-strip-types scripts/compatibility/skills-real.mjs && node --experimental-strip-types scripts/compatibility/search-real.mjs && node --experimental-strip-types scripts/compatibility/relay-real.mjs",
     "test:rank": "node scripts/check-rank-parity.mjs",
+    "test:profile": "node tests/host-profile-isolation.mjs",
     "test:compat": "bash scripts/verify-dsh-compat.sh",
     "test:docs": "node scripts/check-docs-parity.mjs",
     "prepack": "npm run build",
@@ -70,10 +71,13 @@
     }
   },
   "license": "MIT",
+  "dependencies": {
+    "js-yaml": "^4.1.0"
+  },
   "devDependencies": {
+    "@types/node": "^22.15.21",
     "tsdown": "^0.13.5",
-    "typescript": "^5.8.3",
-    "@types/node": "^22.15.21"
+    "typescript": "^5.8.3"
   },
   "engines": {
     "node": ">=24"
@@ -88,7 +92,6 @@
   ],
   "peerDependencies": {
     "@deepseek-ai/cordis": "*",
-    "@deepseek-ai/cordis-plugin-include": "*",
     "@deepseek-ai/dsh-fs": "*",
     "@deepseek-ai/dsh-fs-local": "*",
     "@deepseek-ai/dsh-sandbox": "*",
@@ -97,22 +100,39 @@
     "@deepseek-ai/dsh-timeout": "*",
     "@deepseek-ai/dsh-tool-fs-search": "*",
     "@deepseek-ai/dsh-tools": "*",
-    "@deepseek-ai/schemastery": "*",
-    "js-yaml": "*"
+    "@deepseek-ai/schemastery": "*"
   },
   "peerDependenciesMeta": {
-    "@deepseek-ai/cordis": { "optional": true },
-    "@deepseek-ai/cordis-plugin-include": { "optional": true },
-    "@deepseek-ai/dsh-fs": { "optional": true },
-    "@deepseek-ai/dsh-fs-local": { "optional": true },
-    "@deepseek-ai/dsh-sandbox": { "optional": true },
-    "@deepseek-ai/dsh-shell": { "optional": true },
-    "@deepseek-ai/dsh-subprocess": { "optional": true },
-    "@deepseek-ai/dsh-timeout": { "optional": true },
-    "@deepseek-ai/dsh-tool-fs-search": { "optional": true },
-    "@deepseek-ai/dsh-tools": { "optional": true },
-    "@deepseek-ai/schemastery": { "optional": true },
-    "js-yaml": { "optional": true }
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-fs": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-fs-local": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-sandbox": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-shell": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-subprocess": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-timeout": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tool-fs-search": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    },
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    }
   },
   "files": [
     "lib",

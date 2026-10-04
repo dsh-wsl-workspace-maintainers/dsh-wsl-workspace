@@ -1061,6 +1061,15 @@ carries it changed.
   `scripts/verify-install.mjs` performs that same install as the published-artifact gate
   and runs in `prepublishOnly`.
 
+  > Superseded **as a design claim**, not as a measurement (2026-10-01, plugin 0.7.6,
+  > issue #47): that install was read as the wanted end state, and on a real DSH Desktop
+  > profile it is the defect — the variant generator resolved both modules at call time,
+  > so an install carrying neither installs a plugin that generates no variant, silently.
+  > The install of that day and its readout stand; the conclusion drawn from them is
+  > replaced by the section `Issue #47: a profile that cannot lend the generator its
+  > modules` below, and `scripts/verify-install.mjs` now asserts the runtime surface is
+  > present instead of certifying that it is absent.
+
 **Note on the committed `lib/`.** The rebuild that ships with this change moves every
 chunk hash and reflows comments in files this change does not touch, because `tsdown`
 depends on `rolldown: "latest"` and neither lockfile is committed (`.gitignore` excludes
@@ -1535,3 +1544,231 @@ README-parity cases had no READMEs to read. The copy list in
 `scripts/compatibility/Prepare-Case.ps1` and `.test-runs/harness.mjs` now carries the
 two full READMEs, and the test skips with a named reason in a copy that has none
 instead of reporting a missing file as a documentation defect.
+
+## Issue #47: a profile that cannot lend the generator its modules (2026-10-01, plugin 0.7.6)
+
+**The claim, and who measured it.** A reporter running DSH Desktop 0.2.0-rc.2 on
+Windows found that no `wsl-*` variant exists at all: the add-workspace dialog answers
+that it found no healthy preset, sessions bound to a `\\wsl$\…` workspace stay on the
+Windows tools, and four leftover directories of the retired mechanism outlived every
+boot. Their own report states plainly that its two most load-bearing sentences are
+reconstructions from code paths and filesystem residue, not captured host output, and
+that the check which would settle it is one grep against the host console.
+
+**What this machine could settle.** Not the host *process* — see the limits below. What it
+did settle is the deployment shape, and it turned out to be sitting on this machine all
+along: `AppData\Local\Programs\DeepSeek Harness` is a real DSH Desktop install, and its own
+profile at `.dsh\profiles\desktop` declares `dsh-wsl-workspace@0.7.5` under
+`nodeLinker: hoisted` with `autoInstallPeers: false`, while that profile's `node_modules`
+carries no `js-yaml` for the plugin and no `cordis-plugin-include` anywhere. Asking the ESM
+loader, from the *installed* `lib/index.js`, what the two borrowed specifiers resolve to
+answered `ERR_MODULE_NOT_FOUND` for both — and for `@deepseek-ai/schemastery` too, which the
+running host plainly does provide by some route of its own. That last answer is why this
+section does not claim the host process was reproduced: a bare Node walk cannot see what the
+packaged host resolves by a route this section first guessed at and later retracted (see the
+retraction below: the report's own profile listing shows the host scope as ordinary files on
+the walk-up, so no injected channel is needed to explain it). The arms emulate the *shortage*
+the report measured, not the host's resolver. (An earlier draft of this section said there is no DSH Desktop on this machine.
+That was wrong, found by looking; the limit is narrower than that and is stated below.)
+
+**Both legs, in a temp dir, laid out by the real installer.** Two profile trees were built
+under the temp dir with this profile's own settings (`nodeLinker: hoisted`,
+`autoInstallPeers: false`) and a manifest declaring the host scope plus the sibling package
+the report names — `dsh-config-manager@0.1.68`, whose own dependency hoists `js-yaml` 5.4.2 —
+then each was booted through the plugin's real `apply()` with a roster face:
+
+| leg | pnpm installed | layout it chose | result |
+| --- | --- | --- | --- |
+| A | `dsh-wsl-workspace@0.7.5` from the registry | root `js-yaml` 5.4.2, nothing under the plugin, no include package anywhere | zero variants, the stale directory survived, and the one line the frame wrote was the failure naming the include package |
+| B | the tarball of this build | root still 5.4.2, **4.3.2 nested under the plugin** | `WSL preset variants: 2/2 registered`, stale swept, the `!!js` row still an expression node, zero failure lines |
+
+The first run of this pair reported leg B as failing. That was this harness's bug, not the
+product's: it counted Node's own `DEP0190` shell warning as "the frame said something", ended
+the wait early, and deleted the tree while the fire-and-forget generation was still running,
+so the ENOENT it then saw was its own. After filtering to the plugin's own lines and waiting
+for the frame to finish, both legs read as above. The scratch trees and the scripts were
+removed afterwards; the machine's own `.dsh` was only ever read.
+
+The shape was established with real packages before either tree existed:
+
+- the registry offers `js-yaml` `latest` = 5.4.2 and keeps 4.3.2 under `v4-legacy`, the
+  line the umbrella hoists; both are installed side by side on purpose
+  (`ci/deps` and `ci/deps-conflict`, the second never linked into the repo root).
+- a schema built against 4.3.2 and loaded through 5.4.2 fails inside the loader, on a
+  message that names neither package nor version nor path. Measured directly with the
+  two real releases, not inferred from the report.
+- 5.4.2 exposes no `Type`; the dialect this plugin needs is built from that class. So an
+  API-shape probe is not a guard: the load still dies with the schema built by the other
+  major. That is why the fix probes by *parsing one document* rather than by inspecting
+  exports.
+
+**The apparatus.** `tests/host-profile-isolation.mjs` (`npm run test:profile`) builds a
+profile-shaped tree per arm under the temp dir and boots each arm's own copy of the
+plugin against a roster face. Two properties had to be learned by going red first, and
+both are recorded in the file: the plugin copy must never be a link (the loader resolves
+through links to their targets, which silently dissolves the hostility), and containment
+cannot be read off a resolved path on Windows (both loaders dereference a junction), so
+the file performs the ancestor walk Node performs and cross-checks it against the
+loader's own answer.
+
+**Frames.**
+
+| frame | where | reading |
+| --- | --- | --- |
+| before the fix, at `2f913e9` | win32 maintainer machine, node v24.21.0 | 60 ok / 8 not ok, exit 1 |
+| before the fix, at `2f913e9` | CI run 36864563398 (ubuntu, `workflow_dispatch`) | the same 8 named, exit 1; the same run shows the conflict copy materialising there too |
+| after the fix, at `a14ae1c` | win32 maintainer machine | 68 ok / 0 not ok, exit 0 |
+| after the fix | `npm run test:node`, `test:unit`, `scripts/typecheck-gate.mjs`, `npm run test:docs` | all exit 0 (typecheck at its recorded count, 212; docs 11/11) |
+| after the fix | CI run 36867538094 (`checks`, head `430c259`) | success on all three jobs, `test:profile` included on a second machine shape (symlinks, not junctions) |
+| after the fix | CI run 36867543543 (`compat-window`, head `430c259`) | all three window releases `PASS compatible`, each booting with `WSL preset variants: 4/4 registered` asserted from the real host's own log |
+| published 0.7.5 in a real installer tree | win32, pnpm hoisted, `autoInstallPeers: false`, sibling `dsh-config-manager@0.1.68` | zero variants; the host-console line is the include package being unreachable from the installed `lib/index.js` |
+| this build in the same installer shape | win32, same settings, tarball from `npm pack` | nested engine copy at 4.3.2 under the plugin, loader inside the install answers that copy, `WSL preset variants: 2/2 registered`, the `!!js` row still an expression node |
+
+The eight reds decompose into the two defects plus the amplifier: three arms are the
+missing loaned schema, the hoisted wrong engine major, and both together; two are the
+all-or-nothing shape (one unreadable source removing the others, and the retired
+directory sweep never running); three are the repair-side arms (the plugin standing on a
+copy that is not its own, and a failure that names nothing). The control arm, the
+dialect-equivalence control against the pinned Host schema, and the activation probe over
+every provider path the declarations name were green on the *same* frame as the reds,
+which is what lets those reds mean the product.
+
+**The apparatus was shown to bite.** Three rehearsals, each reverted and each verified by
+hash (`lib/index.js` returned to the byte-for-byte output of a rebuild, sha 4848ebd2…):
+putting the borrowed schema back reddens the two arms that need it absent; deleting the
+declared dependency reddens the three arms that depend on the plugin's own copy;
+rethrowing from the per-source catch reddens exactly the two fault-tolerance arms and
+leaves the dependency arms green. Each red set is a different set, so no two of these
+defects are being reported as one.
+
+**A gate caught this change, and the change was wrong first.** The first green of
+`npm run test:node` did not happen: `tests/host-materialize.mjs` pins that a vanished
+source leaves the previous complete variant untouched, and it had been satisfied by
+accident — the abort skipped the sweep. Making the sweep run, which is what the report
+asked for, deleted the user's working variant. The sweep now honours a failed variant's
+previous publication as well, the contract stays, and the accident it depended on is
+gone.
+
+**The installer act, measured rather than assumed.** The frame that decides whether this
+fix works on a real profile is not a tree this repository builds — it is the layout an
+installer chooses. So it was run for real: a temp project with `nodeLinker: hoisted` and
+`autoInstallPeers: false` (the deployment in the report's environment table), the sibling
+package `dsh-config-manager@0.1.68` that hoists `js-yaml` 5.x, and the plugin twice — once
+as the **published 0.7.5** from the registry, once as a tarball from `npm pack` of this
+build. Nothing about the tree was hand-shaped; pnpm laid it out.
+
+- published 0.7.5: no engine copy under the plugin at all, the profile root hoisting 5.4.2,
+  and generation registering **zero** variants — the failure arrives as the borrowed
+  include package being unreachable from the installed `lib/index.js`, i.e. the report's
+  defect #1 as the first thing the real installer produces.
+- this build: pnpm nests 4.3.2 under the plugin's own `node_modules` while the profile root
+  keeps the sibling's 5.4.2; `import.meta.resolve('js-yaml')` answered from *inside* the
+  installed plugin returns the nested 4.3.2, that namespace really carries the 4.x `Type`
+  export, and generation completes (`2/2`) with the `!!js` row surviving as an expression
+  node. That is the exact conflict the report describes, resolved by the manifest rather
+  than by luck.
+
+Replay: build a temp dir with that `pnpm-workspace.yaml` and a manifest depending on
+`dsh-config-manager@0.1.68`, `@deepseek-ai/schemastery@3.18.4` and the plugin (either
+`0.7.5` or `file:<npm pack output>`), `pnpm install`, then boot the installed
+`lib/index.js` against a roster face exposing `register`/`readDocument`. The scratch trees
+and their homes were removed after both readings.
+
+**Confirmed on the reporter's own machine, three days later.** In his `#47` follow-up of
+2026-10-03 he listed `profiles/desktop/node_modules/dsh-wsl-workspace/node_modules/` on a real
+DSH Desktop 0.2.0-rc.2 profile after dropping his manual workaround and installing this build as
+a local tarball: `js-yaml → 4.3.2` present, `cordis-plugin-include` absent — the same layout our
+temp installer leg produced, now read off a deployment we do not control. His four-consumer probe
+also shows the nesting is per-package rather than global (`dsh-config-manager` still resolves
+5.4.2 from its own nested copy), and he measured the WSL execution path end-to-end: the relay run
+with cwd `\\wsl$\archlinux\root` reported `user=root`, `pwd=/root` and the WSL2 kernel with exit
+0, and a Windows-side write through the UNC share read back identical inside the distribution and
+vice versa. What his frame does **not** contain is a dialog-level reading taken against this
+branch — his 2026-10-01 confirmation that the picker showed `wsl-*` presets was of the manual
+workaround, and the declaration channel writes no directories, so a count of entries under
+`~/.dsh/.agent-presets/` is not evidence either way. That one leg still waits for a published
+0.7.6 (registry `latest` was 0.7.5 as of 2026-10-03, verified with `npm view`) or for a maintainer
+to boot the packaged host.
+
+**Two things he corrected in us, both kept rather than quietly fixed.**
+
+- Our reply text told him to `dsh plugin --profile desktop add <clone directory>`. On Desktop that
+  produces a `link:` whose realpath is wherever the clone sits, so nothing on that walk-up — not
+  even a host package — resolves, and the plugin fails at module load: a worse shape than the
+  defect being tested. Our own `scripts/verify-dsh-compat.sh:82-85` already documents this staging
+  requirement, and `TESTING.md` now says it out loud.
+- `8bbd2f2`'s message offered `git log --all -S host-profile-isolation` as evidence that an
+  uncommitted coverage matrix had never reached a commit. That query is about the test file, not the
+  matrix, and it returns 2 hits here (`2f913e9`, `430c259`). The on-topic queries are
+  `git log --all -S N34` and `-S "⑤ evidence"` — and those were 0 only until **this very commit put
+  the strings `N34` and `⑤ evidence` into the repository**, after which they each return 1: itself.
+  Asking the same question with markers this section never quotes gives the durable answer:
+  `-S "⑦ evidence"`, `-S "unmet \`N35\`"` and `-S "same as \`smoke.ts\`"` are all 0, and
+  `git grep ⑦ e11a36b -- TESTING.md docs/CHECK-CATALOG.md` finds nothing either. So the claim
+  survives; both stated proofs before this line were defective — first the wrong target, then a
+  self-polluted query. **Method note, kept because it generalises: a `git log -S` claim stops being
+  evidence as soon as the commit making it writes the searched string into the tree.**
+
+**What remains unverified, stated as limits.** The installer act above is measured for
+pnpm's hoisted linker with the reporter's own settings on this machine, on this machine's own
+Desktop profile shape; what still has no reading is the **packaged host process**. A real DSH
+Desktop install exists here (`AppData\Local\Programs\DeepSeek Harness`, plugin installed at
+`.dsh\profiles\desktop`) and was read, never launched — starting it means a GUI process, the
+self-updater, and a window on a machine its owner is using, so that leg waits for a nod. Until
+someone boots that process with this build, the claim is "the shortage the report measured is
+reproduced and repaired in profile-shaped trees laid out by the real installer", not "the
+Desktop dialog was seen to work". One reading this section first drew was wrong and is
+retracted here: the probe could not resolve even `@deepseek-ai/schemastery` from this
+machine's installed copy, and that was taken as evidence the packaged host injects a
+resolution channel. It is not — the report's own listing shows `@deepseek-ai/cosmokit` and
+`schemastery` sitting **inside** `profiles/desktop/node_modules`, so on a profile like his the
+host packages are ordinary files on the walk-up and nothing mysterious is needed. This
+machine's profile is the different one (its host runs out of the archive), which is why the
+same probe found nothing to resolve. What the reporter's listing does show, alongside the
+hoisted scope, is the absence of `cordis-plugin-include` and a hoisted `js-yaml` 5.x — the
+exact two shortages the arms and the installer legs reproduce, and the reason the nested copy
+under the plugin wins the walk-up rather than competing with an injected path.
+The reporter's host-console line has not been read by anyone here, and it turns out **he
+cannot read it either**: on a healthy DSH Desktop boot nothing the host logs is persisted —
+the install's log directory holds crash bundles only, which embed a child's stderr solely
+when that child exited non-zero and capture only *renderer* console output. A main-process
+`console.error` has no sink. So the decisive check his report nominated is a maintainer-side
+one, and the reply drafted for #47 asks him for the observable instead: whether the dialog
+lists the variants.
+`@deepseek-ai/schemastery` is still a peer the plugin imports statically at module load:
+the installer tree above had to be given it explicitly, which is exactly how a real profile
+differs from this analog, and the activation probe covers that shape only inside the trees
+it builds. The compatibility matrix's real-host job now asserts the outcome count line
+rather than only route liveness — measured for the window releases in CI run 36867543543 —
+and it stays structurally the positive control for the peer question, never the
+reproduction, because its staging puts the plugin where a walk-up can find the host's
+packages.
+
+**How #47 was closed (2026-10-03), and what that does and does not cover.** The reporter closed
+it himself after his fourth verification pass, whose substance we re-checked where we could:
+his real Desktop profile shows the engine nested under the plugin (`js-yaml → 4.3.2`) with the
+borrowed include package still absent, his relay run inside `\\wsl$\archlinux\root` returned
+`user=root` / `pwd=/root` / WSL2 kernel with exit 0, and UNC↔`/mnt` round-trips matched. The
+user-level statement behind closure is "the plugin links into WSL normally now".
+
+What closure therefore rests on: the **defect's mechanism** (both shortages), the **repair's
+mechanism** (installer nesting, per-source fault tolerance, a self-describing failure), and the
+**execution path's parts** — each measured, most of them twice, once on a machine we do not
+control. What it does not rest on: a reading of the picker on this build. The dialog question
+he answered in his 2026-10-01 comment belonged to his manual workaround, and the declaration
+channel writes no directories, so an empty `~/.dsh/.agent-presets/` says nothing either way —
+that count must not be cited as evidence again.
+
+Three things survive the closure, each with a stated verdict rather than silence:
+
+1. **Republish-and-retest by name.** `0.7.6` is not on the registry (verified 2026-10-03:
+   `latest` = 0.7.5), so every real-machine reading so far is of a local tarball. Once published,
+   the reporter's own by-name install closes the picker leg from the outside; a maintainer booting
+   the packaged host closes it from the inside.
+2. **A Desktop failure currently has nowhere to be written.** Nothing the host logs is persisted
+   on a healthy Desktop boot, so "look at the log" is not an option on that platform and the GUI
+   is the only channel. Filed separately because it changes `describeSelf`'s shape and the client
+   locale strings, which the documentation-parity gate governs.
+3. Small, but it bit a contributor: `dsh plugin add <directory>` on Desktop links, and a link out
+   of a package-carrying tree makes the plugin fail to load at all — worse-looking than the defect.
+   `TESTING.md` now states the precondition where the Desktop pass meets it.

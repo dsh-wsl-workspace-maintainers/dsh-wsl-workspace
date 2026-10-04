@@ -3,8 +3,8 @@
 This document describes how to verify `dsh-wsl-workspace` after a change or before a release. The suite covers unit tests, the two preset-channel integration tests (the retired directory generation and the declaration generation), a real-WSL smoke test, and a post-build lib verification gate.
 
 > **Fast path (same commands CI runs):** after `npm ci && node ci/install-pinned.mjs`,
-> run `npm run test:unit`, `npm run test:node`, `npm run test:wsl` (Windows + a real
-> distribution), `npm run typecheck:gate` and `npm run verify:artifact`.
+> run `npm run test:unit`, `npm run test:node`, `npm run test:profile`, `npm run test:wsl`
+> (Windows + a real distribution), `npm run typecheck:gate` and `npm run verify:artifact`.
 > The full inventory of every check — command, prerequisites, CI home, and what is
 > still human — is [docs/CHECK-CATALOG.md](docs/CHECK-CATALOG.md). This document keeps
 > the background and the release checklist.
@@ -217,6 +217,18 @@ Two levels, in order of cost:
    chose; if that line names the Electron executable, the log also lists every candidate it
    rejected and why. Close the window and stop the process when done.
 
+   **A local directory is added as a link, so where you point it decides whether the plugin can
+   load at all.** `dsh plugin add <dir>` writes a `link:` dependency, and Node resolves bare
+   specifiers by walking up from the *realpath* — the directory you named, not the profile. So an
+   unpacked clone sitting in a bare temp folder resolves neither this package's own dependency nor
+   any host package, and the plugin fails at module load, which looks worse than the defect it is
+   meant to test. Either point at a directory inside a tree that already carries those packages
+   (that is why `scripts/verify-dsh-compat.sh` stages the plugin under the case's `node_modules`
+   before adding it, and why the item-4 clean-install check installs the tarball into a temp
+   project first), or hand the profile a tarball/by-name entry so pnpm lays the package out
+   itself. `#47`'s reporter hit exactly this while testing PR #48 — his own repro is the reason
+   this paragraph exists.
+
    `bash_background` deserves its own line here because the Desktop run is what caught it:
    the jobs registry resolves a job's `owner` with `ctx.agents.get(owner)`, so the owner must
    be the session **id** (`agent.id`, as the host's own producers pass). Passing the agent
@@ -230,6 +242,7 @@ Two levels, in order of cost:
 2. `node --experimental-strip-types --test tests/*.test.ts` — all green (locales, variants, paths, shell, fs execution context, fs policy, wsl skills, wsl search).
 3. `node tests/host-materialize.mjs` — all assertions pass (the directory channel).
 4. `node tests/host-declare.mjs` — all assertions pass (the declaration channel).
+   - `node ci/install-pinned.mjs && npm run test:profile` — every arm green (issue #47: profile-shaped trees laid out by Node's own resolution, the hostile `js-yaml` major from `ci/deps-conflict`, one unreadable source among healthy ones). This is the CI step placed after `verify:install`, so a red there silences no other gate; its premise lines P1–P7 must stay green, because a red on one of those is the fixture, never the product.
 5. `node --experimental-strip-types tests/smoke.ts` — real-WSL round-trip passes.
 6. `node scripts/check-rank-parity.mjs` — host rank constants still match our copies.
 7. `node scripts/repro-e2e.mjs` (after `scripts/repro-setup.sh`) — nested skill-catalog assertions pass.
