@@ -17,7 +17,7 @@
 // measuring the driver.
 import { Context } from '@deepseek-ai/cordis'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { resolve as resolvePath } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -235,20 +235,42 @@ try {
 
   // Detached children. Measured: killing `wsl.exe` takes ordinary children with it (0 survivors) but
   // `setsid`/`nohup` ones live (2/2), so the session marks its processes and reaps exactly those.
-  // The control that makes this mean something is a sleep started *outside* the session: if the reaper
-  // ever degrades into `pkill -f sleep`, that one dies and this cell goes red.
-  const outside = spawnSync('wsl.exe', ['-d', distro, '-u', username, '-e', 'bash', '-c',
-    'setsid sleep 40 & disown; echo $!'], { encoding: 'utf8', timeout: 30_000 })
-  const outsidePid = String(outside.stdout).trim().split('\n').pop()
+  //
+  // Counted **by the duration each probe carries**, and asserted **before and after** the rebuild,
+  // never by a bare process-name census. Two readings forced this shape (frame 37221289492, then a
+  // local rerun on 2026-10-05):
+  //  - `pgrep -c -x sleep <= 1` was a claim about the *environment*. The CI fixture keeps a `sleep 900`
+  //    warm in this distribution on purpose (the 9P share vanishes when it idles out), so the count
+  //    read 2 on the `src` plane — keep-warm plus the outside control, with the session's own child
+  //    already reaped — and passed on the `lib` plane of the same frame, because the earlier pass'
+  //    cleanup `pkill -x sleep` had killed that keep-warm. A cell whose answer depends on which plane
+  //    ran first is not measuring the product.
+  //  - the control used to be `setsid sleep 40` launched by a `wsl.exe` that then exited **normally**,
+  //    and on this machine's WSL2 that dies by itself (measured `DEAD` at t=0 with the instance up),
+  //    while the WSL1 runner left it alive. It is now a `sleep` whose launcher the driver holds open,
+  //    so its lifetime belongs to the driver and its survival is a real mis-kill guard: were the
+  //    reaper ever to degrade into `pkill -f sleep`, this process dies and the cell goes red.
+  const probeCount = pattern => {
+    const out = String(spawnSync('wsl.exe', ['-d', distro, '-u', username, '-e', 'bash', '-c',
+      `echo COUNT=$(pgrep -c -f '${pattern}')`], { encoding: 'utf8', timeout: 30_000 }).stdout ?? '')
+    const match = /COUNT=(\d+)/.exec(out)
+    // NaN rather than 0 when the probe did not answer: a silent census must not read as "reaped".
+    return match === null ? NaN : Number(match[1])
+  }
+  // `[ ]` in each pattern so a probe can never match its own command line.
+  const control = spawn('wsl.exe', ['-d', distro, '-u', username, '-e', 'bash', '-c',
+    'exec sleep 41'], { stdio: 'ignore' })
   await call('setsid sleep 35 & disown; echo DETACHED=$!')
+  const beforeReap = probeCount('sleep[ ]35')
   const reaped = await call('sleep 4', { timeoutMs: 1_500 })
-  const stillOut = spawnSync('wsl.exe', ['-d', distro, '-u', username, '-e', 'bash', '-c',
-    `kill -0 ${outsidePid} 2>/dev/null && echo ALIVE || echo DEAD; pgrep -c -x sleep || echo 0`],
-  { encoding: 'utf8', timeout: 30_000 })
-  const [outsideState, sleepCount] = String(stillOut.stdout).trim().split('\n')
+  const afterReap = probeCount('sleep[ ]35')
+  const controlAlive = probeCount('sleep[ ]41')
   check('a detached child of the session is reaped on restart', /detached process/.test(reaped.rendered)
-    && Number(sleepCount) <= 1, JSON.stringify({ note: reaped.rendered.slice(-70), outsideState, sleepCount }))
-  spawnSync('wsl.exe', ['-d', distro, '-u', username, '-e', 'pkill', '-x', 'sleep'], { timeout: 20_000 })
+    && beforeReap >= 1 && afterReap === 0 && controlAlive >= 1,
+  JSON.stringify({ note: reaped.rendered.slice(-70), beforeReap, afterReap, controlAlive }))
+  control.kill()
+  spawnSync('wsl.exe', ['-d', distro, '-u', username, '-e', 'bash', '-c',
+    "pkill -f 'sleep[ ]35'; true"], { timeout: 20_000 })
 
   // Memory: one session shell is measured at ~3.4 MB of RSS; the bound below is that plus six times
   // the margin for the journal and readline buffers, not a number tuned to whatever the run produced.

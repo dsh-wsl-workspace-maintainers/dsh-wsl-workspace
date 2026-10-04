@@ -2316,9 +2316,18 @@ printed the literal `$__dsh_s` inside single quotes instead of a number.
 
 **Detached processes.** Killing `wsl.exe` takes the shell's ordinary children with it (0 survivors,
 twice) but not ones that detached themselves: `setsid sleep 45` and `nohup sleep 46 &` both lived
-(2/2). The reaper therefore matches a `DSH_WSL_SESSION` token in `/proc/*/environ`, and the control
-that makes the cell mean something is a sleep started **without** the token: it must survive, and it
-does.
+(2/2). The reaper therefore matches a `DSH_WSL_SESSION` token in `/proc/*/environ`.
+
+**Correction, same day (2026-10-05).** The sentence above ended "and the control that makes the cell
+mean something is a sleep started **without** the token: it must survive, and it does." It does not.
+A `setsid sleep 40` whose `wsl.exe` exits **normally** is gone immediately on this machine's WSL2 —
+measured `DEAD` at t=0 with the instance demonstrably up (`echo $$` answered in the same PID range) —
+and the distinction is survival of the *session*, not of the shell: the 2/2 reading was a child of a
+shell killed **abnormally**. So the control as written was never a live process, the mis-kill guard
+underneath the reap cell was vacuous, and nothing asserted `outsideState` anyway. The cell now holds
+its control open with a `wsl.exe` of its own (`exec sleep 41`, launcher still running: measured
+`COUNT=1`, and `COUNT=0` after killing the launcher), counts the session's child by its duration
+before and after the rebuild, and asserts both.
 
 **Footprint, measured on this machine.** One session costs about **9.1 MB of Windows working set
 across two `wsl.exe` processes** (3 sessions → 6 processes, 54.7 MB total) plus **3.4 MB of RSS for
@@ -2337,3 +2346,46 @@ interactive mode is what buys aliases and functions), the layer that reports a m
 in a one-shot call. 2 probes are **not covered** — the host's background and promote paths need a jobs
 registry the in-process harness does not mount, and saying so is the point of the row rather than
 silently dropping it.
+
+## Cloud frame 37221289492, read step by step, and the cell that turned out to be about the fixture (2026-10-05)
+
+Dispatched on `fix/issue51-shell-execute-seam` at head `21b8ee6`. Job conclusions:
+`gates on the committed artifact plane (ubuntu)` **success**, `node buckets against the pinned host
+tree (ubuntu)` **success**, `real-WSL hard gates (windows + WSL1 Ubuntu)` **failure** — one step,
+`run every WSL gate`, with `every gate must say which plane it loaded` **success** after it.
+
+The pure-node bucket being green is the point of this frame: the previous one (37220551085) died in
+that step, because `tests/wsl-bash-parity.test.ts` was filed under `test:unit`, which runs after
+`npm ci` with no host packages installed, and it imports the module that imports
+`@deepseek-ai/schemastery` — `ERR_MODULE_NOT_FOUND` at load, before a single assert. Locally that is
+invisible: the development tree has the pinned packages hoisted, which is the exact property the
+bucket is defined by not having.
+
+From the job's own `wsl-gate-logs` artefact, per gate: `smoke`, `exec-shape`, `shell-extra`,
+`make-smoke-built`, `smoke-built`, `fs-real`, `skills-real`, `search-real`, `relay-real`,
+`tool-bash-real` PASS on the `src` plane; `bash-parity-real` 10/10; `bash-session-real` **32/33** —
+the failing cell being `a detached child of the session is reaped on restart`, payload
+`{"note":"…[2 detached processes from the previous shell were stopped]","outsideState":"ALIVE",
+"sleepCount":"2"}`. On the `lib` plane of the **same frame** every gate PASSed and
+`bash-session-real` reported **33/33**.
+
+Same commit, same machine, different plane, different answer: that is a device reading, not a product
+one, and the artefact says which. The cell asserted `pgrep -c -x sleep <= 1` after the rebuild. The
+job's own `fixture preparation` step starts a `nohup sleep 900` on purpose (the 9P share disappears
+when the instance idles out), so a correct reaper still saw 2 processes named `sleep` — the keep-warm
+and the outside control — and the `src` plane was red for counting them. The `lib` plane then passed
+because the `src` plane's cleanup line `pkill -x sleep` had killed the CI fixture's keep-warm, a
+process the driver does not own, in a distribution the rest of the job continues to use. Rewritten to
+count by the duration each probe carries, to assert before and after, to hold its control open with a
+launcher of its own, and to clean up by pattern instead of by process name.
+
+Controls run on this machine after the rewrite (WSL2, `Ubuntu`, user `ruler`): `src` plane 33/33 and
+`lib` plane 33/33, cell payload `{"beforeReap":1,"afterReap":0,"controlAlive":1}`; mutation control —
+`kill -9` → `kill -0` inside the reaper script, which still counts and still claims
+"[1 detached process … was stopped]" — FAIL `{"beforeReap":1,"afterReap":1}`, then restored
+byte-identical (`git diff --stat` empty for that file) and re-green 33/33.
+
+**Not covered by this frame, named rather than folded into the green:** `compat.yml` did not run (it
+is a separate workflow on its own schedule), `scripts/compatibility/installed-copy.mjs` is not wired
+into `ci.yml` at all (it needs this machine's Desktop profile), and the reap cell was checked only for
+the `sleep`-named probes — the 4 000-function journal cell and the spill cell were not re-instrumented.
