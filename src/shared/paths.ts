@@ -75,6 +75,18 @@ export function normalizeLinuxPath(path: string): string {
 }
 
 /**
+ * Rewrite a path's separators to `/`, the spelling every comparison and the
+ * address grammar use. Windows spellings reach this plugin from workspace roots,
+ * tool arguments and the workspace store, so the rewrite lives here with the
+ * other spelling pairs instead of being repeated by each caller.
+ * @param value - the path to normalize.
+ * @returns the same path with `\` written as `/`.
+ */
+export function toPosixSpelling(value: string): string {
+  return value.replace(/\\/g, '/')
+}
+
+/**
  * Whether a path is an absolute, non-empty Linux path.
  * @param path - candidate.
  * @returns whether it starts with `/` and contains no NUL.
@@ -131,6 +143,38 @@ export function mntToWindowsPath(linuxPath: string): string | null {
   if (match === null) return null
   const rest = (match[2] ?? '').replace(/\//g, '\\')
   return `${(match[1] ?? '').toUpperCase()}:\\${rest}`
+}
+
+/**
+ * The spelling of an absolute Linux path that the HARNESS HOST can open.
+ *
+ * A file reference in a WSL session carries the path exactly as the model wrote
+ * it — an absolute Linux path — and the client hands that path to the host,
+ * which resolves it with `node:path.resolve(cwd, path)`. On Windows a POSIX
+ * absolute path is root-relative there, so `/mnt/d/x` becomes
+ * `<cwd drive>:\mnt\d\x` and `/etc/hosts` becomes `<cwd drive>:\etc\hosts`;
+ * when the cwd is itself a UNC share the path lands under that share's root
+ * instead. Neither is the file the model named, so the document preview reports
+ * it missing. This maps the path onto a spelling that names the same file for
+ * the host: a drvfs mount back to its drive letter, and anything else through
+ * the distribution's UNC share.
+ *
+ * `/mnt/<drive>` needs no distribution: the mount name IS the drive. Every
+ * other path is inside the distribution's own filesystem, so it needs one —
+ * from the session's UNC cwd, or from the registered workspace of a drive cwd.
+ *
+ * @param linuxPath - the absolute Linux path a reference carries.
+ * @param distro - the session's WSL distribution, when known.
+ * @returns the host-readable spelling, or `null` when the path cannot be translated.
+ */
+export function hostPathForLinuxReference(linuxPath: string, distro: string | undefined): string | null {
+  if (!isAbsoluteLinuxPath(linuxPath)) return null
+  // A `//`-prefixed spelling is already a UNC host path, not a Linux one.
+  if (linuxPath.startsWith('//')) return null
+  const drive = mntToWindowsPath(linuxPath)
+  if (drive !== null) return drive
+  if (distro === undefined || distro === '') return null
+  return joinUnc(distro, linuxPath)
 }
 
 /**

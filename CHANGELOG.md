@@ -130,6 +130,43 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   check is asked of a maintainer with a shell, and the reply drafted for #47 asks him instead
   for the observable — whether the dialog lists the variants.
   Both limits, and the frames that back the rest, are in `docs/compatibility-evidence.md`.
+- **A WSL session's file references preview again (issue #49).** The conversation's file
+  links, a tool row's line reference and the turn tail's changed files all open through the
+  right Sidebar's navigation controller, and the address they carry holds the path exactly as
+  the model wrote it — a Linux path. The host decodes that address and resolves it with
+  `node:path.resolve(cwd, path)`, where a POSIX absolute path is root-relative: `/mnt/d/x`
+  landed on the workspace drive (`D:\mnt\d\x`), an in-distribution path under the cwd share's
+  root, and a `/mnt/<drive>` reference under a UNC cwd became
+  `\\wsl.localhost\<distro>\mnt\<drive>\…`, which 9P refuses with `EPERM`. Reproduced on the
+  real DSH Desktop both ways before the fix: `文件不存在，可能已被移动或删除` for a file the
+  `write` tool had just created at that very path, and `EPERM` for the same reference from a
+  UNC workspace.
+- **The repair is client-side, because the host plane offers this plugin no hook.** `fs` and
+  the `workspaceFiles` endpoint belong to other plugins, and cordis refuses a second
+  `provide` for a name another fiber owns, while neither publishes a path-resolution seam.
+  The client half now translates the address before the Sidebar sees it — `/mnt/<drive>/…`
+  back to `X:\…`, and every other Linux path through the distribution's UNC share — at
+  `openResource` / `openResourceIn`, the one entry every reference surface goes through, so
+  the tab's content and the metadata read under the same address are repaired together. A
+  translated path inside the workspace becomes the same relative address the Files panel
+  builds, so the Sidebar reveals an open tab instead of duplicating it.
+- `listWorkspaceRecords` is a new host route, cached by the client: an in-distribution path
+  needs the distribution, which a UNC workspace carries but a `/mnt/<drive>` workspace only
+  has in `wsl-workspaces.json`. `host-api.mjs` covers it and its probe floor moved 12 → 13.
+- The address grammar is **mirrored** rather than imported — six of the eleven declared
+  releases ship no `@deepseek-ai/dsh-util-workspace-path`, or ship it without the grammar —
+  and a unit case cross-checks the mirror against the owning package byte for byte wherever
+  it is resolvable. Anything the hook cannot rebuild byte-for-byte, or whose distribution is
+  unknown, or a session it does not treat as WSL-bound, is passed through untouched rather
+  than guessed at.
+- Only 0.1.5-rc.1 and later ship a right Sidebar, a document preview and the resource model;
+  the six earlier declared releases have no reference surface to fix, and the hook simply
+  does not install there.
+- Measured for this entry: the eleven declared releases at 14/16 on the harness sweep (the
+  same two known baselines as before), `host-api` 13/13 against a live 0.2.0-rc.2 frontend,
+  and the reference click driven end-to-end in a real browser on 0.1.5-rc.1, 0.1.5-rc.2,
+  0.1.7-rc.1, 0.1.7-rc.2 and 0.2.0-rc.2, plus four configurations on the real DSH Desktop
+  (drive-spelling and UNC workspaces × `/mnt/<drive>` and in-distribution paths).
 
 ## 0.7.5 — 2026-09-30
 

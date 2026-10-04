@@ -34,7 +34,7 @@ import { dirname, isAbsolute, join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir } from 'node:os'
 import { joinUnc, mntToWindowsPath, normalizeLinuxPath, isAbsoluteLinuxPath, isValidWslUsername, parseWslUnc } from './shared/paths.ts'
-import { canonicalWslUnc, getWindowsWorkspace, getWorkspaceUsername, listWorkspaceKeys, registerWindowsWorkspace, setWorkspaceUsername } from './shared/wsl-credentials.ts'
+import { canonicalWslUnc, getWindowsWorkspace, getWorkspaceUsername, listWorkspaceKeys, listWorkspaceRecords, registerWindowsWorkspace, setWorkspaceUsername } from './shared/wsl-credentials.ts'
 import { defaultDistro, listDistros } from './shared/wsl.ts'
 import { isElectronHost, persistentShellAllowed, resolveRelayNode } from './shared/relay-node.ts'
 import { probePersistentShellReadiness } from './host/pty-readiness.ts'
@@ -343,6 +343,13 @@ async function dispatch(method: string, params: Record<string, unknown>): Promis
       // Every registered WSL workspace key (UNC and Windows drive spellings):
       // the client uses the drive keys to recognize `/mnt` workspaces.
       return listWorkspaceKeys()
+    }
+    case 'listWorkspaceRecords': {
+      // The keys plus the stored credentials. The client half needs the distro
+      // of a `/mnt/<drive>` workspace to translate a file reference that leaves
+      // the drive mounts (issue #49): only the distribution's UNC share can
+      // serve those, and the drive key does not name it.
+      return listWorkspaceRecords()
     }
     case 'describe': {
       // The dialog's help panel reports what this build declares, so the

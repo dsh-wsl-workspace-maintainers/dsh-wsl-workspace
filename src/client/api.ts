@@ -118,9 +118,34 @@ export async function registerWindows(linuxPath: string, distro: string, usernam
  * List every registered WSL workspace key (canonical UNC and Windows drive
  * spellings). The client uses the drive keys to recognize `/mnt` workspaces
  * across page reloads.
+ *
+ * `listWorkspaceRecords` below is what the plugin itself reads, because it needs
+ * each workspace's distribution as well; this key list stays published as the
+ * route's own contract (the compatibility suite checks it directly).
  */
 export async function listWorkspaces(): Promise<string[]> {
   return call<string[]>('listWorkspaces', {})
+}
+
+/** One registered WSL workspace with its stored credentials. */
+export interface WslWorkspaceRecord {
+  /** The store key: a canonical UNC path or a canonical Windows drive path. */
+  path: string
+  /** The WSL distribution, present for a `/mnt/<drive>` workspace. */
+  distro?: string
+  /** The Linux user bash runs as, when one is configured. */
+  username?: string
+}
+
+/**
+ * List every registered WSL workspace with its stored credentials.
+ *
+ * File-reference translation needs the distribution behind a `/mnt/<drive>`
+ * workspace, which the key list alone does not carry.
+ * @returns one record per registered workspace.
+ */
+export async function listWorkspaceRecords(): Promise<WslWorkspaceRecord[]> {
+  return call<WslWorkspaceRecord[]>('listWorkspaceRecords', {})
 }
 
 /** One declared DSH release and its declared status. */
