@@ -2235,4 +2235,53 @@ change: `15/15` here on both planes and as both users (`root`, `ruler`), with th
 control (`echo oops >&2` → `[stderr]\noops\n`) riding along so a filter that dropped all stderr could
 not pass either.
 
+## A day of bash, and the three things it was not yet doing (2026-10-04)
+
+With the leak closed, the question became the user's: do *ordinary* commands behave as an ordinary
+shell? A matrix of 34 everyday commands through the mounted tool
+(`D:\Temp\issue51-matrix\common-ops\probe.mjs`) ran twice, before and after the changes it caused.
+Every row that passed, passed in 20-300 ms: `cd` chains, `ls`/glob, pipes, `grep -c`, heredocs,
+command substitution, `for` loops, quoting, `tar` round-trip, `find`, `sed -i`, `awk`,
+`git init`+`commit`+`log`, `node -v` / `python3 -V` / `npm -v` resolving from the sourced login
+environment, CJK, 20 000-line output, `export` read back in the next call, `pipefail` shape, `&` with
+`wait`.
+
+Four readings were not everyday-good, and all four were product behaviour rather than shell semantics:
+
+| reading | what it meant |
+| --- | --- |
+| `sleep 30` with an 8 s deadline took **16 485 ms** | the recovery path re-executed the frame, so the deadline was spent twice |
+| `echo run >> f; sleep 6` left **two** lines in `f` | the same retry repeats effects — a second `git commit`, a second `curl -X POST` |
+| the call after a cancelled `sleep 20` took **18 520 ms** | a cancel did not stop the command, so the next call queued behind it |
+| `sudo true` | 6 000 ms, `(no output)`, `[timed out after 6000ms]` — while the README claimed a bounded failure *and a message* |
+
+The first two are one bug: `run()` rebuilt the session and then ran the command again. It now rebuilds
+on any non-settle — which is what frees the shell — but re-executes only when the child was already
+gone, because that is the one case where the command demonstrably did not finish. The third: a caller
+cancel now throws the host's own shape (`dsh-tool-bash`'s `toolAborted()`, an `AbortError` reading
+`tool call aborted`) instead of returning a result that renders as `[exit code: 1]`, which would tell
+the model the user's command had failed.
+
+The fourth was the plan's step 4, never built: the README asserted a message that the code did not
+produce. Implemented as `src/host/wsl-bash-tty.ts` — `script -qec` started inside the session, with the
+records still written by the frame *outside* it, so escalation cannot reach the protocol; the command's
+first word decides, `tty: true` forces it. Measured after: `sudo true` 45-54 ms with sudo's own
+verdict, `stty size` → `24 80`, `tty` → `/dev/pts/N`, and the pty's `\r\r\n` folded back into plain
+text (`normaliseTtyOutput`) before the model reads it. `stty` has to run *inside* the pty — set
+outside, `stty size` answered `0 0` while `tty` still reported a pts. `less` and `ssh` came back
+healthy without escalation, which is why the whitelist is the narrow list it is.
+
+### Two readings that were about my instrument, not the shell
+
+The matrix's `cancel bounded` row reported NOTE on the second run — because the fixture still expected
+a return value where the product now throws. Stale instrument, fixed in the instrument.
+
+And the new `sudo` cell first asserted the word `password`, which is a fact about *this
+distribution's sudoers*: as `ruler` sudo asks, as `root` (this machine's other user, and the WSL1
+runner's) it is NOPASSWD and answers `(no output)` with exit 0. The cell now asserts the universal
+property — escalated, inside budget, sudo's own verdict — and the run is 22/22 as both users on both
+planes. That is the third time in this issue that a machine-specific reading was written as a rule;
+the check that belongs to me is whether an assertion survives changing users.
+
+
 

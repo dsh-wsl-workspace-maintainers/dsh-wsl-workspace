@@ -23,14 +23,22 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   host wiped the shell. The world now mounts this plugin's own `bash`: one long-lived
   `bash --norc -i` over **pipes**, completing on a NUL-delimited record carrying a per-command
   nonce, with the login environment sourced silently, history expansion off (which also closes the
-  `!` class of failures for this path), a bounded answer instead of a hang for commands that need a
-  real terminal, and a session rebuild that replays `cd` and exported variables when a call wedges.
-  Measured on this machine, both build planes: first call 3.9 s including boot, then ~30 ms, with
-  `cd`/`export`/exit codes/CJK/`!` all verified, while the same command through the PTY tier still
-  times out — that control is the last cell of the new `bash-session-real` gate, so the replaced
-  behaviour cannot silently come back. Verified end to end through **real host tool dispatch** (the
-  host's own `bash` tool calling our executor, in `tool-bash-real`), and `DSH_WSL_PTY_SHELL=1` keeps
-  the old tier reachable. Not yet observed: a click inside DSH Desktop with this build installed.
+  `!` class of failures for this path), a pseudo-terminal of its own for commands that need one
+  (`sudo`, `ssh`, an editor — `script -qec`, chosen by the command's first word, forced by
+  `tty: true`), and a session rebuild that replays `cd` and exported variables when a call wedges
+  *without* executing a merely-slow command a second time.
+  Measured on this machine, both build planes: first call ~0.5 s including boot, then 22-34 ms, with
+  `cd`/`export`/exit codes/CJK/`!`/`sed -i`/`tar`/`git commit`/`sudo` all verified, while the same
+  command through the PTY tier still times out — that control is the last cell of the new
+  `bash-session-real` gate, so the replaced behaviour cannot silently come back. Verified end to end
+  through **real host tool dispatch** (the host's own `bash` tool calling our executor, in
+  `tool-bash-real`), and `DSH_WSL_PTY_SHELL=1` keeps the old tier reachable. **Clicked inside DSH
+  Desktop with this build installed**, and the clicks found two defects the offline gates could not
+  see — the host's plugin loader unwraps `exports.default`, so a module-level `inject` never reaches
+  the fiber and every call failed `cannot get property "subprocess" without inject`; and the shell's
+  echo of a frame reaches stderr as only its *tail*, so a fragment of our own framing was in the
+  model's body on every call. Both are fixed and both are now gated by cells that enter through the
+  channel the product uses.
 
 - **A DSH Desktop profile generated no WSL variant at all (issue #47).** The variant
   generator asked the host for two modules at call time — the entry-list dialect and the

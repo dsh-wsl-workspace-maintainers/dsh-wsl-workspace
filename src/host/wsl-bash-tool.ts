@@ -26,6 +26,7 @@ import { defaultDistroSync } from '../shared/wsl.ts'
 import { bridgeEnv } from '../shared/wsl-env.ts'
 import { SESSION_ARGV } from './wsl-bash-protocol.ts'
 import { WslBashSession, type WslBashRun, type WslBashSessionSpec, type WslBashSpawnHost } from './wsl-bash-session.ts'
+import { needsTty, normaliseTtyOutput, wrapForTty } from './wsl-bash-tty.ts'
 
 /** The tool name — the same one the host's tools register, so only one may be mounted. */
 export const TOOL_NAME = 'bash'
@@ -98,6 +99,7 @@ interface BashArgs {
   description?: string
   workdir?: string
   timeoutMs?: number
+  tty?: boolean
 }
 
 /** Environment facts that must reach the distribution. */
@@ -192,7 +194,7 @@ interface ForegroundOutput {
 }
 
 /** Shape a session run into the host's result contract. */
-function toForeground(run: WslBashRun, timeoutMs: number): ForegroundOutput {
+function toForeground(run: WslBashRun, timeoutMs: number, escalated: boolean): ForegroundOutput {
   const killed = run.exitCode < 0
   return {
     kind: 'foreground',
@@ -201,8 +203,8 @@ function toForeground(run: WslBashRun, timeoutMs: number): ForegroundOutput {
     timedOut: run.timedOut,
     aborted: run.aborted,
     timeoutMs,
-    stdout: { text: run.stdout, truncated: run.truncated },
-    stderr: { text: run.stderr, truncated: false },
+    stdout: { text: escalated ? normaliseTtyOutput(run.stdout) : run.stdout, truncated: run.truncated },
+    stderr: { text: escalated ? normaliseTtyOutput(run.stderr) : run.stderr, truncated: false },
   }
 }
 
@@ -285,7 +287,7 @@ export function apply(ctx: Context, config?: Config): void {
 
   const tool = defineTool({
     name: TOOL_NAME,
-    description: 'Run a bash command inside this WSL distribution. The shell is persistent: `cd`, exported variables, activated virtualenvs and shell functions survive between calls, so use absolute paths or an explicit `cd` when a call must not depend on where the last one left off. A command that reads from stdin is given /dev/null; run interactive programs with the terminal tool instead. Long-running work belongs in the background-job tool.',
+    description: 'Run a bash command inside this WSL distribution. The shell is persistent: `cd`, exported variables, activated virtualenvs and shell functions survive between calls, so use absolute paths or an explicit `cd` when a call must not depend on where the last one left off. A command that reads from stdin is given /dev/null. Commands that need a real terminal (`sudo`, `ssh`, an editor) are given a pseudo-terminal of their own automatically; pass `tty: true` to force one for anything else. Long-running work belongs in the background-job tool.',
     parameters: {
       command: { type: 'string', required: true, description: 'The bash command to run.' },
       description: {
@@ -298,6 +300,10 @@ export function apply(ctx: Context, config?: Config): void {
         description: 'Linux working directory for this call. Defaults to the session workspace; a relative path resolves against it.',
       },
       timeoutMs: { type: 'number', description: 'Per-call deadline in milliseconds.' },
+      tty: {
+        type: 'boolean',
+        description: 'Run the command on a pseudo-terminal. Applied automatically for `sudo`, `ssh`, editors and similar; set it for a program that fails with a terminal-related error.',
+      },
     },
     output: {
       schema: {
@@ -321,11 +327,13 @@ export function apply(ctx: Context, config?: Config): void {
       const headerCwd = exec.agent?.session?.header?.cwd
       const timeoutMs = Math.min(args.timeoutMs ?? resolved.timeoutMs, resolved.maxTimeoutMs)
       const ownerKey = exec.agent?.id ?? exec.agent?.session?.id ?? 'default'
+      // The terminal is decided here, before the working-directory wrapper, so `script` inherits the
+      // directory the call asked for.
+      const escalated = args.tty === true || needsTty(args.command)
+      const payload = escalated ? wrapForTty(args.command) : args.command
       // The session already starts in the workspace; an explicit `workdir` only has to move it.
       const workdir = args.workdir === undefined ? undefined : resolveCwd(args, exec)
-      const command = workdir === undefined
-        ? args.command
-        : `cd ${JSON.stringify(workdir)} && { ${args.command}\n}`
+      const command = workdir === undefined ? payload : `cd ${JSON.stringify(workdir)} && { ${payload}\n}`
 
       let session = sessions.get(ownerKey)
       if (session === undefined) {
@@ -342,7 +350,7 @@ export function apply(ctx: Context, config?: Config): void {
       }
       const run = await session.run(command, timeoutMs, exec.signal)
       if (run.aborted) throw toolAborted()
-      return toForeground(run, timeoutMs)
+      return toForeground(run, timeoutMs, escalated)
     },
   })
 
