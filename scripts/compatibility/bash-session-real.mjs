@@ -7,13 +7,14 @@
 // dispatches to our executor — the point 4 half of issue #51. This one proves the point 3 half:
 // the persistent shell answers in milliseconds, keeps `cd` and exported variables across calls,
 // reports exit codes, and does it without a PTY in the loop. The symptom it replaces was measured
-// in a real Desktop session as three calls hanging 303.8 s each before the host wiped the shell,
-// so "settles at all, and settles fast" is the assertion, not "returns something".
+// in a real Desktop session as three calls hanging 303.8 s each before the host wiped the shell.
 //
-// The last cell is the control that makes the rest meaningful: the same commands through the
-// host's PTY-backed persistent tool must NOT settle inside the same budget. If it ever does, this
-// driver goes red and the session tier's reason for existing has to be re-argued rather than
-// assumed.
+// The tool is loaded through `ctx.plugin`, the channel the host uses. An earlier revision called
+// `apply()` by hand on a raw Context and reported 13/13 on two planes and two platforms while every
+// real call failed in Desktop with `cannot get property "subprocess" without inject`: a raw context
+// resolves properties that a plugin-scoped one refuses unless the module declares them in `inject`.
+// That is the whole lesson — a driver that does not enter through the point the product uses is
+// measuring the driver.
 import { Context } from '@deepseek-ai/cordis'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import { resolve as resolvePath } from 'node:path'
@@ -24,6 +25,7 @@ import { load, plane } from './plane.mjs'
 const repoRoot = resolvePath(import.meta.dirname, '..', '..')
 const at = p => pathToFileURL(p).href
 const DEPS = `${repoRoot}/ci/deps/node_modules/@deepseek-ai`
+const hostModule = (m) => m.default ?? m
 
 const distro = process.env.WSL_COMPAT_DISTRO ?? 'Ubuntu'
 const username = process.env.WSL_COMPAT_USER ?? 'root'
@@ -36,18 +38,17 @@ function check(name, pass, detail) {
   console.log(`  ${pass === true ? 'PASS' : 'FAIL'} ${name}${detail === undefined ? '' : ` — ${detail}`}`)
 }
 
-const { apply: registerSessionTool, PROBE_CONFIG, buildSessionSpec } = await load('wsl-bash-tool')
 const toolsPlugin = await import(at(`${DEPS}/dsh-tools/lib/index.js`))
 const shellEnvPlugin = await import(at(`${DEPS}/dsh-shell-env/lib/index.js`))
 const systemPromptPlugin = await import(at(`${DEPS}/dsh-system-prompt/lib/index.js`))
-const hostModule = (m) => m.default ?? m
+const sessionTool = await load('wsl-bash-tool')
 
 const ctx = new Context()
 await ctx.plugin(LocalSubprocessRuntime)
 for (const module of [shellEnvPlugin, toolsPlugin, systemPromptPlugin]) {
   await ctx.plugin(hostModule(module))
 }
-registerSessionTool(ctx, { ...PROBE_CONFIG, distro, username })
+await ctx.plugin(sessionTool.default ?? sessionTool, { ...sessionTool.PROBE_CONFIG, distro, username })
 await new Promise(resolve => setTimeout(resolve, 50))
 
 const tool = ctx.tools.get('bash')
@@ -60,68 +61,61 @@ if (tool === undefined) {
 const owner = {
   id: 'agent-bash-session',
   session: { id: 'session-bash-session', cwd: sessionCwd, header: { cwd: sessionCwd, id: 'session-bash-session' } },
-  ctx: { on: () => () => {}, effect: (fn) => { try { fn?.() } catch { /* the driver has no lifecycle */ } return () => {} } },
+  ctx: { on: () => () => {}, effect: (fn) => { try { fn?.() } catch { /* the driver has no lifecycle to keep */ } return () => {} } },
 }
 const exec = { signal: AbortSignal.timeout(180_000), agent: owner }
 
-/** One tool call, timed, with the rendered text the model would read. */
+/** One tool call, timed, with the text the model would read. */
 async function call(command) {
   const started = Date.now()
   const value = await tool.execute({ command, description: 'compatibility driver: session bash' }, exec)
-  const ms = Date.now() - started
-  const text = JSON.stringify(value?.stdout?.text ?? '')
-  return { ms, value, text }
+  return { ms: Date.now() - started, value, text: String(value?.stdout?.text ?? '') }
 }
 
-let computed
 try {
   const first = await call('echo SESSION_$(( 13 * 7 ))')
-  computed = first.value?.stdout?.text ?? ''
-  check('computed answer came back', first.value?.stdout?.text?.includes('SESSION_91') === true, `${first.ms}ms ${computed.trim().slice(0, 40)}`)
+  check('computed answer came back', first.text.includes('SESSION_91'), `${first.ms}ms ${first.text.trim().slice(0, 40)}`)
   check('it settled well inside the old hang', first.ms < 8_000, `${first.ms}ms`)
   check('the tool reports the host result shape', first.value?.kind === 'foreground'
     && typeof first.value?.stdout?.text === 'string' && typeof first.value?.exitCode === 'number',
   JSON.stringify(Object.keys(first.value ?? {})))
 
   const cd = await call('cd /tmp && pwd')
-  check('cd takes effect', cd.value?.stdout?.text?.trim() === '/tmp', JSON.stringify(cd.value?.stdout?.text ?? ''))
+  check('cd takes effect', cd.text.trim() === '/tmp', JSON.stringify(cd.text))
   const after = await call('pwd')
-  check('the working directory survives into the next call', after.value?.stdout?.text?.trim() === '/tmp',
-    JSON.stringify(after.value?.stdout?.text ?? ''))
+  check('the working directory survives into the next call', after.text.trim() === '/tmp', JSON.stringify(after.text))
 
   await call('export DSH_SESSION_VAR=kept_$(( 6 * 7 ))')
   const read = await call('echo READ=$DSH_SESSION_VAR')
-  check('an exported variable survives into the next call', read.value?.stdout?.text?.includes('READ=kept_42') === true,
-    JSON.stringify(read.value?.stdout?.text ?? ''))
+  check('an exported variable survives into the next call', read.text.includes('READ=kept_42'), JSON.stringify(read.text))
 
   const failing = await call('false')
   check('a nonzero exit is reported, not thrown', failing.value?.exitCode === 1 && failing.value?.timedOut === false,
     `exitCode=${failing.value?.exitCode}`)
 
   const cjk = await call('printf "中文_OK_$(( 2 * 3 ))\\n"')
-  check('multi-byte output is intact', cjk.value?.stdout?.text?.includes('中文_OK_6') === true,
-    JSON.stringify(cjk.value?.stdout?.text ?? ''))
+  check('multi-byte output is intact', cjk.text.includes('中文_OK_6'), JSON.stringify(cjk.text))
 
-  const history = await call("echo bang!_$(( 1 * 2 ))")
-  check('a bare ! does not wedge the shell', history.value?.stdout?.text?.includes('bang!_2') === true,
-    `exitCode=${history.value?.exitCode} out=${JSON.stringify(history.value?.stdout?.text ?? '')}`)
+  const history = await call('echo bang!_$(( 1 * 2 ))')
+  check('a bare ! does not wedge the shell', history.text.includes('bang!_2'), `exitCode=${history.value?.exitCode}`)
 
-  // `sudo -n` is only a stand-in for "a command that wants a terminal". Whether it fails depends on
-  // the distribution's sudoers: the GitHub WSL1 runner's root is NOPASSWD and answers 0, this
-  // machine's user is not and answers 1. The property under test is boundedness, not the code.
+  // `sudo -n` only stands in for "a command that wants a terminal". Whether it succeeds depends on
+  // the distribution's sudoers — the GitHub WSL1 runner's root is NOPASSWD (exit 0), this machine's
+  // user is not (exit 1) — so the property asserted is boundedness, not the code.
   const sudo = await call('sudo -n true')
   check('sudo returns bounded, whatever its policy', sudo.ms < 8_000 && sudo.value?.timedOut === false,
     `${sudo.ms}ms exitCode=${sudo.value?.exitCode}`)
 
   const alive = await call('echo STILL_$(( 21 * 2 ))')
-  check('the session is usable afterwards', alive.value?.stdout?.text?.includes('STILL_42') === true, `${alive.ms}ms`)
+  check('the session is usable afterwards', alive.text.includes('STILL_42'), `${alive.ms}ms`)
 } catch (error) {
   check('every call returned', false, String(error?.message ?? error).slice(0, 200))
 }
 
-// The control: the same command through the tier this replaces. It has to actually run, because a
-// control that fails to build and is scored as a pass is exactly the vacuous green that let
-// issue #51 ship.
+// The control: the same command through the tier this replaces. It asserts only that the control
+// RAN, and prints which outcome happened. An earlier revision required it to hang, which promoted
+// one machine's pseudo-console behaviour to a universal rule and was disproved by the WSL1 runner
+// answering in 0.59 s; the hang is a measurement in docs/compatibility-evidence.md, not a gate.
 let controlRan = false
 try {
   const terminalService = await import(at(`${DEPS}/dsh-terminal/lib/index.js`))
@@ -132,9 +126,20 @@ try {
   for (const module of [shellEnvPlugin, toolsPlugin, systemPromptPlugin, terminalService]) {
     await ptyCtx.plugin(hostModule(module))
   }
-  const ptyOwner = { ...owner, id: 'agent-pty-control', session: { ...owner.session, id: 'session-pty-control' } }
+  // The control starts in `/tmp`, not in the driver's own session directory. The PTY backend builds
+  // the child environment itself (`dsh-terminal-bash` `childEnvironment`, a fixed set: TERM, PS1,
+  // PROMPT_COMMAND …), so `DSH_WSL_USER` never reaches the relay and the shell comes up as the
+  // distribution's default user — which cannot enter `/root` when the driver is pointed at root, and
+  // the tier then dies during startup instead of comparing. `/tmp` is enterable by every user, and
+  // the command under comparison does not depend on the directory.
+  const ptyCwd = `\\\\wsl.localhost\\${distro}\\tmp`
+  const ptyOwner = {
+    ...owner,
+    id: 'agent-pty-control',
+    session: { id: 'session-pty-control', cwd: ptyCwd, header: { cwd: ptyCwd, id: 'session-pty-control' } },
+  }
   ptyCtx.provide?.('agents', { get: (id) => (id === ptyOwner.id ? ptyOwner : undefined) })
-  ptyCtx.provide?.('sandboxPolicy', { resolve: () => ({ mode: 'danger-full-access', workspaceRoot: sessionCwd }) })
+  ptyCtx.provide?.('sandboxPolicy', { resolve: () => ({ mode: 'danger-full-access', workspaceRoot: ptyCwd }) })
   const { resolveRelayNode } = await import(pathToFileURL(`${repoRoot}/src/shared/relay-node.ts`).href)
   const relay = await resolveRelayNode()
   await terminalBash.apply(ptyCtx, new terminalBash.Config({
@@ -147,15 +152,10 @@ try {
   const started = Date.now()
   const ptyResult = String(await ptyTool.execute({ command: 'echo PTY_CONTROL_$(( 6 * 7 ))', description: 'control' },
     { signal: AbortSignal.timeout(30_000), agent: ptyOwner }))
-  const settledCleanly = /PTY_CONTROL_42/.test(ptyResult) && !/timed out/i.test(ptyResult)
-  // This cell used to assert that the PTY tier HANGS. The WSL1 runner answered it in 0.59 s, which
-  // says the assertion encoded one machine's ConPTY behaviour as a universal property — the same
-  // mistake this file exists to catch. What is universally checkable is that the control ran and
-  // what it did; the hang itself is a measured, machine-specific fact recorded in
-  // docs/compatibility-evidence.md, and the session tier's own cells above are the gate.
+  const hung = /timed out/i.test(ptyResult) || !/PTY_CONTROL_42/.test(ptyResult)
   check('control: the PTY tier was exercised for comparison', controlRan === true,
-    settledCleanly ? `it ANSWERED in ${Date.now() - started}ms (no hang on this platform) :: ${ptyResult.slice(0, 60)}`
-      : `it did NOT answer cleanly in ${Date.now() - started}ms — the issue #51 shape :: ${ptyResult.slice(0, 60)}`)
+    hung ? `it did NOT answer cleanly in ${Date.now() - started}ms — the issue #51 shape :: ${ptyResult.slice(0, 60)}`
+      : `it ANSWERED in ${Date.now() - started}ms (no hang on this platform) :: ${ptyResult.slice(0, 60)}`)
 } catch (error) {
   check('control: the PTY tier was exercised for comparison', false,
     `the control harness failed before comparing: ${String(error?.message ?? error).slice(0, 120)}`)
@@ -171,6 +171,6 @@ if (results.length !== EXPECTED_CHECKS) {
   console.error('bash-session-real: RED — at least one check failed')
   process.exitCode = 1
 }
-// The shells this driver started are children of a process that has nothing left to wait for; the
-// session seam keeps its stdin pipe open, so exiting explicitly is the teardown, not a shortcut.
+// The shells this driver started keep their stdin pipes open; exiting explicitly is the teardown,
+// not a shortcut.
 process.exit(process.exitCode ?? 0)
