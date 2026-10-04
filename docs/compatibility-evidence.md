@@ -2090,3 +2090,33 @@ our `withWslEnv` crashed in `isWindowsPathShaped`. Giving the fixture a session 
 so it is **our incomplete stand-in, not the plugin** — a real session always carries an id — and no
 production code was changed for it. The lesson is the one already written down twice in this file: a
 driver's fixture must match the runtime's shape, or its red is about the driver.
+
+## The hang is a Windows-console-path property; the WSL1 runner does not have it (2026-10-04)
+
+The session-tier gate (`scripts/compatibility/bash-session-real.mjs`) ran on both machines inside
+one hour, and the persistent-shell half of its result differs:
+
+| where | the host's PTY tier, one `echo` | our session tier, same command |
+| --- | --- | --- |
+| this machine: Win10 + WSL2 + Desktop 0.2.x | **timed out** — 303.8 s in the real Desktop session, 8 s when the deadline was shortened | first call 3.9 s including boot, ~30 ms after |
+| `ci.yml#wsl-gate`: windows-latest + **WSL1** Ubuntu-24.04 | **answered in 0.52–0.59 s, cleanly** | 11/13 on both planes; the 2 reds are named below |
+
+Two statements come out of that, of different kinds. The product one is unchanged: the failure mode
+is real on the desktop path we ship into, and the session tier answers there. The gate one is a
+correction of my own overreach — the driver's last cell asserted that the PTY tier *must* hang,
+which promoted one machine's pseudo-console behaviour to a universal expectation, and the runner
+disproved it in half a second. That cell now asserts only that the control ran, and prints which
+outcome it saw; the hang stays where evidence belongs, in this file. The other red was the same
+class of mistake in smaller form: `sudo -n true` returns 1 here and **0** on the runner, whose root
+is NOPASSWD, so the assertion is now boundedness (`< 8 s`, not timed out), not the exit code.
+
+The mechanism claim the two frames support jointly is narrower and better: the sentinel is corrupted
+by **repaint padding on the Windows console path** — which is also why a native Windows bash hits
+the sibling predicate (the 6-character prompt window) on this machine, and why a WSL1 instance
+behind a different terminal stack hits neither. It is not "WSL is slow" and not "the command is
+complex".
+
+And one planning consequence, said plainly: **`ci.yml#wsl-gate` cannot catch this bug.** A green
+WSL1 frame establishes that our session protocol works; it establishes nothing about the PTY tier's
+hang, because that tier does not hang there. The frames that can see it are this machine and a real
+Desktop session — which is why the Desktop reading is still on the list rather than assumed covered.

@@ -106,8 +106,11 @@ try {
   check('a bare ! does not wedge the shell', history.value?.stdout?.text?.includes('bang!_2') === true,
     `exitCode=${history.value?.exitCode} out=${JSON.stringify(history.value?.stdout?.text ?? '')}`)
 
+  // `sudo -n` is only a stand-in for "a command that wants a terminal". Whether it fails depends on
+  // the distribution's sudoers: the GitHub WSL1 runner's root is NOPASSWD and answers 0, this
+  // machine's user is not and answers 1. The property under test is boundedness, not the code.
   const sudo = await call('sudo -n true')
-  check('a passwordless-only sudo fails bounded, not wedged', sudo.ms < 8_000 && sudo.value?.exitCode !== 0,
+  check('sudo returns bounded, whatever its policy', sudo.ms < 8_000 && sudo.value?.timedOut === false,
     `${sudo.ms}ms exitCode=${sudo.value?.exitCode}`)
 
   const alive = await call('echo STILL_$(( 21 * 2 ))')
@@ -145,13 +148,17 @@ try {
   const ptyResult = String(await ptyTool.execute({ command: 'echo PTY_CONTROL_$(( 6 * 7 ))', description: 'control' },
     { signal: AbortSignal.timeout(30_000), agent: ptyOwner }))
   const settledCleanly = /PTY_CONTROL_42/.test(ptyResult) && !/timed out/i.test(ptyResult)
-  check('control: the PTY tier does not answer cleanly in the same budget',
-    settledCleanly === false, `${Date.now() - started}ms :: ${ptyResult.slice(0, 90)}`)
+  // This cell used to assert that the PTY tier HANGS. The WSL1 runner answered it in 0.59 s, which
+  // says the assertion encoded one machine's ConPTY behaviour as a universal property — the same
+  // mistake this file exists to catch. What is universally checkable is that the control ran and
+  // what it did; the hang itself is a measured, machine-specific fact recorded in
+  // docs/compatibility-evidence.md, and the session tier's own cells above are the gate.
+  check('control: the PTY tier was exercised for comparison', controlRan === true,
+    settledCleanly ? `it ANSWERED in ${Date.now() - started}ms (no hang on this platform) :: ${ptyResult.slice(0, 60)}`
+      : `it did NOT answer cleanly in ${Date.now() - started}ms — the issue #51 shape :: ${ptyResult.slice(0, 60)}`)
 } catch (error) {
-  const message = String(error?.message ?? error).slice(0, 120)
-  check('control: the PTY tier does not answer cleanly in the same budget',
-    controlRan === false ? false : !/PTY_CONTROL_42(?![\S\s]*timed out)/.test(message),
-    controlRan ? `it threw instead: ${message}` : `the control harness could not be built: ${message}`)
+  check('control: the PTY tier was exercised for comparison', false,
+    `the control harness failed before comparing: ${String(error?.message ?? error).slice(0, 120)}`)
 }
 
 const EXPECTED_CHECKS = 13
