@@ -278,10 +278,14 @@ weekly), use the Git-Bash driver instead — no PowerShell needed:
 npm run test:compat -- 0.2.0-rc.2 0.1.7-rc.2   # PLUGIN_REF=<tarball> to test an unpublished commit
 ```
 
-Seven checks need a live WSL distribution (`skills-real`, `fs-real`, `relay-real`, `tool-bash-real`,
-`bash-session-real`, `search-real`, and `conpty-relay`); they build their own fixtures under
-`/tmp/dsh-wsl-compat` (override with `WSL_COMPAT_ROOT`, and the distribution with
-`WSL_COMPAT_DISTRO`) and remove them again.
+Eight checks need a live WSL distribution (`skills-real`, `fs-real`, `relay-real`, `tool-bash-real`,
+`bash-session-real`, `bash-parity-real`, `search-real`, and `conpty-relay`); they build their own
+fixtures under `/tmp/dsh-wsl-compat` (override with `WSL_COMPAT_ROOT`, and the distribution with
+`WSL_COMPAT_DISTRO`) and remove them again. `bash-parity-real` writes its spill files under the
+system temp directory and compares **two tools against each other**, so a difference that nobody
+wrote down in [docs/bash-parity.md](docs/bash-parity.md) is a red build; the same table is read by
+`tests/wsl-bash-parity.test.ts`, which needs the installed host package and says `NOT VERIFIED`
+rather than skipping when it is absent.
 **Which persistent shell is being tested matters**: the world now mounts the pipe-driven session by
 default, so `host-materialize` and `host-declare` each run twice in `test:node` — once per tier — and
 `persistent-shell-fallback` is pinned to the PTY tier because its subject is that tier's

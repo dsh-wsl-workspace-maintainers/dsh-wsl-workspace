@@ -2285,3 +2285,55 @@ the check that belongs to me is whether an assertion survives changing users.
 
 
 
+
+## Round two: what a day of bash costs, and where it still differs from the other bash (2026-10-05)
+
+Four measurements were taken before any of this round's code, in `D:\Temp\wsl-bash-round2\`.
+
+**Frame length.** A command travels as one line, so the question is what one line costs. Payload of
+1 kB → 55 ms; 8 kB → 110 ms; 16 kB → 303 ms; 32 kB → 1 039 ms; 64 kB → 3 840 ms; 96 kB → 8 499 ms;
+128 kB → 15 108 ms; 256 kB → 59 256 ms. **Nothing was truncated at any size** — each frame answered
+with the exact byte count it asked for — which closes the P0 question this round opened with: an
+unclosed quote, an unterminated heredoc, a dangling `|` and an unclosed `for` each settle with bash's
+own syntax error (exit 2) in 21-484 ms, and the next command answers normally (`SURVIVED_42`,
+29 ms), because the command text never reaches bash as input lines — it is decoded inside `eval`.
+The cost is latency that grows with length, recorded as `behaviour-long-frame-latency`.
+
+**Journal size.** `export -p` is 2 471 bytes, `set +o` 542, `shopt -p` 1 086 — but `declare -f` after
+this machine's rc files is **61 083 bytes across 85 functions**. That is why the bodies ride only on
+the frame where the function count moved, and why the cap reports itself: an unconditional snapshot
+would put ~81 kB of base64 through the pipe per command to repeat something that changes almost never.
+
+**Rebuild replay, and the parse-time trap.** Sending the whole journal as one command failed with
+`syntax error near unexpected token '('` and exit 2: `eval` parses its entire string before running
+any of it, so `shopt -s extglob` on line 50 cannot help the bash-completion function on line 1623
+that needs extglob *to be parsed*. Symptom worth remembering — the restart reported success, 91
+functions came back (from re-sourcing rc) and the function the user defined two calls earlier did
+not. Fixed by chunking the restore (bootstrap, options, environment, functions, `cd`), each its own
+frame. Two smaller bugs found on the way: the frame's definition-detection regex missed
+`eval "dshbig$i() { …"` because it demanded a delimiter before the name, and the over-cap marker
+printed the literal `$__dsh_s` inside single quotes instead of a number.
+
+**Detached processes.** Killing `wsl.exe` takes the shell's ordinary children with it (0 survivors,
+twice) but not ones that detached themselves: `setsid sleep 45` and `nohup sleep 46 &` both lived
+(2/2). The reaper therefore matches a `DSH_WSL_SESSION` token in `/proc/*/environ`, and the control
+that makes the cell mean something is a sleep started **without** the token: it must survive, and it
+does.
+
+**Footprint, measured on this machine.** One session costs about **9.1 MB of Windows working set
+across two `wsl.exe` processes** (3 sessions → 6 processes, 54.7 MB total) plus **3.4 MB of RSS for
+the bash inside the distribution**; `vmmem` stayed at 552 MB whether shells were up or not, and free
+physical memory returned from 2 521 MB to 2 640 MB when the shells were killed. Disk: the shipped
+`lib/` is 633 kB total, of which this tool's chunk is 24.83 kB (with a map of similar size). Nothing
+is written at runtime until a stream overflows, and a spill file is now per command — measured
+before that fix, every probe after a 200 000-line command reported the earlier command's spill path,
+which `bash-parity-real` caught as an undeclared difference.
+
+**Differential result.** With the same per-stream cap on both sides, 6 of 10 comparable probes agree
+exactly on the fields that matter (including the spill file's line count, 200 000 in both worlds) and
+3 differ in ways now written into [bash-parity.md](bash-parity.md): `$-` (`himBs` vs `hBc`, because
+interactive mode is what buys aliases and functions), the layer that reports a missing `workdir`
+(`wsl.exe`'s `chdir … failed 2` there, bash's own `cd:` error here), and state persisting here but not
+in a one-shot call. 2 probes are **not covered** — the host's background and promote paths need a jobs
+registry the in-process harness does not mount, and saying so is the point of the row rather than
+silently dropping it.

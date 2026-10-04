@@ -40,6 +40,26 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   model's body on every call. Both are fixed and both are now gated by cells that enter through the
   channel the product uses.
 
+- **A second pass made the session `bash` answer like the host's `bash`, field by field.** A matrix of
+  34 everyday commands found four behaviours that were not everyday-good, and all four are fixed:
+  `run_in_background: true` was an argument silently ignored (it now delegates to the same jobs
+  producer `bash_background` uses); a relative `workdir` resolved to nothing and ran wherever the last
+  call had left the shell (it now joins onto the session directory and lets bash's own `cd` error
+  speak, as the host's `resolveWorkdir` does); a stream larger than the cap lost its head with only a
+  boolean to say so (it now spills to a file and says `[output truncated; full output: …]`, the same
+  sentence and the same directory as the one-shot path, one file per command); and a rebuild left
+  detached children running (it now reaps exactly the processes carrying its own session token, with a
+  control process that must survive). The journal replays shell options, `shopt`s, aliases and
+  functions as well as `cd` and exports — chunked into separate frames, because `eval` parses its
+  whole string before running any of it, so a `shopt` on line 50 cannot rescue a completion function
+  on line 1623 that needs extglob to be *parsed*. What differs is now a table two gates read:
+  `tests/wsl-bash-parity.test.ts` against the installed host package, and
+  `scripts/compatibility/bash-parity-real.mjs` running one probe script through both tools on a real
+  distribution — an undeclared difference, or a declared one that stopped being true, fails the build
+  ([docs/bash-parity.md](docs/bash-parity.md)). Footprint measured: ~9.1 MB of Windows working set per
+  session across two `wsl.exe` processes, 3.4 MB inside the distribution, `vmmem` unchanged, no runtime
+  files until a stream overflows.
+
 - **A DSH Desktop profile generated no WSL variant at all (issue #47).** The variant
   generator asked the host for two modules at call time — the entry-list dialect and the
   YAML engine under it — on the assumption that host and plugin share a `node_modules`.
