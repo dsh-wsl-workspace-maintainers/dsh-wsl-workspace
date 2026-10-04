@@ -136,7 +136,13 @@ the OSC `133;D;` marker **and** the controlled prompt inside 15 s; anything else
 the one-shot `bash`, which needs no PTY. Its scope is stated rather than implied: it covers the
 readiness path (a relay that cannot start, a contract that never crosses, a shell that never answers)
 and **not** the host's `dsh-win32-process` foreground inspection, which sits behind a predicate this
-plugin cannot construct at boot — that half of #51 point 3 remains open. On the UNC question its reach
+plugin cannot construct at boot. That predicate is now named rather than open — measured on 2026-10-04
+across a 6-cell grid and a native-bash control, the host's post-marker 6-character prompt window is
+filled by the command's own output under any Windows pseudo-console, so `promptTextSeen` never becomes
+true and every command settles through `inferred_idle` at ≈3.5 s; see "Point 3's failing term, pinned"
+in [compatibility-evidence.md](compatibility-evidence.md). A pass here therefore certifies the wire,
+not the settle cost — there is no plugin-side knob for that window, and the probe must not be read as
+covering it. On the UNC question its reach
 was widened the same day it landed, while re-checking point 1: the probe takes its cwd from the
 registered workspaces (`readinessCwd()` in `src/index.ts`), so once a WSL workspace exists it starts
 the relay at a real `\\wsl.localhost\…` path and a UNC-cwd startup failure demotes the world; with no

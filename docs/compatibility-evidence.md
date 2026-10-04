@@ -1901,8 +1901,10 @@ build spawns — `cmd.exe` included, measured through raw `node-pty` as well as 
 zero-valued answer is this platform's norm, not a WSL blind spot. What is also true is that the
 rcfile topology does produce marker + literal prompt, so their contract was satisfied and the
 settle failure lives in whatever the host build they run reports; that half cannot be measured
-from a repository that does not vendor `dsh-win32-process`'s Desktop copy, and is left open
-rather than asserted either way.
+from a repository that does not vendor `dsh-win32-process`'s Desktop copy, and was left open at the
+time of writing. It is no longer open: the term that fails here is the host's post-marker prompt
+window, and a native Windows bash with no WSL in the picture hits it identically — see
+"Point 3's failing term, pinned" at the end of this section.
 
 **Attempting to *produce* the crash, not just to fail to reproduce it (M1-teardown, 2026-10-04).**
 Refuting a universal claim and explaining a particular reading are different jobs, so the next step
@@ -1974,3 +1976,58 @@ consistent with a transient provider state and inconsistent with any standing pr
 "node + UNC cwd". Consequence for the product: point 1 stays unreproduced as a *mechanism*, and the
 mount decision now verifies the shape it would actually fail on — see the cwd row for
 `src/host/pty-readiness.ts` in [CHECK-CATALOG.md](CHECK-CATALOG.md).
+
+### Point 3's failing term, pinned: the 6-character prompt window (2026-10-04)
+
+The paragraph that left point 3 open did so because the foreground leg measured innocent and the
+300 s could not be produced. Both remaining unknowns are now settled by three runs on this machine,
+after WSL came back on its own — it had been refusing a VM with
+`Wsl/Service/CreateInstance/CreateVm/HCS/ERROR_NO_SYSTEM_RESOURCES`, and no elevated service start
+turned out to be needed: the same command returned exit 0 once free physical memory reached
+3563 MB of 15195.
+
+**The 2×2 that the earlier disagreement demanded** (`grid.mjs` — one real `BashTerminalBackend`
+session per cell, cwd `{\\wsl.localhost\\Ubuntu\\home, SystemRoot}` × instance `{running, terminated,
+running}`): **six of six cells identical** — boot 521–4637 ms, `waitReason=inferred_idle` in
+3543–3581 ms, `output=true`, `promptSeen=true`, `promptTextSeen=false`, tail `"dsh> \0"`, `pgid=0`.
+No cell threw, so the instance state that separated the two earlier baseline runs explains nothing,
+and the UNC cwd is neither slower nor crash-prone in any of those numbers — point 1's table above,
+restated through the backend instead of through `child_process`.
+
+The uniformity buys the name of the failing term, which is the same in all six: `promptTextSeen` is
+**never** true. Two more bounded runs say why.
+
+- `tailbytes.mjs` recorded one raw relay session at the reporter's exact cwd through the same
+  `spawnTerminal` face (1627 bytes, two `133;D` markers). After the post-command marker the stream
+  reads `]133;D;0 BEL ESC[?2004h TAIL_OK_42 CRLF dsh> ESC[22;6H ESC[?25h` — **the command's own
+  output arrives after the marker**, and the prompt line is followed by five padding spaces.
+- `replay-tail.mjs` fed that captured stream through the host's shipped `TerminalSanitizer` and the
+  shipped `onData` body, sliced out of `dsh-terminal-bash/lib/index.js:82-236` and `:647-659` by
+  line span rather than retyped. The window fills with `TAIL_O` and the code takes its own poison
+  branch (`:657`: more than 6 characters after a marker rewrites the tail to the controlled prompt
+  plus a NUL sentinel), so the comparison at `:658` — tail equal to the prompt — is false by
+  construction. The strict leg at `:713` can therefore never fire and `inferred_idle` is the only
+  settle path, which is the 3.5 s measured above. The escape that would extend the deadline cannot
+  help either: `:725` grants `promptTailGraceMs` only when the prompt *starts with* the current tail,
+  and the sentinel is longer than the prompt, so a poisoned tail is disqualified from its own grace.
+
+**Whether any of that is ours** — a control cell answers it: same backend, same injected contract,
+but the shell is a native Windows bash with no relay, no node in front and no WSL
+(`control-local.mjs`, this machine's `bash.exe -i` at `SystemRoot`): boot 4540 ms,
+`waitReason=inferred_idle` in 8126 ms, `promptTextSeen=false`, tail `"dsh> \0"`, `pgid=0`. The
+identical shape. So a post-marker window filled by output is a property of this host's completion
+check running against a Windows pseudo-console — not of `src/host/wsl-relay.ts`, not of `WSLENV`,
+not of the distribution; our shipped topology is no worse than the host's own local bash here. One
+nuance kept honest: the padding-after-prompt variant was seen in the `TERM=dumb` capture while the
+grid and the control ran on the backend's own environment — the poison in all three came from the
+output text, so `TERM` is not load-bearing for the conclusion.
+
+Consequences, as what changes and what does not. **Nothing in the plugin moves.** The window size,
+`idleSilenceMs` and the tail comparison are host-side (`:49`, `:51`, `:655-658`) and the preset rows
+we emit carry none of them, so there is no knob to turn and no fix to land — this is a host ask with
+a measurement attached, and it replaces the "left open" clause above rather than adding to it.
+`src/host/pty-readiness.ts` is not implicated and stays as shipped: it asserts marker + computed
+answer + prompt **on the wire**, which all six cells satisfied, and never claimed the host's internal
+predicate passes. It also gains a reason to exist beyond the wire — a shell can satisfy every part of
+the contract and still cost 3.5 s per command, and that gap is not a state a boot probe can demote a
+world for.
