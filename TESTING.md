@@ -278,7 +278,7 @@ weekly), use the Git-Bash driver instead — no PowerShell needed:
 npm run test:compat -- 0.2.0-rc.2 0.1.7-rc.2   # PLUGIN_REF=<tarball> to test an unpublished commit
 ```
 
-Five checks need a live WSL distribution (`skills-real`, `fs-real`, `relay-real`,
+Six checks need a live WSL distribution (`skills-real`, `fs-real`, `relay-real`, `tool-bash-real`,
 `search-real`, and `conpty-relay`); they build their own fixtures under
 `/tmp/dsh-wsl-compat` (override with `WSL_COMPAT_ROOT`, and the distribution with
 `WSL_COMPAT_DISTRO`) and remove them again. `exec-shape` reproduces the DSH Desktop

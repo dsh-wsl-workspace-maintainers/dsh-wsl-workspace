@@ -2055,3 +2055,38 @@ answer + prompt **on the wire**, which all six cells satisfied, and never claime
 predicate passes. It also gains a reason to exist beyond the wire — a shell can satisfy every part of
 the contract and still cost 3.5 s per command, and that gap is not a state a boot probe can demote a
 world for.
+
+### The host's own `bash` tool, called for real (2026-10-04)
+
+Every reading above stops one level short of the product. The grid drives `BashTerminalBackend`;
+`tests/shell-execute-shape.mjs` asserts the shape of the built file against a faked subprocess.
+Neither is `dsh-tool-bash` dispatching a call, which is the level point 4 lives at — its foreground
+path is `await (await ctx.shell.execute(ctx.shell.resolve({...request, signal}))).result()`
+(`dsh-tool-bash/lib/index.js:683`). So a context was built from the real host packages, the plugin
+mounted as `ctx.shell`, the real tool registered, and one call made:
+
+```
+tool returned in 489ms, kind=foreground
+stdout="BASH_TOOL_OK_91\n/home/ruler\nruler\nexit_code=1\n"   stderr=""
+```
+
+The computed value came back rather than the echoed command, the UNC session cwd became
+`/home/ruler`, the user is the session's, and a deliberately failing command reports its exit code
+through the tool. **This is the end-to-end confirmation that point 4 is fixed at the only level that
+matters**, and it narrows the "not yet observed inside a real host dispatch" caveat above — with one
+limit stated: it is the host's tool dispatch and the host's WSL executor, not the Desktop UI, and it
+exercises the **one-shot** path. The persistent path is covered by the grid, not by this call.
+
+The same driver run against a mutant — the shipped `lib/shell.js` with `execute` renamed — fails with
+`ctx.shell.execute is not a function` at `:683`, on both planes. That is the 0.7.5 shape reproducing
+the reporter's complaint through the host's own code, which is what makes the green above a
+measurement rather than a demo. It is now a gate: `scripts/compatibility/tool-bash-real.mjs`, wired
+into `ci.yml#wsl-gate` on both planes and into the compat case's `Run-Checks.ps1`, with 10 counted
+checks so a short run cannot report green.
+
+One instrument note, recorded because it looked like a product defect for a minute: with an `exec`
+whose session had no `id`, the host's `shellEnv.collect()` returned `DSH_SESSION_ID: undefined` and
+our `withWslEnv` crashed in `isWindowsPathShaped`. Giving the fixture a session id made it disappear,
+so it is **our incomplete stand-in, not the plugin** — a real session always carries an id — and no
+production code was changed for it. The lesson is the one already written down twice in this file: a
+driver's fixture must match the runtime's shape, or its red is about the driver.
