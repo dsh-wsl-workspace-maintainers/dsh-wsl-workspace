@@ -1903,3 +1903,28 @@ rcfile topology does produce marker + literal prompt, so their contract was sati
 settle failure lives in whatever the host build they run reports; that half cannot be measured
 from a repository that does not vendor `dsh-win32-process`'s Desktop copy, and is left open
 rather than asserted either way.
+
+**Attempting to *produce* the crash, not just to fail to reproduce it (M1-teardown, 2026-10-04).**
+Refuting a universal claim and explaining a particular reading are different jobs, so the next step
+was to give node.exe the same UNC cwd while the 9P channel was genuinely being taken away:
+`wsl --shutdown`, then boot `--version` at `\wsl.localhost\Ubuntu\home` six times through the
+teardown window, then poll until the share reads as gone, then boot again. Positive control first —
+warm, share readable, `exit 0 in 203 ms` — because a run whose control crashes proves nothing either
+way. Result: **the reporter's `Cannot read package config … connection reset by peer` appeared in 0
+of 8 cells.** Two readings out of it matter more than the zero:
+
+- The first post-`--shutdown` attempt returned **exit 0 in 4078 ms**. That number is the distro
+  auto-starting underneath the access. So on this build (WSL 3.0.1.0 / kernel 6.18.40.1) a share
+  that has gone away does not answer with a refused read — it answers by coming back.
+- Consequently my own earlier explanation — "their error is the signature of an idled-out share" —
+  is **not supported here and is withdrawn as an account of their reading**. The poll loop never
+  observed the vanished state at all (`readable=true` through 10 polls), which means that state is
+  not reachable by shutdown-racing on this machine, not that it does not exist on theirs.
+
+What is left standing is narrower than either story: point 1 is a real failure on the reporter's
+host that this machine cannot enter through the path they describe, and the discriminating fact is
+now their WSL build rather than our reasoning. `docs/compatibility-evidence.md` above keeps the
+cold/warm matrix as the refutation of the universal claim; this paragraph is the record that the
+refutation was not mistaken for an explanation. Machine state was restored after the run
+(`--terminate`, then `--shutdown` when `vmmem` held 605 MB past both distros reporting `Stopped`;
+both `Stopped` and no `vmmem` afterwards, matching the pre-run baseline).
