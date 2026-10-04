@@ -1938,3 +1938,39 @@ After M1-teardown, one ConPTY-gate run failed with `the interpreter wrote nothin
 - A third artifact of the same instrument: m1c's `dir \wsl.localhost` column reported the provider root as absent **in every cell, including before the shutdown** — listing the share-list level is not a state signal on this platform, so that column measured nothing and its "8 of 8 cells with the root absent" line in the log is noise. The m1c run's real output is only the negative: 8 cells, node exits 0 at the UNC cwd in all of them.
 
 This is recorded rather than quietly dropped, because it is the same mistake the gate in `conpty-relay.mjs` was built to make: a failing instrument that produces a plausible mechanism. The M1-teardown conclusion above stands — the reporter's crash text was not produced in any cell here — and the attribution now has one fewer candidate explanation, since "share state breaks the PTY spawn shape" is refuted for the four states measured.
+
+### Point 1, re-opened: their error text IS reachable here — as a read, not as a crash (2026-10-04, later the same day)
+
+The paragraph above saying the reporter's crash was "not produced" was reached with an instrument that
+could not see the window it was about, so it is narrowed here. M1 and M1-teardown each *started a
+process* at a UNC cwd, and starting a process through the share revives the distro — every cell
+therefore measured a live provider and came back `exit 0`. Reading the path first, without spawning,
+shows the other face:
+
+| state | read `\?\UNC\wsl.localhost\package.json` | node `--version` @ `\wsl.localhost\Ubuntu\home` |
+| --- | --- | --- |
+| instance terminated, provider still advertising (first read) | **ECONNRESET: connection reset by peer** | (not attempted before the read) |
+| instance running | ENOENT at `…\Ubuntu\package.json`, UNKNOWN/ECONNRESET at the provider root, varying by cycle | **boots, exit 0**, 3 of 3 cycles |
+| after `--shutdown` | UNKNOWN | `spawn … ENOENT` |
+
+So the reporter's words — `Cannot read package config \?\UNC\wsl.localhost\package.json:
+connection reset by peer` — name a state this machine does enter: the provider root answers
+`ECONNRESET` rather than "no such file", which is the one answer that turns node's nearest
+`package.json` walk from "keep walking" into a thrown error. What is **still** not produced is node's
+own crash stack in that state, and the reason is now concrete rather than absence of evidence: the
+two conditions the crash needs are mutually exclusive in every state reachable here. When the
+provider is up, the walk stops at the share root and node boots (3/3). When the provider is
+half-gone, the read answers `ECONNRESET` but a UNC-cwd process does not start at all — the failure
+arrives one level early as a spawn `ENOENT` naming the executable, which is the same misleading
+shape already recorded for `relay-real`. Their log shows a node process that got far enough to read
+a package config, so their provider was in a third state: advertising a browsable share and resetting
+mid-walk. That is a race, and it is not a state this machine enters on command.
+
+One further measurement cut the other way and is worth keeping: `pathcheck` saw the UNC-cwd spawn
+fail with `ENOENT` in the terminated state *after* reading the provider root, while `probe-live2`
+started the shipped relay at the same workspace UNC in the same terminated state and reached the
+controlled prompt in 1172 ms. The order of the first touch therefore decides the outcome, which is
+consistent with a transient provider state and inconsistent with any standing property of
+"node + UNC cwd". Consequence for the product: point 1 stays unreproduced as a *mechanism*, and the
+mount decision now verifies the shape it would actually fail on — see the cwd row for
+`src/host/pty-readiness.ts` in [CHECK-CATALOG.md](CHECK-CATALOG.md).

@@ -23,6 +23,7 @@
  */
 
 import { join } from 'node:path'
+import { parseWslUnc } from '../shared/paths.ts'
 import { CONTROLLED_PROMPT, readinessContract } from '../shared/wsl-env.ts'
 
 /**
@@ -76,14 +77,23 @@ export function stripTerminalEscapes(text: string): string {
 
 /**
  * Run one readiness probe against a live terminal seam.
+ *
+ * The `cwd` argument is not a detail: the persistent shell is spawned with the
+ * SESSION's workspace path, and for a WSL workspace that is a
+ * `\\wsl.localhost\<distro>\…` UNC path. Probing from a Windows directory cannot see a
+ * startup failure that only happens on a UNC cwd, so the caller passes a registered
+ * workspace path when one exists and a Windows fallback is reported as the partial
+ * check it is rather than counted as verifying the UNC case.
  * @param face - the `subprocess` service face, or undefined when there is none.
  * @param paths - the relay script and the interpreter the backend would start it with.
+ * @param cwd - the directory to start the relay in, ideally a real workspace path.
  * @param budgetMs - the ceiling; defaults to {@link READINESS_PROBE_BUDGET_MS}.
  * @returns whether the shell reached the state the host's completion check needs.
  */
 export async function probePersistentShellReadiness(
   face: ReadinessSpawnFace | undefined,
   paths: { relayPath: string; nodePath: string },
+  cwd: string,
   budgetMs: number = READINESS_PROBE_BUDGET_MS,
 ): Promise<ReadinessResult> {
   if (face === undefined) {
@@ -119,7 +129,7 @@ export async function probePersistentShellReadiness(
   try {
     handle = await face.spawnTerminal({
       argv: [paths.nodePath, paths.relayPath],
-      cwd: systemRoot,
+      cwd,
       rows: 24,
       cols: 80,
       terminalType: 'dumb',
@@ -169,7 +179,10 @@ export async function probePersistentShellReadiness(
       if (answerSeen && markerSeen && promptSeen) {
         return {
           ready: true,
-          detail: `command round-tripped with the readiness contract in ${Date.now() - started}ms`,
+          // Saying which cwd was verified is part of the answer: a pass at a Windows
+          // cwd does not certify the UNC-cwd startup shape the session will use.
+          detail: `command round-tripped with the readiness contract in ${Date.now() - started}ms`
+            + ` at cwd ${JSON.stringify(cwd)}${parseWslUnc(cwd) !== null ? '' : ' (NOT a WSL UNC path, so the UNC startup shape is unverified)'}`,
         }
       }
     }

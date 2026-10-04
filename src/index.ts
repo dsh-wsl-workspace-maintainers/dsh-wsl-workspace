@@ -607,6 +607,25 @@ function publishVariant(staging: string, dest: string): void {
 }
 
 /**
+ * The directory the readiness probe should start the relay in.
+ *
+ * The backend spawns the persistent shell with the session's workspace path, which
+ * for a WSL workspace is a UNC path — so a probe that always starts in a Windows
+ * directory can certify a shell shape no session will ever use. The registered
+ * workspaces are the closest thing to that path available at profile boot; with none
+ * stored yet, the Windows fallback is used and the probe says it did not verify the
+ * UNC case rather than implying it did.
+ * @returns a canonical UNC workspace path when one is registered, else a Windows directory.
+ */
+function readinessCwd(): string {
+  for (const key of listWorkspaceKeys()) {
+    const canonical = canonicalWslUnc(key)
+    if (canonical !== null) return canonical
+  }
+  return process.env.SystemRoot ?? process.cwd()
+}
+
+/**
  * Whether a host's terminal stack can allocate a PTY process *on this platform*.
  *
  * The world's `bash` is the host's persistent-shell stack, and on Windows that
@@ -926,7 +945,7 @@ export function apply(ctx: Context, config: Config): void {
           const readiness = await probePersistentShellReadiness(probe.subprocess, {
             relayPath,
             nodePath: relay?.path ?? process.execPath,
-          })
+          }, readinessCwd())
           if (!readiness.ready) {
             persistentShell = false
             console.warn(`dsh-wsl-workspace: persistent shell: not mounted, readiness probe failed — ${readiness.detail}`)

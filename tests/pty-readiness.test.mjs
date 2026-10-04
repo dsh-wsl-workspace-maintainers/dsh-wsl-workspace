@@ -30,6 +30,8 @@ import {
 
 const PATHS = { relayPath: 'D:/fake/lib/wsl-relay.js', nodePath: 'D:/fake/node.exe' }
 const BUDGET_MS = 400
+/** A registered workspace path: the cwd shape a WSL session actually gets. */
+const PROBE_CWD = String.raw`\\wsl.localhost\Ubuntu\home`
 
 /** The host's marker plus its controlled prompt: what the backend compares against. */
 const READY_PROMPT = '\u001b]133;D;0\u0007\u001b[?2004hdsh> '
@@ -88,7 +90,7 @@ function fakeTerminal(options = {}) {
 
 test('a shell that prints the controlled prompt and runs the command is ready', async () => {
   const { face, calls } = fakeTerminal({ prompt: READY_PROMPT })
-  const result = await probePersistentShellReadiness(face, PATHS, 2_000)
+  const result = await probePersistentShellReadiness(face, PATHS, PROBE_CWD, 2_000)
   assert.equal(result.ready, true, result.detail)
   assert.match(result.detail, /command round-tripped with the readiness contract in \d+ms/)
   assert.equal(calls.spawned.length, 1, 'exactly one PTY allocated')
@@ -103,7 +105,7 @@ test('a shell that prints the controlled prompt and runs the command is ready', 
 
 test('the distribution default prompt is NOT readiness (issue #51 point 2)', async () => {
   const { face, calls } = fakeTerminal({ prompt: DEFAULT_PROMPT })
-  const result = await probePersistentShellReadiness(face, PATHS, BUDGET_MS)
+  const result = await probePersistentShellReadiness(face, PATHS, PROBE_CWD, BUDGET_MS)
   assert.equal(result.ready, false, 'the command ran, and it still is not ready — the host could never recognise this shell')
   assert.match(result.detail, /no OSC 133;D marker/, 'it names the missing marker')
   assert.match(result.detail, /prompt/, 'and the missing prompt')
@@ -114,7 +116,7 @@ test('a shell that echoes but never executes is not ready', async () => {
   // The case the arithmetic command exists for: the echoed input line contains the
   // probe's own text, so a probe matching that text would report ready here.
   const { face, calls } = fakeTerminal({ prompt: READY_PROMPT, executes: false })
-  const result = await probePersistentShellReadiness(face, PATHS, BUDGET_MS)
+  const result = await probePersistentShellReadiness(face, PATHS, PROBE_CWD, BUDGET_MS)
   assert.equal(result.ready, false, 'an echo is not an execution')
   assert.match(result.detail, /never produced its computed answer/)
   assert.equal(calls.terminated, 1)
@@ -122,21 +124,21 @@ test('a shell that echoes but never executes is not ready', async () => {
 
 test('a shell that swallows the command entirely is not ready', async () => {
   const { face } = fakeTerminal({ prompt: READY_PROMPT, silent: true })
-  const result = await probePersistentShellReadiness(face, PATHS, BUDGET_MS)
+  const result = await probePersistentShellReadiness(face, PATHS, PROBE_CWD, BUDGET_MS)
   assert.equal(result.ready, false, 'no echo and no answer is the plainest broken shell')
   assert.match(result.detail, /never produced its computed answer/)
 })
 
 test('a shell that exits during the probe is not ready, and its message survives', async () => {
   const { face } = fakeTerminal({ exit: 'Error: PTY shell exited during startup' })
-  const result = await probePersistentShellReadiness(face, PATHS, 2_000)
+  const result = await probePersistentShellReadiness(face, PATHS, PROBE_CWD, 2_000)
   assert.equal(result.ready, false, "issue #40/#51's literal failure text must not read as ready")
   assert.match(result.detail, /PTY shell exited during startup/, 'the host failure text is passed through, not swallowed')
 })
 
 test('a spawn that throws is not ready', async () => {
   const { face } = fakeTerminal({ rejects: 'subprocess-local: terminal inspection is unsupported on platform win32' })
-  const result = await probePersistentShellReadiness(face, PATHS, BUDGET_MS)
+  const result = await probePersistentShellReadiness(face, PATHS, PROBE_CWD, BUDGET_MS)
   assert.equal(result.ready, false)
   assert.match(result.detail, /spawnTerminal rejected the relay/)
 })
@@ -144,7 +146,7 @@ test('a spawn that throws is not ready', async () => {
 test('an unreadable terminal handle is reported unverified, not failed', async () => {
   for (const variant of [{ noOutputStream: true }, { noWrite: true }]) {
     const { face, calls } = fakeTerminal({ ...variant, prompt: READY_PROMPT })
-    const result = await probePersistentShellReadiness(face, PATHS, BUDGET_MS)
+    const result = await probePersistentShellReadiness(face, PATHS, PROBE_CWD, BUDGET_MS)
     assert.equal(result.ready, true, `${JSON.stringify(variant)}: an unknown handle is not evidence of a broken host`)
     assert.equal(result.unverifiable, true, `${JSON.stringify(variant)}: and the answer says it was not verified`)
     assert.match(result.detail, /NOT verified/)
@@ -153,7 +155,7 @@ test('an unreadable terminal handle is reported unverified, not failed', async (
 })
 
 test('no subprocess service at all leaves the previous answer intact', async () => {
-  const result = await probePersistentShellReadiness(undefined, PATHS, BUDGET_MS)
+  const result = await probePersistentShellReadiness(undefined, PATHS, PROBE_CWD, BUDGET_MS)
   assert.equal(result.ready, true)
   assert.equal(result.unverifiable, true)
   assert.match(result.detail, /no subprocess service/)
@@ -168,7 +170,7 @@ test('the prompt check survives ConPTY rendering the trailing space as a cursor 
 
 test('the injected environment is minimal, not the host process environment', async () => {
   const { face, calls } = fakeTerminal({ prompt: READY_PROMPT })
-  await probePersistentShellReadiness(face, PATHS, 2_000)
+  await probePersistentShellReadiness(face, PATHS, PROBE_CWD, 2_000)
   const env = calls.spawned[0].env
   assert.ok(!('HOME' in env) && !('USERPROFILE' in env), `a user profile must not ride along: ${Object.keys(env).join(', ')}`)
   assert.ok(!Object.keys(env).some(key => /KEY|PASSWORD|SECRET|TOKEN/i.test(key)), 'no credential-shaped name is forwarded')
@@ -178,4 +180,26 @@ test('the injected environment is minimal, not the host process environment', as
 test('the budget is a measured number, not a tuned one', () => {
   assert.equal(READINESS_PROBE_BUDGET_MS, 15_000,
     '15 s ≈ 3.75x the slowest legitimate boot measured on this machine (3998 ms cold, 2651 ms warm)')
+})
+
+test('the probe starts the relay in the SESSION cwd shape, and says so', async () => {
+  const { face, calls } = fakeTerminal({ prompt: READY_PROMPT })
+  const result = await probePersistentShellReadiness(face, PATHS, PROBE_CWD, 2_000)
+  assert.equal(calls.spawned[0].cwd, PROBE_CWD,
+    'the cwd the backend will use is the cwd the probe must use')
+  assert.match(PROBE_CWD, /^\\\\wsl\.localhost\\/, 'the fixture cwd really is a UNC path')
+  assert.equal(result.ready, true, result.detail)
+  assert.ok(!result.detail.includes('unverified'), `a UNC cwd pass must not carry the caveat: ${result.detail}`)
+})
+
+test('a pass at a Windows cwd is reported as NOT covering the UNC startup shape', async () => {
+  // issue #51 point 1 is about starting the relay with a UNC cwd. A probe that always
+  // started in SystemRoot could report ready while every session still failed, so the
+  // verdict has to name the cwd it actually checked.
+  const { face, calls } = fakeTerminal({ prompt: READY_PROMPT })
+  const result = await probePersistentShellReadiness(face, PATHS, 'C:\Windows', 2_000)
+  assert.equal(calls.spawned[0].cwd, 'C:\Windows')
+  assert.equal(result.ready, true, 'the shell really is ready at that cwd')
+  assert.match(result.detail, /NOT a WSL UNC path, so the UNC startup shape is unverified/,
+    `and the log must say which shape it did not prove: ${result.detail}`)
 })
