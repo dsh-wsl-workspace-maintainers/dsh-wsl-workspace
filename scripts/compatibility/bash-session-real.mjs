@@ -65,11 +65,17 @@ const owner = {
 }
 const exec = { signal: AbortSignal.timeout(180_000), agent: owner }
 
+const renderedBodies = []
+
 /** One tool call, timed, with the text the model would read. */
 async function call(command) {
   const started = Date.now()
-  const value = await tool.execute({ command, description: 'compatibility driver: session bash' }, exec)
-  return { ms: Date.now() - started, value, text: String(value?.stdout?.text ?? '') }
+  const args = { command, description: 'compatibility driver: session bash' }
+  const value = await tool.execute(args, exec)
+  const parts = tool?.output?.render?.(args, value) ?? []
+  const rendered = parts.map(part => String(part?.text ?? '')).join('')
+  renderedBodies.push(rendered)
+  return { ms: Date.now() - started, value, text: String(value?.stdout?.text ?? ''), rendered }
 }
 
 try {
@@ -108,6 +114,22 @@ try {
 
   const alive = await call('echo STILL_$(( 21 * 2 ))')
   check('the session is usable afterwards', alive.text.includes('STILL_42'), `${alive.ms}ms`)
+
+  // The two cells that were missing when every real Desktop call came back with a fragment of our
+  // own framing in `[stderr]`: every check above read `stdout.text`, and the leak was in the body the
+  // model reads, which `output.render` composes from stdout *and* stderr. The positive control rides
+  // with it, because a filter that dropped all stderr would pass the first of the two.
+  const noisy = await call('echo oops >&2')
+  check("the command's own stderr still reaches the model", noisy.rendered.includes('[stderr]')
+    && noisy.rendered.includes('oops'), JSON.stringify(noisy.rendered.slice(0, 60)))
+  // The signatures are the frame's own invariant text, not one particular rendering of it: measured
+  // here, bash's line editor writes only the TAIL of the echoed frame to stderr (79 bytes, starting
+  // mid-nonce, after a `\r`), so a filter keyed on the payload or the record tags — both in the head
+  // — recognises nothing. A cell that misses that is the vacuous green this file keeps naming.
+  const signatures = ['__DSH_WSL_BASH', 'eval "$(printf %s', '| base64 -d)"', '{ export -p;', '__dsh_status']
+  const dirty = renderedBodies.filter(body => signatures.some(signature => body.includes(signature)))
+  check('no protocol byte reaches the model, in any call', renderedBodies.length > 10 && dirty.length === 0,
+    `${dirty.length} of ${renderedBodies.length} bodies carry a frame signature: ${JSON.stringify(dirty[0]?.slice(0, 70) ?? '')}`)
 } catch (error) {
   check('every call returned', false, String(error?.message ?? error).slice(0, 200))
 }
@@ -161,7 +183,7 @@ try {
     `the control harness failed before comparing: ${String(error?.message ?? error).slice(0, 120)}`)
 }
 
-const EXPECTED_CHECKS = 13
+const EXPECTED_CHECKS = 15
 const passed = results.filter(r => r.pass).length
 console.log(`${passed}/${results.length} checks passed (plane=${plane()}, distro=${distro}, user=${username}, cwd=${sessionCwd})`)
 if (results.length !== EXPECTED_CHECKS) {
