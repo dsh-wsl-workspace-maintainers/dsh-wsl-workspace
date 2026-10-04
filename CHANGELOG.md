@@ -4,6 +4,34 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
 
 ## 0.7.6 — 2026-10-01
 
+- **Every `bash` call in a WSL workspace failed on DSH Desktop 0.2.x (issue #51), and the fix is
+  three separate things.** (1) *The shell seam*: 0.2.x calls `ctx.shell.execute(spec)` and awaits
+  `result()`, while this plugin implemented the 0.1.x `resolve`/`run`/`start` — so **both** the
+  persistent path and the one-shot fallback were dead, not one of them. One spawn primitive now
+  serves all three faces, with `onExpiry` and `observed` filled in; the CI gate that hid it was the
+  typecheck **error-count** budget (the `TS2515` line was in the output the whole time), which now
+  reddens on banned codes at any count, self-tests itself, and may only ever be lowered
+  (212 → 209). (2) *The readiness contract*: the host injects `PS1`/`PROMPT_COMMAND` as Windows
+  variables, which WSL drops unless `WSLENV` names them, so the persistent shell came up with the
+  distribution's own prompt and the host could not recognise it — one bridge in the relay, proven on
+  a real ConPTY (before: default prompt; after: `prompt=[dsh> ]` with the `133;D;` marker), and the
+  contract values now have a parity gate against the installed host instead of a hand copy.
+  (3) *The persistent shell itself*: the host's PTY tool decides "finished" by matching a sentinel
+  line in terminal text and requiring the exit code to be followed immediately by a newline, and an
+  interactive Linux shell repaints with `ESC[<n>X`, filling the cells after the sentinel with
+  spaces — measured in a real Desktop session as **three calls hanging 303.8 s each** before the
+  host wiped the shell. The world now mounts this plugin's own `bash`: one long-lived
+  `bash --norc -i` over **pipes**, completing on a NUL-delimited record carrying a per-command
+  nonce, with the login environment sourced silently, history expansion off (which also closes the
+  `!` class of failures for this path), a bounded answer instead of a hang for commands that need a
+  real terminal, and a session rebuild that replays `cd` and exported variables when a call wedges.
+  Measured on this machine, both build planes: first call 3.9 s including boot, then ~30 ms, with
+  `cd`/`export`/exit codes/CJK/`!` all verified, while the same command through the PTY tier still
+  times out — that control is the last cell of the new `bash-session-real` gate, so the replaced
+  behaviour cannot silently come back. Verified end to end through **real host tool dispatch** (the
+  host's own `bash` tool calling our executor, in `tool-bash-real`), and `DSH_WSL_PTY_SHELL=1` keeps
+  the old tier reachable. Not yet observed: a click inside DSH Desktop with this build installed.
+
 - **A DSH Desktop profile generated no WSL variant at all (issue #47).** The variant
   generator asked the host for two modules at call time — the entry-list dialect and the
   YAML engine under it — on the assumption that host and plugin share a `node_modules`.

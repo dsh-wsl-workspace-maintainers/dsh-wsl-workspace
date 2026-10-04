@@ -278,10 +278,17 @@ weekly), use the Git-Bash driver instead — no PowerShell needed:
 npm run test:compat -- 0.2.0-rc.2 0.1.7-rc.2   # PLUGIN_REF=<tarball> to test an unpublished commit
 ```
 
-Six checks need a live WSL distribution (`skills-real`, `fs-real`, `relay-real`, `tool-bash-real`,
-`search-real`, and `conpty-relay`); they build their own fixtures under
+Seven checks need a live WSL distribution (`skills-real`, `fs-real`, `relay-real`, `tool-bash-real`,
+`bash-session-real`, `search-real`, and `conpty-relay`); they build their own fixtures under
 `/tmp/dsh-wsl-compat` (override with `WSL_COMPAT_ROOT`, and the distribution with
-`WSL_COMPAT_DISTRO`) and remove them again. `exec-shape` reproduces the DSH Desktop
+`WSL_COMPAT_DISTRO`) and remove them again.
+**Which persistent shell is being tested matters**: the world now mounts the pipe-driven session by
+default, so `host-materialize` and `host-declare` each run twice in `test:node` — once per tier — and
+`persistent-shell-fallback` is pinned to the PTY tier because its subject is that tier's
+`spawnTerminal` probe. The session tier's own boot-decision table (probe passes / `spawn` missing /
+probe throws) is **not** covered offline yet; `bash-session-real` covers the protocol and the mount
+shape on a real distribution, and the gap is recorded here rather than counted as covered.
+`exec-shape` reproduces the DSH Desktop
 `child_process` wrapper (plain `exec`/`execFile` wrappers + `syncBuiltinESMExports()`, which
 strips `util.promisify.custom`) in a probe process and asserts both the wrapped and the plain
 shapes produce a correct `{ stdout, stderr }`. `conpty-relay` takes the case's

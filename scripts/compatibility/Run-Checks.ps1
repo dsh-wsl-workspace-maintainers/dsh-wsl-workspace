@@ -34,6 +34,7 @@ try{
   Run-Node 'fs-real' @('--experimental-strip-types',(Join-Path $r.plugin 'scripts/compatibility/fs-real.mjs'))
   Run-Node 'relay-real' @('--experimental-strip-types',(Join-Path $r.plugin 'scripts/compatibility/relay-real.mjs'))
   Run-Node 'tool-bash-real' @('--experimental-strip-types',(Join-Path $r.plugin 'scripts/compatibility/tool-bash-real.mjs'))
+  Run-Node 'bash-session-real' @('--experimental-strip-types',(Join-Path $r.plugin 'scripts/compatibility/bash-session-real.mjs'))
   Run-Node 'conpty-relay' @('--experimental-strip-types',(Join-Path $r.plugin 'scripts/compatibility/conpty-relay.mjs'),$Manifest)
   Run-Node 'search-real' @('--experimental-strip-types',(Join-Path $r.plugin 'scripts/compatibility/search-real.mjs'))
   Run-Node 'host-api' @((Join-Path $r.plugin 'scripts/compatibility/host-api.mjs'),$Manifest)

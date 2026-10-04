@@ -144,9 +144,10 @@ test('minimal-like transform keeps persona fixed and uses the cwd-aware fs tools
 const RELAY = 'D:/plugin/lib/wsl-relay.js'
 const NODE = 'C:/Program Files/nodejs/node.exe'
 const SANDBOX = 'D:/plugin/lib/wsl-sandbox.js'
+const BASH = 'D:/plugin/lib/wsl-bash-tool.js'
 
 test('the world mounts a persistent WSL shell when the relay paths are supplied', () => {
-  const out = transformPresetForWsl(STANDARD_LIKE, SHELL, FS, { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX })
+  const out = transformPresetForWsl(STANDARD_LIKE, SHELL, FS, { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX, bashPath: BASH, mode: 'pty' })
   assert.ok(out.includes('    - id: persistent-shell'), 'persistent-shell group injected')
   assert.ok(out.includes('      isolate:\n        terminals: true'), 'the registry keeps its own terminals realm')
   assert.ok(out.includes('        - id: pty'), 'the terminals service is provided')
@@ -177,7 +178,7 @@ test('the persistent shell tells the model how state and backgrounding behave', 
   // Minimal preset suggests the exact form that trips the host wrapper
   // (`sleep 10 &`): a trailing `&` backgrounds the whole wrapped command, so the
   // call reports exit code 0 and no output while the work is still to come.
-  const out = transformPresetForWsl(STANDARD_LIKE, SHELL, FS, { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX })
+  const out = transformPresetForWsl(STANDARD_LIKE, SHELL, FS, { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX, bashPath: BASH, mode: 'pty' })
   const block = /            description: \|-\n((?:              .*\n)+)/.exec(out)
   assert.ok(block !== null, 'the persistent tool carries an explicit description')
   const description = (block[1] ?? '').split('\n').map(line => line.trim()).join('\n')
@@ -197,7 +198,7 @@ test('the persistent shell tells the model how state and backgrounding behave', 
 })
 
 test('the description override does not disturb the rest of the row', () => {
-  const out = transformPresetForWsl(STANDARD_LIKE, SHELL, FS, { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX })
+  const out = transformPresetForWsl(STANDARD_LIKE, SHELL, FS, { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX, bashPath: BASH, mode: 'pty' })
   assert.ok(/- id: persistent-bash\n          name: '@deepseek-ai\/dsh-tool-bash-persistent'\n          config:\n            backendType: wsl\n            description: \|-/.test(out),
     'backendType stays the first config key of the tool row')
   assert.equal((out.match(/backendType: wsl/g) ?? []).length, 2, 'the backend/tool pair still agrees')
@@ -211,7 +212,7 @@ test('a persistent world also mounts the background-job producer', () => {
   // that). The one-shot fallback needs no producer — its tool carries the
   // parameter itself.
   const JOBS = 'D:/plugin/lib/wsl-jobs.js'
-  const persistent = transformPresetForWsl(STANDARD_LIKE, SHELL, FS, { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX }, SEARCH, JOBS)
+  const persistent = transformPresetForWsl(STANDARD_LIKE, SHELL, FS, { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX, bashPath: BASH, mode: 'pty' }, SEARCH, JOBS)
   assert.ok(persistent.includes('    - id: jobs-wsl'), 'the persistent world mounts the producer')
   assert.ok(persistent.includes(`      name: '${JOBS}'`), 'it points at this installation')
   assert.ok(persistent.includes('- id: persistent-bash'), 'and the persistent shell it belongs to')
@@ -219,7 +220,7 @@ test('a persistent world also mounts the background-job producer', () => {
   const oneShot = transformPresetForWsl(STANDARD_LIKE, SHELL, FS, undefined, SEARCH, JOBS)
   assert.ok(!oneShot.includes('jobs-wsl'), 'the one-shot fallback mounts no producer: its tool has run_in_background')
   assert.ok(oneShot.includes("      name: '@deepseek-ai/dsh-tool-bash'"), 'the one-shot tool is what provides it there')
-  const noSearch = transformPresetForWsl(STANDARD_LIKE, SHELL, FS, { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX }, undefined, JOBS)
+  const noSearch = transformPresetForWsl(STANDARD_LIKE, SHELL, FS, { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX, bashPath: BASH, mode: 'pty' }, undefined, JOBS)
   assert.ok(noSearch.includes('jobs-wsl'), 'the producer does not depend on the search suite being mounted')
 })
 
@@ -227,18 +228,18 @@ test('a producer is never mounted without the job tools that read it', () => {
   // Minimal mode mounts neither: a job id nothing can read is worse than no
   // producer, and the mode's own one-tool shell contract is not ours to widen.
   const JOBS = 'D:/plugin/lib/wsl-jobs.js'
-  const minimal = transformPresetForWsl(MINIMAL_LIKE, SHELL, FS, { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX }, undefined, JOBS)
+  const minimal = transformPresetForWsl(MINIMAL_LIKE, SHELL, FS, { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX, bashPath: BASH, mode: 'pty' }, undefined, JOBS)
   assert.ok(!minimal.includes('tool-jobs'), 'the source mounts no job control tools')
   assert.ok(!minimal.includes('jobs-wsl'), 'so the world mounts no producer either')
   assert.ok(minimal.includes('- id: persistent-bash'), 'while the persistent shell itself stays')
   // A source that keeps the job tools but loses them another way still gets the
   // producer only when the row survives the transform.
-  const withJobs = transformPresetForWsl(`${MINIMAL_LIKE}\n- id: tool-jobs\n  name: '@deepseek-ai/dsh-tool-jobs'\n`, SHELL, FS, { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX }, undefined, JOBS)
+  const withJobs = transformPresetForWsl(`${MINIMAL_LIKE}\n- id: tool-jobs\n  name: '@deepseek-ai/dsh-tool-jobs'\n`, SHELL, FS, { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX, bashPath: BASH, mode: 'pty' }, undefined, JOBS)
   assert.ok(withJobs.includes('jobs-wsl'), 'a mode that mounts the job tools gets the producer')
 })
 
 test('the persistent-shell group is indented validly for the loader', () => {
-  const out = transformPresetForWsl(STANDARD_LIKE, SHELL, FS, { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX })
+  const out = transformPresetForWsl(STANDARD_LIKE, SHELL, FS, { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX, bashPath: BASH, mode: 'pty' })
   const lines = out.split('\n')
   const start = lines.findIndex(line => line === '    - id: persistent-shell')
   assert.ok(start > 0, 'group row present')
@@ -252,7 +253,7 @@ test('the persistent-shell group is indented validly for the loader', () => {
 
 test('a source persistent-shell row is replaced instead of duplicated', () => {
   const source = `${STANDARD_LIKE}\n- id: persistent-bash\n  name: '@deepseek-ai/dsh-tool-bash-persistent'\n- id: terminal-pwsh\n  name: '@deepseek-ai/dsh-terminal-bash'\n`
-  const out = transformPresetForWsl(source, SHELL, FS, { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX })
+  const out = transformPresetForWsl(source, SHELL, FS, { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX, bashPath: BASH, mode: 'pty' })
   assert.equal((out.match(/id: persistent-bash/g) ?? []).length, 1, 'exactly one persistent-bash row')
   assert.equal((out.match(/id: persistent-shell/g) ?? []).length, 1, 'exactly one persistent-shell group')
   assert.ok(!out.includes('terminal-pwsh'), 'the source terminal row is dropped')
@@ -543,4 +544,22 @@ test('an explicit watch setting wins', () => {
 `, SHELL, FS)
   assert.ok(out.includes('watch: true'), 'author value kept')
   assert.ok(!out.includes('watch: false'), 'not overridden')
+})
+
+test('the session tier mounts our tool and no PTY machinery at all', () => {
+  const out = transformPresetForWsl(STANDARD_LIKE, SHELL, FS,
+    { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX, bashPath: BASH, mode: 'session' }, SEARCH, 'D:/plugin/lib/wsl-jobs.js')
+  assert.ok(out.includes(`- id: bash-wsl\n      name: '${BASH}'`), 'our bash tool row is mounted')
+  assert.ok(!out.includes('dsh-tool-bash-persistent'), 'the host persistent tool is gone — it is the thing that hangs')
+  assert.ok(!out.includes('dsh-terminal-bash'), 'no PTY backend is mounted for the session tier')
+  assert.ok(!out.includes(`'@deepseek-ai/dsh-tool-bash'`), 'the one-shot bash is replaced, not added beside it')
+  assert.equal(out.match(/id: bash-wsl/g)?.length, 1, 'exactly one bash producer')
+})
+
+test('the pty tier still reaches the host stack when asked for', () => {
+  const out = transformPresetForWsl(STANDARD_LIKE, SHELL, FS,
+    { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX, bashPath: BASH, mode: 'pty' }, SEARCH, 'D:/plugin/lib/wsl-jobs.js')
+  assert.ok(out.includes('dsh-tool-bash-persistent'), 'the escape hatch keeps the old tier reachable')
+  assert.ok(out.includes(`shellPath: '${NODE}'`), 'the relay interpreter is still handed to the backend')
+  assert.ok(!out.includes('id: bash-wsl'), 'and our tool is not mounted alongside it')
 })

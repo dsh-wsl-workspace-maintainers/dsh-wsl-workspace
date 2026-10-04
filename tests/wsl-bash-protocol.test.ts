@@ -1,0 +1,132 @@
+/**
+ * The record protocol, offline.
+ *
+ * issue #51 point 3 hung 300 s per call because the host decides completion by matching bytes in a
+ * terminal that is allowed to repaint. This protocol's whole claim is that completion is a record
+ * carrying a per-command nonce, so the tests below are mostly about what must NOT settle: a forged
+ * tag, a wrong nonce, a half-arrived record. Each of those is a red the moment the corresponding
+ * check is removed, which is the point — a matcher that accepts anything is how we got here.
+ *
+ * @module dsh-wsl-workspace/tests/wsl-bash-protocol
+ */
+
+import test from 'node:test'
+import assert from 'node:assert/strict'
+
+import { BOOTSTRAP_COMMAND, RECORD_TAG, SESSION_ARGV, STATE_TAG, dropProtocolEcho, encodeFrame, newNonce, readFrame, stripRecords } from '../src/host/wsl-bash-protocol.ts'
+
+const NUL = String.fromCharCode(0)
+
+/** One record, as the shell writes it: NUL tag NUL nonce NUL value NUL. */
+const one = (tag: string, nonce: string, value: string | number): Buffer =>
+  Buffer.from([NUL, tag, NUL, nonce, NUL, String(value), NUL].join(''), 'latin1')
+
+/** The two records a frame writes, completion first. */
+const frameRecords = (nonce: string, status: string | number, state = 'enYxZGVzdGF0ZQ=='): Buffer =>
+  Buffer.concat([one(RECORD_TAG, nonce, status), one(STATE_TAG, nonce, state)])
+
+test('a frame is one line and its payload decodes back to the command', () => {
+  const command = `echo 中文\nprintf '%s\\n' "a'b$c"!\nls -la /tmp`
+  const frame = encodeFrame(command)
+  assert.ok(!frame.line.slice(0, -1).includes('\n'), 'the frame itself must not contain a newline')
+  assert.ok(frame.line.endsWith('\n'), 'one write, one line')
+  const payload = /printf %s '([^']*)'/.exec(frame.line)?.[1]
+  assert.ok(payload !== undefined, `payload not found in ${frame.line}`)
+  assert.equal(Buffer.from(payload, 'base64').toString('utf8'), command,
+    'the shell reassembles exactly what the model asked for')
+})
+
+test('the frame cannot be rewritten by history expansion', () => {
+  const frame = encodeFrame('echo hello! world!')
+  assert.ok(!frame.line.includes('!'),
+    `a literal ! anywhere in the frame is what breaks the host's wrapper (its #7858/#6768): ${frame.line}`)
+})
+
+test('a complete frame settles with the exit code and the shell state', () => {
+  const frame = encodeFrame('false')
+  const prefix = Buffer.from('nope\n')
+  const records = frameRecords(frame.nonce, 1)
+  const settled = readFrame(Buffer.concat([prefix, records]), frame.nonce)
+  assert.equal(settled?.status, 1, 'status comes from the record, not from scraping output')
+  assert.equal(settled?.nextOffset, prefix.length + records.length,
+    'the reader knows exactly where the next command’s window begins')
+})
+
+test('a completion record without its state record does not settle', () => {
+  const frame = encodeFrame('true')
+  assert.equal(readFrame(one(RECORD_TAG, frame.nonce, 0), frame.nonce), undefined,
+    'a restart without the state would silently lose the user cwd, so the frame is not done')
+})
+
+test('a record for a different nonce never settles — a forged sentinel cannot end the call', () => {
+  const mine = encodeFrame('true')
+  const attacker = frameRecords(newNonce(), 0)
+  assert.equal(readFrame(Buffer.concat([attacker, attacker]), mine.nonce), undefined,
+    'the host bug was a sentinel matched by text; ours is matched by an unguessable nonce')
+})
+
+test('a frame that has not fully arrived does not settle', () => {
+  const frame = encodeFrame('true')
+  const whole = frameRecords(frame.nonce, 0)
+  for (const cut of [1, whole.length - 2, whole.length - 1]) {
+    assert.equal(readFrame(whole.subarray(0, cut), frame.nonce), undefined,
+      `truncated at ${cut} of ${whole.length} must still be "running"`)
+  }
+  assert.notEqual(readFrame(whole, frame.nonce), undefined, 'the complete frame does settle')
+})
+
+test('a non-numeric status is treated as no record at all', () => {
+  const frame = encodeFrame('true')
+  assert.equal(readFrame(frameRecords(frame.nonce, 'x7'), frame.nonce), undefined)
+})
+
+test('two frames on one stream are read in order', () => {
+  const first = encodeFrame('echo one')
+  const second = encodeFrame('echo two')
+  const stream = Buffer.concat([
+    Buffer.from('one\n'), frameRecords(first.nonce, 0),
+    Buffer.from('two\n'), frameRecords(second.nonce, 3),
+  ])
+  const a = readFrame(stream, first.nonce)
+  assert.ok(a !== undefined && a.status === 0)
+  const b = readFrame(stream, second.nonce, a.nextOffset)
+  assert.ok(b !== undefined && b.status === 3, 'the second command keeps its own exit code')
+})
+
+test('stripRecords removes only our records', () => {
+  const frame = encodeFrame('true')
+  const stream = Buffer.concat([Buffer.from('keep\u0000this\n'), frameRecords(frame.nonce, 0), Buffer.from('tail')])
+  const stripped = stripRecords(stream).toString('latin1')
+  assert.ok(stripped.includes('keep\u0000this'), 'a command that prints NUL keeps its bytes')
+  assert.ok(stripped.includes('tail'))
+  assert.ok(!stripped.includes(RECORD_TAG) && !stripped.includes(STATE_TAG), 'the protocol never reaches the model')
+})
+
+test('the shell echo of a frame is dropped from stderr, and the command’s own stderr is not', () => {
+  const frame = encodeFrame('echo oops >&2')
+  const noisy = `bash-5.1$ ${frame.line.trim()}\noops\n`
+  const kept = dropProtocolEcho(noisy, frame.payload)
+  assert.ok(!kept.includes(frame.payload), 'the model must never see its own framing')
+  assert.ok(kept.includes('oops'), 'real stderr survives the filter')
+  assert.equal(dropProtocolEcho('nothing here\n', frame.payload), 'nothing here\n', 'a no-op when nothing matches')
+})
+
+test('the session argv keeps its long options ahead of the shell name', () => {
+  assert.deepEqual([...SESSION_ARGV], ['--norc', '-i'])
+  assert.ok(SESSION_ARGV[0]?.startsWith('--'),
+    'wsl.exe -e claims any later `--x` argument for itself, so bash never starts')
+})
+
+test('stripRecords removes the whole record, not just its head', () => {
+  const frame = encodeFrame('pwd')
+  const stream = Buffer.concat([Buffer.from('/tmp\n'), frameRecords(frame.nonce, 0)])
+  const stripped = stripRecords(stream).toString('latin1')
+  assert.equal(stripped, '/tmp\n',
+    'the live matrix caught this: skipping one NUL field left the exit code in the model’s output')
+})
+
+test('the bootstrap disables history expansion and swallows rc output', () => {
+  assert.ok(BOOTSTRAP_COMMAND.includes('set +H'), 'the ! class of failures is closed at session start')
+  assert.ok(BOOTSTRAP_COMMAND.includes('>/dev/null 2>&1'),
+    'rc files on this machine print errors and contain a token-shaped line; neither may reach output')
+})

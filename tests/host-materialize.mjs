@@ -13,6 +13,12 @@ import { join } from 'node:path'
 import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
+
+// Which persistent shell tier this run materializes. `--pty` asks for the host's PTY stack; the
+// default is the session tier the plugin now mounts by default. The switch is set before the plugin
+// is loaded because the mount decision reads it at boot, not at assertion time.
+const SESSION_TIER = !process.argv.includes('--pty')
+if (!SESSION_TIER) process.env.DSH_WSL_PTY_SHELL = '1'
 const home = mkdtempSync(join(tmpdir(), 'dsh-wsl-home-'))
 process.env.DSH_HOME = home
 
@@ -323,6 +329,23 @@ assert(existsSync(minVariant), 'wsl-minimal variant generated')
 assert(!minYaml.includes('fs-local'), 'minimal variant drops fs-local')
 assert(!minYaml.includes('search-wsl'), 'minimal mode gains no search tools: its source mounts none')
 assert(minYaml.includes('str-replace-editor'), 'minimal variant re-injects the editor over the WSL fs')
+// Which persistent shell the world mounts is the plugin's decision, and the two tiers must not be
+// confused for one another: the session tier replaces the source's PTY group with a single row of
+// ours, while the PTY tier keeps the host registry, its backend and its tool. This file is run
+// twice in `test:node`, once per tier, so both shapes are pinned by a real materialization.
+if (SESSION_TIER) {
+  assert(!minYaml.includes('persistent-shell'), 'the source PTY group is gone, not re-declared')
+  assert(!minYaml.includes('dsh-terminal-bash'), 'no PTY backend is mounted for the session tier')
+  assert(!minYaml.includes('dsh-tool-bash-persistent'), 'the host persistent tool is not mounted either')
+  assert((minYaml.match(/- id: bash-wsl\n/g) ?? []).length === 1, 'minimal variant mounts exactly one bash-wsl row')
+  assert(minYaml.includes('wsl-bash-tool.js'), 'the row points at this installation\'s session tool')
+  const minParsedSession = yaml.load(minYaml)
+  const sessionWorld = minParsedSession.find(row => row.id === 'wsl-world')
+  const sessionRow = sessionWorld.config.find(row => row.id === 'bash-wsl')
+  assert(sessionRow !== undefined, 'the parsed world carries the session bash row')
+  assert(typeof sessionRow.config.timeoutMs === 'number' && typeof sessionRow.config.bootTimeoutMs === 'number',
+    `its config survives YAML as a mapping: ${JSON.stringify(sessionRow.config)}`)
+} else {
 assert(!minYaml.includes('persistent-shell"') && minYaml.includes('- id: persistent-shell'), 'the source PTY group is replaced by the world\'s own')
 // The world mounts its OWN persistent shell instead of the source's group:
 // the host's PTY registry and backend pointed at this plugin's relay, plus the
@@ -350,6 +373,7 @@ assert(shellTool.config.description.includes('Never end a `&&` chain with `&`'),
 assert(shellTool.config.description.includes('( long-job > log 2>&1 ) &'), 'the safe backgrounding form is given')
 assert(Object.keys(shellTool.config).length === 2, `the tool row carries only backendType and description: ${Object.keys(shellTool.config).join(',')}`)
 assert(minYaml.includes('wsl-relay.js'), 'the backend runs this installation\'s relay')
+}
 assert(minYaml.includes('wsl-sandbox.js'), 'the world provides its own sandbox capability')
 assert(minYaml.includes('sandbox: true'), 'the sandbox capability is world-local')
 assert(!minYaml.includes("name: '@deepseek-ai/dsh-tool-bash'"), 'the one-shot bash tool row is replaced, not duplicated')
@@ -366,8 +390,11 @@ assert(!prefabYaml.includes('custom-bash'), 'third-party variant drops custom-ba
 assert(!prefabYaml.includes('bootstrap-filesystem'), 'third-party variant drops bootstrap-filesystem (host-local fs)')
 assert(prefabYaml.includes('- id: wsl-world'), 'third-party variant injects wsl realm')
 assert(
-  (prefabYaml.match(/name: '@deepseek-ai\/dsh-tool-bash(-persistent)?'/g) ?? []).length === 1,
-  'third-party variant registers the bash tool exactly once (one-shot or persistent, never both)',
+  SESSION_TIER
+    ? (prefabYaml.match(/name: '@deepseek-ai\/dsh-tool-bash(-persistent)?'/g) ?? []).length === 0
+      && (prefabYaml.match(/- id: bash-wsl\n/g) ?? []).length === 1
+    : (prefabYaml.match(/name: '@deepseek-ai\/dsh-tool-bash(-persistent)?'/g) ?? []).length === 1,
+  'third-party variant registers the bash tool exactly once (our session row, or one host tool, never both)',
 )
 assert(prefabYaml.includes('str-replace-editor'), 'third-party variant re-injects the editor over the WSL fs')
 assert(existsSync(join(prefabVariant, 'plugin-data', 'trajectory.bin')), 'third-party opaque asset directory is mirrored')

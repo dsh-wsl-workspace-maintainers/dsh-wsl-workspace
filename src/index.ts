@@ -38,6 +38,8 @@ import { canonicalWslUnc, getWindowsWorkspace, getWorkspaceUsername, listWorkspa
 import { defaultDistro, listDistros } from './shared/wsl.ts'
 import { isElectronHost, persistentShellAllowed, resolveRelayNode } from './shared/relay-node.ts'
 import { probePersistentShellReadiness } from './host/pty-readiness.ts'
+import { PROBE_CONFIG, buildSessionSpec } from './host/wsl-bash-tool.ts'
+import { probeWslBashSession, type WslBashSpawnHost } from './host/wsl-bash-session.ts'
 import { isWslVariantId, transformPresetForWsl, unquoteScalar, variantIdFor } from './host/variants.ts'
 import { WslSkillsProvider, type WslSkillsRegistryFace } from './host/wsl-skills.ts'
 
@@ -716,7 +718,7 @@ async function waitForSubprocess(ctx: Context): Promise<SubprocessProbeFace | un
 async function materializeVariants(
   agentPresets: AgentPresetsService,
   dshHome: string,
-  paths: { shell: string; fs: string; relay: string; node: string; sandbox: string; search: string; jobs: string },
+  paths: { shell: string; fs: string; relay: string; node: string; sandbox: string; search: string; jobs: string; bashTool: string; shellMode: 'session' | 'pty' },
   persistentShell: boolean,
   track: (dispose: unknown) => void,
 ): Promise<void> {
@@ -788,7 +790,7 @@ async function materializeOne(
   agentPresets: AgentPresetsService,
   preset: AgentPresetRosterEntry,
   userRoot: string,
-  paths: { shell: string; fs: string; relay: string; node: string; sandbox: string; search: string; jobs: string },
+  paths: { shell: string; fs: string; relay: string; node: string; sandbox: string; search: string; jobs: string; bashTool: string; shellMode: 'session' | 'pty' },
   persistentShell: boolean,
   track: (dispose: unknown) => void,
   generated: Set<string>,
@@ -799,6 +801,8 @@ async function materializeOne(
     relayPath: paths.relay,
     nodePath: paths.node,
     sandboxPath: paths.sandbox,
+    bashPath: paths.bashTool,
+    mode: paths.shellMode,
   } : undefined, paths.search, paths.jobs)
   // 0.1.7-alpha.1+ publishes a variant as a declaration row (the composition is
   // already the exact entry-list dialect the declaration wants, so the only
@@ -892,6 +896,8 @@ export function apply(ctx: Context, config: Config): void {
   // The persistent shell runs the host PTY backend on the relay, which starts
   // `wsl.exe … bash` under that PTY: two paths the generated preset must carry.
   const relayPath = join(packageRoot, 'lib', 'wsl-relay.js').replace(/\\/g, '/')
+  // The pipe-driven persistent shell tool that replaces the host's PTY-backed one by default.
+  const bashToolPath = join(packageRoot, 'lib', 'wsl-bash-tool.js').replace(/\\/g, '/')
   const sandboxPath = join(packageRoot, 'lib', 'wsl-sandbox.js').replace(/\\/g, '/')
   // The in-distribution `grep`/`glob` twin that replaces the host search suite.
   const searchPath = join(packageRoot, 'lib', 'wsl-search.js').replace(/\\/g, '/')
@@ -927,6 +933,11 @@ export function apply(ctx: Context, config: Config): void {
         // issue #40. See `src/shared/relay-node.ts`.
         const relay = probe.ok ? await resolveRelayNode() : undefined
         let persistentShell = persistentShellAllowed(probe.ok, relay)
+        // Which persistent shell the world mounts. The pipe-driven session is the default: the
+        // PTY-backed one hangs every call the moment the shell repaints the sentinel line
+        // (issue #51 point 3), and a session needs no PTY, no relay interpreter and no terminal
+        // readiness contract. `DSH_WSL_PTY_SHELL=1` keeps the old tier reachable.
+        const shellMode: 'session' | 'pty' = process.env.DSH_WSL_PTY_SHELL === '1' ? 'pty' : 'session'
         if (relay !== undefined && isElectronHost()) {
           const detail = relay.rejected.length === 0 ? '' : ` (rejected: ${relay.rejected.join('; ')})`
           if (relay.fallback) {
@@ -941,7 +952,30 @@ export function apply(ctx: Context, config: Config): void {
         // `bash` call afterwards. Bounded at 15 s and win32-only; a host whose
         // terminal face this probe cannot read is reported as unverified rather
         // than failed.
-        if (persistentShell && process.platform === 'win32') {
+        if (persistentShell && process.platform === 'win32' && shellMode === 'session') {
+          // The session tier is probed with the protocol it will actually use: boot a shell, run
+          // one computed command, require the computed answer. A probe that only checks the wire
+          // for a prompt can certify a world in which every call hangs, and did.
+          const spec = buildSessionSpec(PROBE_CONFIG, readinessCwd())
+          if (spec === undefined) {
+            persistentShell = false
+            console.warn('dsh-wsl-workspace: persistent shell: not mounted, no WSL distribution resolved for the session probe')
+          } else if (probe.subprocess === undefined) {
+            // No seam to probe with is not evidence of a broken shell: the tool resolves its own
+            // `subprocess` from the live context when the session is first used. Demoting here
+            // would turn an unreadable host into a missing feature, which is the mistake this
+            // stage exists to avoid.
+            console.warn('dsh-wsl-workspace: persistent shell: session probe skipped, no subprocess service to probe with; mounted unverified')
+          } else {
+            const readiness = await probeWslBashSession({ subprocess: probe.subprocess as unknown as WslBashSpawnHost['subprocess'] }, spec)
+            if (!readiness.ready) {
+              persistentShell = false
+              console.warn(`dsh-wsl-workspace: persistent shell: not mounted, session probe failed — ${readiness.detail}`)
+            } else {
+              console.log(`dsh-wsl-workspace: persistent shell: session probe passed — ${readiness.detail}`)
+            }
+          }
+        } else if (persistentShell && process.platform === 'win32') {
           const readiness = await probePersistentShellReadiness(probe.subprocess, {
             relayPath,
             nodePath: relay?.path ?? process.execPath,
@@ -963,6 +997,8 @@ export function apply(ctx: Context, config: Config): void {
           sandbox: sandboxPath,
           search: searchPath,
           jobs: jobsPath,
+          bashTool: bashToolPath,
+          shellMode,
         }, persistentShell, track)
       })().catch((error) => {
         // Variant generation is best-effort over a live roster: a missing or

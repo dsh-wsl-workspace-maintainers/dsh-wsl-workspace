@@ -44,6 +44,8 @@ export default defineConfig([
       'wsl-sandbox': 'src/host/wsl-sandbox.ts',
       'wsl-search': 'src/host/wsl-search.ts',
       'wsl-jobs': 'src/host/wsl-jobs.ts',
+      // The preset mounts the session bash tool by absolute path, like the shell and fs entries.
+      'wsl-bash-tool': 'src/host/wsl-bash-tool.ts',
     },
     outDir: 'lib',
     format: ['esm'],

@@ -37,6 +37,12 @@ import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
 
+// This driver's subject is `supportsPersistentShell`'s `spawnTerminal` probe, which is the PTY
+// tier's mount decision. The session tier decides on a different seam (`spawn`, and a command that
+// must answer), so pinning the tier here keeps those assertions about the thing they test. The
+// session tier's own decision table is an open gap, recorded in docs/CHECK-CATALOG.md.
+process.env.DSH_WSL_PTY_SHELL = '1'
+
 const { apply, isTerminalInspectionUnsupported } = require('../lib/index.js')
 
 // ── force the branch the ubuntu CI runner never reaches ────────────────────
@@ -181,7 +187,7 @@ async function runOnce(subprocess) {
 }
 
 const hasPersistentRows = (world) =>
-  world.ids.has('persistent-bash') || world.ids.has('terminal-wsl') || world.backendTypes.includes('wsl')
+  world.ids.has(PTY_SHELL_ROW) || world.ids.has('terminal-wsl') || world.backendTypes.includes('wsl')
 
 // ── the three probe outcomes ───────────────────────────────────────────────
 const rejected = await runOnce({
@@ -198,8 +204,9 @@ const absent = await runOnce(undefined)
 // rest of the assertions are meaningless (the fixture, not the probe, broke).
 assert(rejected.published && resolved.published && absent.published, 'each probe outcome publishes one WSL world variant (fixture sanity)')
 
+const PTY_SHELL_ROW = 'persistent-bash'
 // ── (1) rejecting spawnTerminal ⇒ no persistent-shell rows anywhere ────────
-assert(!rejected.ids.has('persistent-bash'), '(1) fallback world has no persistent-bash row')
+assert(!rejected.ids.has(PTY_SHELL_ROW), '(1) fallback world has no persistent-bash row')
 assert(!rejected.ids.has('terminal-wsl'), '(1) fallback world has no terminal-wsl row')
 assert(!rejected.backendTypes.includes('wsl'), '(1) fallback world declares no backendType: wsl')
 assert(!rejected.ids.has('sandbox-wsl'), '(1) fallback world has no sandbox-wsl row')
@@ -215,7 +222,7 @@ assert(rejected.ids.has('search-wsl'), '(2) fallback still mounts the in-distrib
 // This is what makes (1)/(2) attributable to the probe rather than to the
 // fixture: the ONLY thing that changed between the two runs is what
 // spawnTerminal does, and the persistent rows appear.
-assert(resolved.ids.has('persistent-bash'), '(3) positive control: resolving spawnTerminal mounts persistent-bash')
+assert(resolved.ids.has(PTY_SHELL_ROW), '(3) positive control: resolving spawnTerminal mounts persistent-bash')
 assert(resolved.ids.has('terminal-wsl'), '(3) positive control: resolving spawnTerminal mounts terminal-wsl')
 assert(resolved.backendTypes.includes('wsl'), '(3) positive control: resolving spawnTerminal declares backendType: wsl')
 assert(!resolved.ids.has('tool-bash'), '(3) positive control: the persistent bash takes the one-shot row\'s place (same `bash` name)')
@@ -225,7 +232,7 @@ assert(!resolved.ids.has('tool-bash'), '(3) positive control: the persistent bas
 // :559,604`), so an absent service must still mount the world AND settle within
 // the documented wait. A regression that lets this wait block profile boot — an
 // unbounded poll, say — trips the timing half here.
-assert(absent.ids.has('persistent-bash'), '(4) absent subprocess service still mounts the persistent shell')
+assert(absent.ids.has(PTY_SHELL_ROW), '(4) absent subprocess service still mounts the persistent shell')
 assert(
   absent.elapsed > 1_000 && absent.elapsed < 3_000,
   `(4) the absent-service wait is bounded to the ~2s poll, not shorter and not blocking (${absent.elapsed}ms)`,
@@ -263,9 +270,9 @@ assert(
 //   reject  → no persistent shell, settles fast (spawnTerminal rejects at once)
 //   resolve → persistent shell,  settles fast (spawnTerminal resolves at once)
 //   absent  → persistent shell,  settles slowly (waitForSubprocess exhausts ~2s)
-const rejectKey = `${rejected.ids.has('persistent-bash') ? 'persistent' : 'one-shot'}/fast`
-const resolveKey = `${resolved.ids.has('persistent-bash') ? 'persistent' : 'one-shot'}/fast`
-const absentKey = `${absent.ids.has('persistent-bash') ? 'persistent' : 'one-shot'}/slow`
+const rejectKey = `${rejected.ids.has(PTY_SHELL_ROW) ? 'persistent' : 'one-shot'}/fast`
+const resolveKey = `${resolved.ids.has(PTY_SHELL_ROW) ? 'persistent' : 'one-shot'}/fast`
+const absentKey = `${absent.ids.has(PTY_SHELL_ROW) ? 'persistent' : 'one-shot'}/slow`
 assert(
   new Set([rejectKey, resolveKey, absentKey]).size === 3,
   `(6) the three branches yield three distinct (shell, timing) answers: ${rejectKey} | ${resolveKey} | ${absentKey}`,
@@ -273,14 +280,14 @@ assert(
 // The reject/resolve pair is separated by the WORLD, at the SAME speed: this is
 // the probe reacting to the inspection rejection, isolated from timing entirely.
 assert(
-  rejected.ids.has('persistent-bash') !== resolved.ids.has('persistent-bash')
+  rejected.ids.has(PTY_SHELL_ROW) !== resolved.ids.has(PTY_SHELL_ROW)
   && rejected.elapsed < 1_000 && resolved.elapsed < 1_000,
   `(6) reject vs resolve differ in content while both settle fast (${rejected.elapsed}ms vs ${resolved.elapsed}ms)`,
 )
 // The resolve/absent pair is separated by TIMING, at the SAME content: this is
 // the waitForSubprocess bound, isolated from the world shape.
 assert(
-  resolved.ids.has('persistent-bash') === absent.ids.has('persistent-bash')
+  resolved.ids.has(PTY_SHELL_ROW) === absent.ids.has(PTY_SHELL_ROW)
   && resolved.elapsed < absent.elapsed,
   `(6) resolve vs absent share a world but differ in wait (${resolved.elapsed}ms vs ${absent.elapsed}ms)`,
 )

@@ -13,7 +13,7 @@
  */
 
 /** Top-level rows that name the execution world and are replaced by the variant's own. */
-const WORLD_ROWS = new Set(['tool-bash', 'tool-pwsh', 'tool-fs', 'tool-fs-search', 'str-replace-editor', 'tool-str-replace-editor', 'wsl-world', 'filesystem', 'persistent-shell', 'persistent-bash', 'persistent-pwsh', 'terminal-bash', 'terminal-pwsh', 'custom-bash', 'bootstrap-filesystem'])
+const WORLD_ROWS = new Set(['tool-bash', 'tool-pwsh', 'tool-fs', 'tool-fs-search', 'str-replace-editor', 'tool-str-replace-editor', 'wsl-world', 'filesystem', 'persistent-shell', 'persistent-bash', 'bash-wsl', 'persistent-pwsh', 'terminal-bash', 'terminal-pwsh', 'custom-bash', 'bootstrap-filesystem'])
 
 /** Execution-world rows that register the model-facing editor tool. */
 const EDITOR_ROWS = new Set(['str-replace-editor', 'tool-str-replace-editor'])
@@ -52,7 +52,23 @@ function isWslWorldGroup(block: readonly string[]): boolean {
  * a persistent shell". So a world with the relay paths swaps the shell tool
  * instead of adding one, and a world without them keeps the one-shot row.
  */
-function persistentShellRows(relayPath: string, nodePath: string): string[] {
+function persistentShellRows(relayPath: string, nodePath: string, bashPath: string, mode: 'session' | 'pty'): string[] {
+  if (mode === 'session') {
+    // The pipe-driven shell: one row, no PTY registry, no terminal backend, and no host tool.
+    // It registers the same `bash` name, so it still takes the one-shot row's place.
+    return [
+      '    # Persistent shell: this plugin drives one long-lived `bash` over',
+      '    # pipes and ends each command with a record carrying its own nonce,',
+      '    # so completion is an event rather than a match against a terminal the',
+      '    # shell is allowed to repaint (issue #51 point 3: three calls hung',
+      '    # 303.8 s in a real Desktop session before the host wiped the shell).',
+      '    - id: bash-wsl',
+      `      name: '${bashPath.replace(/'/g, "''")}'`,
+      '      config:',
+      '        timeoutMs: 120000',
+      '        bootTimeoutMs: 20000',
+    ]
+  }
   return [
     '    # Persistent shell: the host PTY registry and its backend, running',
     '    # this plugin\'s relay, which hands the PTY to `wsl.exe … bash`',
@@ -128,7 +144,7 @@ function wslWorldGroup(
   shellPath: string,
   fsPath: string,
   includeEditor: boolean,
-  persistent?: { relayPath: string; nodePath: string; sandboxPath: string },
+  persistent?: { relayPath: string; nodePath: string; sandboxPath: string; bashPath: string; mode: 'session' | 'pty' },
   searchPath?: string,
   jobsPath?: string,
   sawJobs = false,
@@ -199,7 +215,7 @@ function wslWorldGroup(
           '        maxOutputChars: 16000',
         ]
       : []),
-    ...(persistent === undefined ? [] : persistentShellRows(persistent.relayPath, persistent.nodePath)),
+    ...(persistent === undefined ? [] : persistentShellRows(persistent.relayPath, persistent.nodePath, persistent.bashPath, persistent.mode)),
     '',
   ].join('\n')
 }
@@ -414,7 +430,7 @@ export function transformPresetForWsl(
   source: string,
   shellPath: string,
   fsPath: string,
-  persistent?: { relayPath: string; nodePath: string; sandboxPath: string },
+  persistent?: { relayPath: string; nodePath: string; sandboxPath: string; bashPath: string; mode: 'session' | 'pty' },
   searchPath?: string,
   jobsPath?: string,
 ): string {

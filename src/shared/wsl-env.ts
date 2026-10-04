@@ -57,6 +57,19 @@ export function readinessContract(): Record<string, string> {
  * @returns a shallow copy with `WSLENV` merged, and `undefined` values dropped.
  */
 export function bridgeReadiness(env: NodeJS.ProcessEnv): Record<string, string> {
+  return bridgeEnv(env, READINESS_KEYS)
+}
+
+/**
+ * The environment for `wsl.exe`, with an arbitrary set of keys named in `WSLENV`.
+ *
+ * Same rules as {@link bridgeReadiness}, which is this with the prompt keys: ambient entries
+ * survive and are never duplicated, and a key that is absent or empty is not named at all.
+ * @param env - the environment to bridge from.
+ * @param keys - the names that must reach the Linux process.
+ * @returns a shallow copy with `WSLENV` merged, and `undefined` values dropped.
+ */
+export function bridgeEnv(env: NodeJS.ProcessEnv, keys: readonly string[]): Record<string, string> {
   const merged: Record<string, string> = {}
   for (const [key, value] of Object.entries(env)) {
     if (value !== undefined) merged[key] = value
@@ -65,7 +78,7 @@ export function bridgeReadiness(env: NodeJS.ProcessEnv): Record<string, string> 
     (merged.WSLENV ?? '').split(':').filter(entry => entry !== '')
       .map(entry => entry.replace(/\/[plu]$/, '')),
   )
-  const additions = READINESS_KEYS.filter(key =>
+  const additions = keys.filter(key =>
     !named.has(key) && merged[key] !== undefined && merged[key] !== '')
   if (additions.length === 0) return merged
   const entries = (merged.WSLENV ?? '').split(':').filter(entry => entry !== '')

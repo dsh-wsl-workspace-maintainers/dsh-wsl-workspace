@@ -178,6 +178,7 @@ jobs:
           run_one search-real node --experimental-strip-types scripts/compatibility/search-real.mjs
           run_one relay-real node --experimental-strip-types scripts/compatibility/relay-real.mjs
           run_one tool-bash-real node --experimental-strip-types scripts/compatibility/tool-bash-real.mjs
+          run_one bash-session-real node --experimental-strip-types scripts/compatibility/bash-session-real.mjs
           # The same gates against the shipped bundle. The default plane stays `src` until
           # this pass has been green twice (issue #44 §1); a run is only credited to a plane
           # if its log carries the matching `plane-module:` line, checked below. Each pass
@@ -207,6 +208,7 @@ jobs:
           MSYS_NO_PATHCONV=1 DSH_WSL_TEST_PLANE=lib WSL_COMPAT_ROOT=/tmp/dsh-wsl-lib node --experimental-strip-types scripts/compatibility/search-real.mjs > logs/lib-search-real.log 2>&1 || { echo "rc=$?"; tail -8 logs/lib-search-real.log || true; FAIL=1; }
           run_lib relay-real node --experimental-strip-types scripts/compatibility/relay-real.mjs
           run_lib tool-bash-real node --experimental-strip-types scripts/compatibility/tool-bash-real.mjs
+          run_lib bash-session-real node --experimental-strip-types scripts/compatibility/bash-session-real.mjs
           # skills-real is deliberately not attempted under `lib`: tsdown declares no entry for
           # the provider (the class is file-local to lib/index.js:1122) and plane.mjs throws
           # rather than falling back to src. Adding the entry changes what users install, so it
@@ -223,10 +225,12 @@ jobs:
           node scripts/verify-plane-log.mjs logs/skills-real.log src skills || RC=1
           node scripts/verify-plane-log.mjs logs/relay-real.log src relay || RC=1
           node scripts/verify-plane-log.mjs logs/tool-bash-real.log src shell || RC=1
+          node scripts/verify-plane-log.mjs logs/bash-session-real.log src wsl-bash-tool || RC=1
           node scripts/verify-plane-log.mjs logs/lib-fs-real.log lib fs || RC=1
           node scripts/verify-plane-log.mjs logs/lib-search-real.log lib search || RC=1
           node scripts/verify-plane-log.mjs logs/lib-relay-real.log lib relay || RC=1
           node scripts/verify-plane-log.mjs logs/lib-tool-bash-real.log lib shell || RC=1
+          node scripts/verify-plane-log.mjs logs/lib-bash-session-real.log lib wsl-bash-tool || RC=1
           echo "plane evidence collected"
           exit $RC
       - name: postflight (share state at the moment of failure)
