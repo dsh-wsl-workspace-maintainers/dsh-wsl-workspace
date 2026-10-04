@@ -1994,8 +1994,8 @@ No cell threw, so the instance state that separated the two earlier baseline run
 and the UNC cwd is neither slower nor crash-prone in any of those numbers — point 1's table above,
 restated through the backend instead of through `child_process`.
 
-The uniformity buys the name of the failing term, which is the same in all six: `promptTextSeen` is
-**never** true. Two more bounded runs say why.
+The uniformity buys the name of the failing term, which is the same in all six: `promptTextSeen`
+did not hold in any of them. Two more bounded runs say why.
 
 - `tailbytes.mjs` recorded one raw relay session at the reporter's exact cwd through the same
   `spawnTerminal` face (1627 bytes, two `133;D` markers). After the post-command marker the stream
@@ -2006,10 +2006,34 @@ The uniformity buys the name of the failing term, which is the same in all six: 
   line span rather than retyped. The window fills with `TAIL_O` and the code takes its own poison
   branch (`:657`: more than 6 characters after a marker rewrites the tail to the controlled prompt
   plus a NUL sentinel), so the comparison at `:658` — tail equal to the prompt — is false by
-  construction. The strict leg at `:713` can therefore never fire and `inferred_idle` is the only
-  settle path, which is the 3.5 s measured above. The escape that would extend the deadline cannot
-  help either: `:725` grants `promptTailGraceMs` only when the prompt *starts with* the current tail,
-  and the sentinel is longer than the prompt, so a poisoned tail is disqualified from its own grace.
+  construction. The escape that would extend the deadline cannot help either: `:725` grants
+  `promptTailGraceMs` only when the prompt *starts with* the current tail, and the sentinel is
+  longer than the prompt, so a poisoned tail is disqualified from its own grace.
+
+**This corrects a claim made earlier in this same section.** The window is 6 characters and the
+controlled prompt is 5, so a single leftover byte — the newline that ends the command's output —
+is fatal, and `promptTextSeen` is therefore a *transient*: it holds only in the interval between
+the prompt being drawn and the next printable arriving. One run caught that interval (the C1
+reproduction cell: `waitReason=stdin_read` 74 ms after the send, which is `:713` firing while the
+boot prompt still stood clean); the nine runs taken since did not, and paid `inferred_idle` at
+3.5 s. So the accurate statement is not "the strict leg can never fire" but **"`promptTextSeen` is
+not a state a command settles in reliably — which of the two paths `:713` or `:726` answers a
+command depends on byte timing we do not control."** Two candidate explanations for the
+disagreement were tested and are refuted, recorded so nobody re-runs them:
+
+- *the command's shape decides* — `cmdshape.mjs` sent the grid's short `echo`, then C1's exact
+  compound line (`echo …; pwd; whoami; false; echo exit_code=$?`), then the short form again, in
+  **one** session: `inferred_idle` 3555 / 3562 / 3584 ms, `promptTextSeen=false` in all three, the
+  tail starting `"\ndsh>"` in the last two. Command shape is not it.
+- *the byte-chunk boundary decides* — `chunkflip.mjs` fed the identical captured stream through the
+  shipped sanitizer at 1, 2, 3, 5, 7, 11, 200, 1024 and whole-buffer sizes: poisoned at **9 of 9**
+  sizes. Chunking is not it either.
+
+What is left standing is the ordering fact the raw capture shows: the marker reached the wire
+**before** the command's own output, and the earlier C1 run is a wire where that did not happen.
+Whether ConPTY emits the OSC passthrough before or after the pending cell output is not something
+this repository can influence.
+
 
 **Whether any of that is ours** — a control cell answers it: same backend, same injected contract,
 but the shell is a native Windows bash with no relay, no node in front and no WSL
