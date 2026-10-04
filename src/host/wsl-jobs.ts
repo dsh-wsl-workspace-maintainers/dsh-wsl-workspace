@@ -180,13 +180,83 @@ export function renderRead(read: { delta: string; lossy: boolean; stdoutSpillPat
  * @param config - plugin configuration; a row without a `config:` block mounts
  *   this plugin with none, and {@link DEFAULTS} then supplies every knob.
  */
+/**
+ * Start one tracked background job and return its id.
+ *
+ * Exported because the session `bash` tool accepts `run_in_background: true` and has to hand the call
+ * to *this* producer rather than grow a second one — two registrations of a background bash would
+ * give `job_list` two shapes of job and `job_output` two ways to be wrong.
+ *
+ * The job runs in its own process, not in the persistent shell: it therefore does not inherit a `cd`
+ * or an `export` from earlier `bash` calls, which is what the tool descriptions say.
+ *
+ * @param ctx - the host context, providing `jobs`, `shell` and `shellEnv`.
+ * @param args - the command and an optional working directory.
+ * @param exec - the tool execution, whose agent owns the job.
+ * @returns the registry job id.
+ */
+export function startBackgroundJob(
+  ctx: Context,
+  args: { command: string, workdir?: string },
+  exec: ToolExecution,
+): { jobId: string } {
+  const jobs = ctx.get('jobs') as unknown as JobsFace | undefined
+  if (jobs === undefined) {
+    throw new Error('background jobs unavailable: this deployment mounts no jobs registry (load @deepseek-ai/dsh-jobs and @deepseek-ai/dsh-tool-jobs)')
+  }
+  const shell = ctx.get('shell') as unknown as ShellFace | undefined
+  if (shell === undefined || typeof shell.start !== 'function' || typeof shell.resolve !== 'function') {
+    throw new Error('background jobs unavailable: the WSL world provides no shell with background support')
+  }
+  if (exec.signal?.aborted === true) {
+    const error = new Error('tool call aborted')
+    error.name = 'AbortError'
+    throw error
+  }
+  const shellEnv = ctx.get('shellEnv') as unknown as ShellEnvFace | undefined
+  const dshEnv = typeof shellEnv?.collect === 'function' ? shellEnv.collect(exec) : undefined
+  // The session workspace is the default, exactly as the persistent `bash`
+  // tool's shell starts there: this plugin's shell provider falls back to its
+  // own configured cwd (or the host process's), which in a WSL world is a
+  // Windows directory the distribution cannot use.
+  const workdir = args.workdir ?? exec.agent?.session?.header?.cwd
+  const request = {
+    command: args.command,
+    // A job is started precisely so it can outlive one command's timeout:
+    // the shell executor's `start()` honours `timeoutMs` unless this says
+    // otherwise, so leaving it defaulted would kill the job at the
+    // executor's 120 s foreground timeout. Cancellation is `cancel()` below.
+    onExpiry: 'none' as const,
+    ...workdir === undefined ? {} : { workdir },
+    ...dshEnv === undefined ? {} : { dshEnv },
+  }
+  const jobId = jobs.start({
+    kind: 'bash',
+    label: args.command,
+    // `owner` is a session id on 0.1.7+ and the agent object before that;
+    // see `ownerOf`. Getting it wrong is a loud failure either way.
+    ...ownerOf(jobs, exec.agent),
+    run: () => {
+      const process = shell.start(shell.resolve(request))
+      return {
+        cancel: () => {
+          process.kill()
+        },
+        done: process.done.then(() => outcomeOf(process)),
+        readOutput: () => renderRead(process.readOutput()),
+      }
+    },
+  })
+  return { jobId: String(jobId) }
+}
+
 export function apply(ctx: Context, config?: Config): void {
   const resolved: Required<Config> = { ...DEFAULTS, ...config === undefined ? {} : config }
   const tools = ctx.get('tools') as unknown as ToolsRegistryFace | undefined
   if (tools === undefined) return
   const tool = defineTool({
     name: TOOL_NAME,
-    description: 'Run one command in the background inside this WSL distribution and return a job id immediately. Read its output with job_output and stop it with job_kill. The `bash` tool is a persistent shell and takes `command` only - it has no `run_in_background` parameter, so this tool is its equivalent.',
+    description: 'Run one command in the background inside this WSL distribution and return a job id immediately. Read its output with job_output and stop it with job_kill. It is the same producer the `bash` tool’s `run_in_background: true` argument uses, so a job started either way appears in `job_list`; neither one runs inside the persistent shell, so a job does not see a `cd` or `export` made by an earlier `bash` call.',
     parameters: {
       command: {
         type: 'string',
@@ -213,54 +283,7 @@ export function apply(ctx: Context, config?: Config): void {
       }],
     },
     async execute(args: { command: string; workdir?: string }, exec: ToolExecution) {
-      const jobs = ctx.get('jobs') as unknown as JobsFace | undefined
-      if (jobs === undefined) {
-        throw new Error('background jobs unavailable: this deployment mounts no jobs registry (load @deepseek-ai/dsh-jobs and @deepseek-ai/dsh-tool-jobs)')
-      }
-      const shell = ctx.get('shell') as unknown as ShellFace | undefined
-      if (shell === undefined || typeof shell.start !== 'function' || typeof shell.resolve !== 'function') {
-        throw new Error('background jobs unavailable: the WSL world provides no shell with background support')
-      }
-      if (exec.signal?.aborted === true) {
-        const error = new Error('tool call aborted')
-        error.name = 'AbortError'
-        throw error
-      }
-      const shellEnv = ctx.get('shellEnv') as unknown as ShellEnvFace | undefined
-      const dshEnv = typeof shellEnv?.collect === 'function' ? shellEnv.collect(exec) : undefined
-      // The session workspace is the default, exactly as the persistent `bash`
-      // tool's shell starts there: this plugin's shell provider falls back to its
-      // own configured cwd (or the host process's), which in a WSL world is a
-      // Windows directory the distribution cannot use.
-      const workdir = args.workdir ?? exec.agent?.session?.header?.cwd
-      const request = {
-        command: args.command,
-        // A job is started precisely so it can outlive one command's timeout:
-        // the shell executor's `start()` honours `timeoutMs` unless this says
-        // otherwise, so leaving it defaulted would kill the job at the
-        // executor's 120 s foreground timeout. Cancellation is `cancel()` below.
-        onExpiry: 'none' as const,
-        ...workdir === undefined ? {} : { workdir },
-        ...dshEnv === undefined ? {} : { dshEnv },
-      }
-      const jobId = jobs.start({
-        kind: 'bash',
-        label: args.command,
-        // `owner` is a session id on 0.1.7+ and the agent object before that;
-        // see `ownerOf`. Getting it wrong is a loud failure either way.
-        ...ownerOf(jobs, exec.agent),
-        run: () => {
-          const process = shell.start(shell.resolve(request))
-          return {
-            cancel: () => {
-              process.kill()
-            },
-            done: process.done.then(() => outcomeOf(process)),
-            readOutput: () => renderRead(process.readOutput()),
-          }
-        },
-      })
-      return { jobId: String(jobId) }
+      return startBackgroundJob(ctx, args, exec)
     },
     presentCall: (args: { command: string }) => ({
       card: 'generic',

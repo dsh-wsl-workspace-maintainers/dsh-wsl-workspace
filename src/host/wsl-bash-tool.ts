@@ -20,12 +20,14 @@
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { randomUUID } from 'node:crypto'
 
 import { isValidWslUsername, parseWslUnc, windowsToMntPath } from '../shared/paths.ts'
 import { defaultDistroSync } from '../shared/wsl.ts'
 import { bridgeEnv } from '../shared/wsl-env.ts'
 import { SESSION_ARGV } from './wsl-bash-protocol.ts'
 import { WslBashSession, type WslBashRun, type WslBashSessionSpec, type WslBashSpawnHost } from './wsl-bash-session.ts'
+import { startBackgroundJob } from './wsl-jobs.ts'
 import { needsTty, normaliseTtyOutput, wrapForTty } from './wsl-bash-tty.ts'
 
 /** The tool name — the same one the host's tools register, so only one may be mounted. */
@@ -100,10 +102,11 @@ interface BashArgs {
   workdir?: string
   timeoutMs?: number
   tty?: boolean
+  run_in_background?: boolean
 }
 
 /** Environment facts that must reach the distribution. */
-const BRIDGED_KEYS = ['DSH_HOME', 'DSH_SESSION_ID', 'DSH_WSL_DISTRO', 'DSH_WSL_USER', 'NO_COLOR', 'TERM', 'PAGER', 'GIT_PAGER']
+const BRIDGED_KEYS = ['DSH_HOME', 'DSH_SESSION_ID', 'DSH_WSL_DISTRO', 'DSH_WSL_USER', 'DSH_WSL_SESSION', 'NO_COLOR', 'TERM', 'PAGER', 'GIT_PAGER']
 
 /** Model-friendly overrides, matching the one-shot executor's set. */
 const ENV_OVERRIDES: Record<string, string> = {
@@ -113,19 +116,33 @@ const ENV_OVERRIDES: Record<string, string> = {
   GIT_PAGER: 'cat',
 }
 
+/** The Linux form of a session path: UNC, absolute Linux, or a Windows drive path. */
+function linuxOf(path: string | undefined): string | undefined {
+  if (path === undefined || path === '') return undefined
+  const unc = parseWslUnc(path)
+  if (unc !== null) return unc.linuxPath
+  if (path.startsWith('/')) return path
+  return windowsToMntPath(path) ?? undefined
+}
+
 /**
  * The Linux directory a call runs in.
+ *
+ * A relative `workdir` is joined onto the session's own directory, which is what the host's one-shot
+ * tool does (`dsh-tool-bash`'s `resolveWorkdir`); measured there, `workdir: "docs"` becomes
+ * `/home/ruler/docs` and the `cd` fails with bash's own `No such file or directory`. Translating it
+ * to nothing instead would run the command somewhere the model did not ask for, silently.
+ *
  * @param args - the model's arguments.
  * @param exec - the tool execution, whose agent session carries the workspace path.
- * @returns the path for `wsl.exe --cd`, or undefined to let the distribution choose.
+ * @returns the path for the call's `cd`, or undefined to let the session stay where it is.
  */
 function resolveCwd(args: BashArgs, exec: ToolExecution): string | undefined {
-  const requested = args.workdir ?? exec.agent?.session?.header?.cwd
-  if (requested === undefined || requested === '') return undefined
-  const unc = parseWslUnc(requested)
-  if (unc !== null) return unc.linuxPath
-  if (requested.startsWith('/')) return requested
-  return windowsToMntPath(requested) ?? undefined
+  if (args.workdir === undefined || args.workdir === '') return undefined
+  if (args.workdir.startsWith('/') || parseWslUnc(args.workdir) !== null) return linuxOf(args.workdir)
+  const base = linuxOf(exec.agent?.session?.header?.cwd)
+  if (base === undefined) return linuxOf(args.workdir)
+  return `${base.replace(/\/+$/, '')}/${args.workdir.replace(/^\.?\/+/, '')}`
 }
 
 /**
@@ -164,9 +181,21 @@ function toolAborted(): Error {
   return error
 }
 
-/** Render one finished run the way the host's tool does, so the trace text is the same shape. */
+/**
+ * Render one finished run the way the host's tool does, so the trace text is the same shape.
+ *
+ * The host's own truncation sentence is `[output truncated; full output: <path>]`
+ * (`dsh-tool-bash/lib/index.js:137`), copied here verbatim because a model that has learned it in one
+ * world should not have to learn a second one. Anything the session did that the model could not
+ * otherwise see — a restart, a skipped section, a reaped process — is appended as its own bracketed
+ * line rather than left in a log the user of Desktop cannot read.
+ */
 function renderRun(value: ForegroundOutput): { type: 'text'; text: string }[] {
   let body = value.stdout.text
+  if (value.stdout.truncated && value.stdout.spillPath !== undefined) {
+    if (body.length > 0 && !body.endsWith('\n')) body += '\n'
+    body += `[output truncated; full output: ${value.stdout.spillPath}]`
+  }
   if (value.stderr.text.length > 0) {
     if (body.length > 0 && !body.endsWith('\n')) body += '\n'
     body += `[stderr]\n${value.stderr.text}`
@@ -176,6 +205,7 @@ function renderRun(value: ForegroundOutput): { type: 'text'; text: string }[] {
   if (value.timedOut) markers.push(`[timed out after ${value.timeoutMs}ms]`)
   if (value.signal !== null) markers.push(`[killed by signal: ${value.signal}]`)
   else if (value.exitCode !== null && value.exitCode !== 0) markers.push(`[exit code: ${value.exitCode}]`)
+  markers.push(...value.notes)
   if (markers.length === 0) return [{ type: 'text', text: body }]
   if (!body.endsWith('\n')) body += '\n'
   return [{ type: 'text', text: body + markers.join('\n') }]
@@ -189,13 +219,33 @@ interface ForegroundOutput {
   timedOut: boolean
   aborted: boolean
   timeoutMs: number
-  stdout: { text: string; truncated: boolean }
-  stderr: { text: string; truncated: boolean }
+  stdout: { text: string; truncated: boolean; spillPath?: string }
+  stderr: { text: string; truncated: boolean; spillPath?: string }
+  /** What the session did on this call that the model could not otherwise see. */
+  notes: string[]
+}
+
+/** The `background` arm of the host tool's output union. */
+interface BackgroundOutput {
+  kind: 'background'
+  jobId: string
 }
 
 /** Shape a session run into the host's result contract. */
 function toForeground(run: WslBashRun, timeoutMs: number, escalated: boolean): ForegroundOutput {
   const killed = run.exitCode < 0
+  const notes: string[] = []
+  if (run.timedOut) {
+    notes.push('[the shell was restarted to recover; for work that outlives one call pass run_in_background: true, or use bash_background]')
+  }
+  if (run.restarted) {
+    notes.push(run.skipped === undefined || run.skipped.length === 0
+      ? '[the shell was restarted and its directory, exported variables, options and aliases were replayed]'
+      : `[the shell was restarted; not restored: ${run.skipped.join(', ')}]`)
+  }
+  if (run.reaped !== undefined && run.reaped > 0) {
+    notes.push(`[${run.reaped} detached process${run.reaped === 1 ? '' : 'es'} from the previous shell ${run.reaped === 1 ? 'was' : 'were'} stopped]`)
+  }
   return {
     kind: 'foreground',
     exitCode: killed ? null : run.exitCode,
@@ -203,8 +253,17 @@ function toForeground(run: WslBashRun, timeoutMs: number, escalated: boolean): F
     timedOut: run.timedOut,
     aborted: run.aborted,
     timeoutMs,
-    stdout: { text: escalated ? normaliseTtyOutput(run.stdout) : run.stdout, truncated: run.truncated },
-    stderr: { text: escalated ? normaliseTtyOutput(run.stderr) : run.stderr, truncated: false },
+    stdout: {
+      text: escalated ? normaliseTtyOutput(run.stdout) : run.stdout,
+      truncated: run.truncated,
+      ...(run.stdoutSpillPath === undefined ? {} : { spillPath: run.stdoutSpillPath }),
+    },
+    stderr: {
+      text: escalated ? normaliseTtyOutput(run.stderr) : run.stderr,
+      truncated: run.stderrTruncated,
+      ...(run.stderrSpillPath === undefined ? {} : { spillPath: run.stderrSpillPath }),
+    },
+    notes,
   }
 }
 
@@ -215,6 +274,7 @@ const STREAM_SCHEMA = {
   properties: {
     text: { type: 'string', required: true },
     truncated: { type: 'boolean', required: true },
+    spillPath: { type: 'string' },
   },
 } as const
 
@@ -233,25 +293,32 @@ export function buildSessionSpec(config: ResolvedConfig, headerCwd: string | und
   const distro = resolveDistro(config, headerCwd)
   if (distro === '') return undefined
   const user = resolveUser(config)
-  const linuxCwd = headerCwd === undefined ? undefined
-    : parseWslUnc(headerCwd)?.linuxPath ?? (headerCwd.startsWith('/') ? headerCwd : windowsToMntPath(headerCwd) ?? undefined)
+  const linuxCwd = linuxOf(headerCwd)
+  // One token per session, carried by every process the shell starts. It is what lets a rebuild stop
+  // the children that detached themselves from the shell without touching a process the user owns.
+  const sessionToken = randomUUID()
+  const prefix = ['wsl.exe', '-d', distro, ...(user === undefined ? [] : ['-u', user])]
   return {
-    argv: [
-      'wsl.exe', '-d', distro,
-      ...(user === undefined ? [] : ['-u', user]),
-      ...(linuxCwd === undefined ? [] : ['--cd', linuxCwd]),
-      '-e', 'bash', ...SESSION_ARGV,
-    ],
+    argv: [...prefix, ...(linuxCwd === undefined ? [] : ['--cd', linuxCwd]), '-e', 'bash', ...SESSION_ARGV],
+    // The reaper runs a script of its own, so it gets the same distribution and user without the
+    // session's working directory: it is not running the user's command.
+    reaperArgv: [...prefix, '-e', 'bash', '-c'],
     // The child never starts inside the UNC share: spawning with a UNC cwd is a documented
     // Node/Windows edge, and `wsl.exe --cd` already decides the Linux side.
     cwd: process.env.SystemRoot ?? 'C:\\Windows',
     env: bridgeEnv(
-      { ...ENV_OVERRIDES, DSH_WSL_DISTRO: distro, ...(user === undefined ? {} : { DSH_WSL_USER: user }) },
+      {
+        ...ENV_OVERRIDES,
+        DSH_WSL_DISTRO: distro,
+        DSH_WSL_SESSION: sessionToken,
+        ...(user === undefined ? {} : { DSH_WSL_USER: user }),
+      },
       BRIDGED_KEYS,
     ),
     graceMs: config.graceMs,
     bootTimeoutMs: config.bootTimeoutMs,
     maxOutputBytes: config.maxOutputBytes,
+    sessionToken,
   }
 }
 
@@ -287,7 +354,7 @@ export function apply(ctx: Context, config?: Config): void {
 
   const tool = defineTool({
     name: TOOL_NAME,
-    description: 'Run a bash command inside this WSL distribution. The shell is persistent: `cd`, exported variables, activated virtualenvs and shell functions survive between calls, so use absolute paths or an explicit `cd` when a call must not depend on where the last one left off. A command that reads from stdin is given /dev/null. Commands that need a real terminal (`sudo`, `ssh`, an editor) are given a pseudo-terminal of their own automatically; pass `tty: true` to force one for anything else. Long-running work belongs in the background-job tool.',
+    description: 'Run a bash command inside this WSL distribution. The shell is persistent: `cd`, exported variables, activated virtualenvs, aliases and shell functions survive between calls, so use absolute paths or an explicit `cd` when a call must not depend on where the last one left off. A command that reads from stdin is given /dev/null. Commands that need a real terminal (`sudo`, `ssh`, an editor) are given a pseudo-terminal of their own automatically; pass `tty: true` to force one for anything else. For work that must outlive one call pass `run_in_background: true` — it starts a tracked job (`job_output` to read, `job_kill` to stop) in a separate process, so it does not see this shell\'s `cd` or `export`.',
     parameters: {
       command: { type: 'string', required: true, description: 'The bash command to run.' },
       description: {
@@ -297,36 +364,66 @@ export function apply(ctx: Context, config?: Config): void {
       },
       workdir: {
         type: 'string',
-        description: 'Linux working directory for this call. Defaults to the session workspace; a relative path resolves against it.',
+        description: 'Working directory for this call. Defaults to the session workspace; a relative path resolves against it.',
       },
       timeoutMs: { type: 'number', description: 'Per-call deadline in milliseconds.' },
       tty: {
         type: 'boolean',
         description: 'Run the command on a pseudo-terminal. Applied automatically for `sudo`, `ssh`, editors and similar; set it for a program that fails with a terminal-related error.',
       },
+      run_in_background: {
+        type: 'boolean',
+        description: 'Run in the background and return a job id immediately (collect with job_output, stop with job_kill). No timeout applies, and the job runs in its own process rather than in this shell.',
+      },
     },
     output: {
       schema: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          kind: { type: 'string', required: true, const: 'foreground' },
-          exitCode: { required: true, oneOf: [{ type: 'integer' }, { type: 'null' }] },
-          signal: { required: true, oneOf: [{ type: 'string' }, { type: 'null' }] },
-          timedOut: { type: 'boolean', required: true },
-          aborted: { type: 'boolean', required: true },
-          timeoutMs: { type: 'number', required: true },
-          stdout: STREAM_SCHEMA,
-          stderr: STREAM_SCHEMA,
-        },
+        oneOf: [
+          {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              kind: { type: 'string', required: true, const: 'foreground' },
+              exitCode: { required: true, oneOf: [{ type: 'integer' }, { type: 'null' }] },
+              signal: { required: true, oneOf: [{ type: 'string' }, { type: 'null' }] },
+              timedOut: { type: 'boolean', required: true },
+              aborted: { type: 'boolean', required: true },
+              timeoutMs: { type: 'number', required: true },
+              stdout: STREAM_SCHEMA,
+              stderr: STREAM_SCHEMA,
+              notes: { type: 'array', items: { type: 'string' } },
+            },
+          },
+          {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              kind: { type: 'string', required: true, const: 'background' },
+              jobId: { type: 'string', required: true },
+            },
+          },
+        ],
       },
-      render: (_args: unknown, value: ForegroundOutput) => renderRun(value),
+      render: (_args: unknown, value: ForegroundOutput | BackgroundOutput) =>
+        value.kind === 'background'
+          ? [{ type: 'text', text: `started background job ${value.jobId}` }]
+          : renderRun(value),
     },
     presentCall: (args: BashArgs) => ({ card: 'terminal', title: args.command }),
     async execute(args: BashArgs, exec: ToolExecution) {
       const headerCwd = exec.agent?.session?.header?.cwd
       const timeoutMs = Math.min(args.timeoutMs ?? resolved.timeoutMs, resolved.maxTimeoutMs)
       const ownerKey = exec.agent?.id ?? exec.agent?.session?.id ?? 'default'
+      // `run_in_background` goes to the jobs producer — the same one `bash_background` uses, so there
+      // is one registration of a background bash and one shape of job for `job_list` to read. It is
+      // not the persistent shell's process, which is what the tool description says.
+      if (args.run_in_background === true) {
+        return {
+          kind: 'background' as const,
+          ...startBackgroundJob(ctx, { command: args.command, ...(args.workdir === undefined ? {} : { workdir: args.workdir }) },
+            exec as unknown as Parameters<typeof startBackgroundJob>[2]),
+        }
+      }
       // The terminal is decided here, before the working-directory wrapper, so `script` inherits the
       // directory the call asked for.
       const escalated = args.tty === true || needsTty(args.command)

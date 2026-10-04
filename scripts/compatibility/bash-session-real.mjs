@@ -17,6 +17,8 @@
 // measuring the driver.
 import { Context } from '@deepseek-ai/cordis'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
+import { spawnSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { resolve as resolvePath } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
@@ -48,7 +50,26 @@ await ctx.plugin(LocalSubprocessRuntime)
 for (const module of [shellEnvPlugin, toolsPlugin, systemPromptPlugin]) {
   await ctx.plugin(hostModule(module))
 }
-await ctx.plugin(sessionTool.default ?? sessionTool, { ...sessionTool.PROBE_CONFIG, distro, username })
+// The one-shot executor is mounted as well, because `run_in_background` hands the command to the
+// jobs producer in `wsl-jobs.ts`, which runs it through `ctx.shell`. The registry itself is a double:
+// `@deepseek-ai/dsh-jobs` is not vendored here, and what this driver can honestly assert is that the
+// call reaches the producer with the right kind and answers in the host's shape — not that the host's
+// registry stores it, which is the host's own tested behaviour.
+const shellModule = await load('shell')
+const WslShellExecutor = shellModule.default ?? shellModule.WslShellExecutor
+await ctx.plugin(WslShellExecutor, {
+  cwd: sessionCwd, distro, username, timeoutMs: 20_000, maxTimeoutMs: 60_000,
+  maxOutputBytes: 64 * 1024, maxSpillBytes: 1024 * 1024, graceMs: 500,
+})
+let jobRequest
+ctx.provide?.('jobs', {
+  start: (request) => {
+    jobRequest = request
+    return 'job-dsh-session-real'
+  },
+})
+const sessionFiber = ctx.plugin(sessionTool.default ?? sessionTool, { ...sessionTool.PROBE_CONFIG, distro, username })
+await sessionFiber
 await new Promise(resolve => setTimeout(resolve, 50))
 
 const tool = ctx.tools.get('bash')
@@ -168,14 +189,110 @@ try {
   check('the escalated pty has a real size and name', sizeLine.trim() === '24 80' && ttyLine.startsWith('/dev/pts/'),
     JSON.stringify(pty.text.trim()))
 
-  // The leak scan runs last so it covers every body above, escalated ones included. The signatures
-  // are the frame's own invariant text, not one rendering of it: measured here, bash's line editor
-  // writes only the TAIL of the echoed frame to stderr (79 bytes, starting mid-nonce, after a `\r`),
-  // so a filter keyed on the payload or the record tags — both in the head — recognises nothing.
-  // A cell that misses that is the vacuous green this file keeps naming.
-  const signatures = ['__DSH_WSL_BASH', 'eval "$(printf %s', '| base64 -d)"', '{ export -p;', '__dsh_status']
+  // ---------------------------------------------------------------- this round's behaviour
+  // A relative `workdir` is resolved against the session directory, the way the host's one-shot tool
+  // does (`resolveWorkdir`): measured there, `docs` becomes `/home/ruler/docs` and bash's own `cd`
+  // error is what comes back. Translating it to nothing would run the command somewhere the model did
+  // not ask for, silently.
+  await call(`mkdir -p "${linuxHome}/dsh-session-real-relative"`)
+  const relative = await call('pwd', { workdir: 'dsh-session-real-relative' })
+  check('a relative workdir resolves against the session directory', relative.text.trim() === `${linuxHome}/dsh-session-real-relative`,
+    JSON.stringify(relative.text.trim()))
+  const missing = await call('pwd', { workdir: 'dsh-session-real-does-not-exist' })
+  check('an unresolvable workdir fails loudly, in bash’s own words', missing.value?.exitCode !== 0
+    && /No such file or directory/.test(missing.rendered), JSON.stringify(missing.rendered.slice(0, 80)))
+  await call(`rmdir "${linuxHome}/dsh-session-real-relative"`)
+
+  // Large output: the head goes to a file and the model is pointed at it, in the host's exact
+  // sentence (`[output truncated; full output: <path>]`, dsh-tool-bash:137). The file's own line
+  // count is the assertion, because a spill file that is short is a spill that lost data.
+  const big = await call('seq 1 200000', { timeoutMs: 30_000 })
+  const spillPath = big.value?.stdout?.spillPath
+  const spilled = spillPath === undefined ? '' : readFileSync(spillPath.replace(/\\/g, '/'), 'utf8')
+  check('large output spills the whole stream and says where', big.value?.stdout?.truncated === true
+    && typeof spillPath === 'string' && spillPath.length > 0
+    && big.rendered.includes(`[output truncated; full output: ${spillPath}]`)
+    && spilled.trim().split('\n').length === 200_000,
+  `spill=${JSON.stringify(spillPath ?? null)} fileLines=${spilled.trim() === '' ? 0 : spilled.trim().split('\n').length}`)
+
+  // The journal beyond `cd` and `export`: options, aliases and functions come back after a restart,
+  // and a snapshot too large to replay is *reported* rather than quietly lost.
+  await call("alias dshrealalias='echo ALIAS_OK_7'; set -o allexport; shopt -s nocasematch; dshrealfn() { echo FN_OK_9; }")
+  const wedged = await call('sleep 4', { timeoutMs: 1_500 })
+  check('the restart says what it restored', wedged.rendered.includes('[the shell was restarted'),
+    JSON.stringify(wedged.rendered.slice(-90)))
+  const restored = await call("alias dshrealalias >/dev/null 2>&1 && dshrealalias; dshrealfn; shopt -q nocasematch && echo SHOPT_OK_5; set -o | grep -q '^allexport[[:space:]]\\+on' && echo SET_OK_3")
+  check('alias, function, shopt and set options survive a restart', restored.text.includes('ALIAS_OK_7')
+    && restored.text.includes('FN_OK_9') && restored.text.includes('SHOPT_OK_5') && restored.text.includes('SET_OK_3'),
+  JSON.stringify(restored.text.trim()))
+
+  const many = await call('for i in $(seq 1 4000); do eval "dshbig$i() { echo $i; }"; done; declare -f | wc -c')
+  const bigRestart = await call('sleep 4', { timeoutMs: 1_500 })
+  const overCap = /not restored: functions \(\d+ bytes over the \d+ byte cap\)/.test(bigRestart.rendered)
+  check('a function snapshot over the cap is reported, not silently dropped', many.value?.exitCode === 0 && overCap,
+    `snapshot=${many.text.trim()} bytes; note=${overCap}`)
+  await call('for i in $(seq 1 4000); do unset -f dshbig$i 2>/dev/null; done; true')
+
+  // Detached children. Measured: killing `wsl.exe` takes ordinary children with it (0 survivors) but
+  // `setsid`/`nohup` ones live (2/2), so the session marks its processes and reaps exactly those.
+  // The control that makes this mean something is a sleep started *outside* the session: if the reaper
+  // ever degrades into `pkill -f sleep`, that one dies and this cell goes red.
+  const outside = spawnSync('wsl.exe', ['-d', distro, '-u', username, '-e', 'bash', '-c',
+    'setsid sleep 40 & disown; echo $!'], { encoding: 'utf8', timeout: 30_000 })
+  const outsidePid = String(outside.stdout).trim().split('\n').pop()
+  await call('setsid sleep 35 & disown; echo DETACHED=$!')
+  const reaped = await call('sleep 4', { timeoutMs: 1_500 })
+  const stillOut = spawnSync('wsl.exe', ['-d', distro, '-u', username, '-e', 'bash', '-c',
+    `kill -0 ${outsidePid} 2>/dev/null && echo ALIVE || echo DEAD; pgrep -c -x sleep || echo 0`],
+  { encoding: 'utf8', timeout: 30_000 })
+  const [outsideState, sleepCount] = String(stillOut.stdout).trim().split('\n')
+  check('a detached child of the session is reaped on restart', /detached process/.test(reaped.rendered)
+    && Number(sleepCount) <= 1, JSON.stringify({ note: reaped.rendered.slice(-70), outsideState, sleepCount }))
+  spawnSync('wsl.exe', ['-d', distro, '-u', username, '-e', 'pkill', '-x', 'sleep'], { timeout: 20_000 })
+
+  // Memory: one session shell is measured at ~3.4 MB of RSS; the bound below is that plus six times
+  // the margin for the journal and readline buffers, not a number tuned to whatever the run produced.
+  const memory = await call('printf "%s %s" "$(ps -o rss= -p $$ | tr -d " ")" "$(pgrep -c -x bash)"')
+  const [rssKb] = memory.text.trim().split(/\s+/)
+  check('the session shell stays inside its memory bound', Number(rssKb) > 0 && Number(rssKb) < 20_480,
+    `rss=${rssKb} kB (bound 20480, measured floor 3372)`)
+
+  // `run_in_background` must not be an argument that is quietly ignored — the repository has already
+  // been bitten once by a `bash` that accepted it and ran in the foreground. The reply shape is the
+  // host's (`started background job <id>`), and the hand-off carries the job kind and `onExpiry: none`
+  // so the job outlives one command's timeout.
+  const bgArgs = { command: 'echo BG_$(( 6 * 7 ))', description: 'compatibility driver: background arm', run_in_background: true }
+  const bg = await tool.execute(bgArgs, exec)
+  const bgText = (tool?.output?.render?.(bgArgs, bg) ?? []).map(part => String(part?.text ?? '')).join('')
+  check('run_in_background hands off to the jobs producer', bg?.kind === 'background'
+    && bg?.jobId === 'job-dsh-session-real' && bgText === 'started background job job-dsh-session-real'
+    && jobRequest?.kind === 'bash' && typeof jobRequest?.run === 'function'
+    && typeof jobRequest?.label === 'string' && jobRequest.label.includes('BG_$'),
+  JSON.stringify({ kind: bg?.kind, jobId: bg?.jobId, requested: jobRequest?.kind, label: jobRequest?.label }))
+  const afterBg = await call('echo AFTER_BG_$(( 2 * 2 ))')
+  check('the backgrounded command did not run inside the session shell', !afterBg.text.includes('BG_42')
+    && afterBg.text.includes('AFTER_BG_4'), JSON.stringify(afterBg.text.trim()))
+
+  // The shells are children of this process, so counting them is a real lifecycle test: a session
+  // that outlives its plugin fiber is a leak the user cannot see or cancel.
+  const wslCount = () => (String(spawnSync('tasklist.exe', ['/FI', 'IMAGENAME eq wsl.exe', '/NH'],
+    { encoding: 'utf8' }).stdout ?? '').match(/wsl\.exe/gi) ?? []).length
+  const beforeDispose = wslCount()
+  sessionFiber.dispose?.()
+  await new Promise(resolve => setTimeout(resolve, 2_000))
+  const afterDispose = wslCount()
+  check('disposing the plugin takes the session shell down', afterDispose <= beforeDispose - 1,
+    `${beforeDispose} → ${afterDispose} wsl.exe processes`)
+
+  // The leak scan runs last so it covers every body above, escalated and spilled ones included. The
+  // signatures are the frame's own invariant text, not one rendering of it: measured here, bash's line
+  // editor writes only the TAIL of the echoed frame to stderr (79 bytes, starting mid-nonce, after a
+  // `\r`), so a filter keyed on the payload or the record tags — both in the head — recognises
+  // nothing. A cell that misses that is the vacuous green this file keeps naming.
+  const signatures = ['__DSH_WSL_BASH', 'eval "$(printf %s', '| base64 -d)"', '{ export -p;', '__dsh_status',
+    '#dsh-section', 'declare -F']
   const dirty = renderedBodies.filter(body => signatures.some(signature => body.includes(signature)))
-  check('no protocol byte reaches the model, in any call', renderedBodies.length > 14 && dirty.length === 0,
+  check('no protocol byte reaches the model, in any call', renderedBodies.length > 20 && dirty.length === 0,
     `${dirty.length} of ${renderedBodies.length} bodies carry a frame signature: ${JSON.stringify(dirty[0]?.slice(0, 70) ?? '')}`)
   check('an escalated body carries no stray carriage returns', !pty.rendered.includes('\r')
     && !password.rendered.includes('\r'),
@@ -233,7 +350,7 @@ try {
     `the control harness failed before comparing: ${String(error?.message ?? error).slice(0, 120)}`)
 }
 
-const EXPECTED_CHECKS = 22
+const EXPECTED_CHECKS = 33
 const passed = results.filter(r => r.pass).length
 console.log(`${passed}/${results.length} checks passed (plane=${plane()}, distro=${distro}, user=${username}, cwd=${sessionCwd})`)
 if (results.length !== EXPECTED_CHECKS) {

@@ -48,8 +48,47 @@ function encodePayload(command: string): string {
   return Buffer.from(command, 'utf8').toString('base64')
 }
 
-/** The shell-state report every frame ends with: the working directory and the exported environment. */
-const STATE_REPORT = `{ export -p; printf 'PWD=%s\\n' "$PWD"; } | base64 -w0`
+/** The shell-state report every frame ends with: cwd, exported environment, options, aliases. */
+const STATE_REPORT_BODY = [
+  `printf '%s\\n' '#dsh-section exports'; export -p`,
+  `printf '%s\\n' '#dsh-section pwd'; printf 'PWD=%s\\n' "$PWD"`,
+  `printf '%s\\n' '#dsh-section aliases'; alias -p`,
+  // `set +o`, not `set -o`: the former prints each option as the command that *sets* it
+  // (`set -o allexport` / `set +o ignoreeof`), so the section replays verbatim; the latter prints
+  // `allexport    on`, which is not a command.
+  `printf '%s\\n' '#dsh-section options'; set +o`,
+  `printf '%s\\n' '#dsh-section shopt'; shopt -p`,
+  `printf '%s\\n' '#dsh-section functions-count'; declare -F | wc -l`,
+].join('; ')
+
+/**
+ * The conditional that carries function bodies, given the count the session last saw.
+ *
+ * Measured on this machine, `declare -f` after the rc files is **61,083 bytes across 85 functions**.
+ * Base64 on every frame would put ~81 kB through the pipe per command to repeat a snapshot that
+ * almost never changes, so the shell itself compares its own function count with the one the session
+ * last recorded and only emits the bodies when they differ (or when the session asks, because the
+ * command text looked like a definition). A body larger than the cap is skipped with a marker rather
+ * than truncated: half a function replayed is a syntax error in the restored shell.
+ */
+export const FUNCTION_SNAPSHOT_CAP_BYTES = 65_536
+
+/** The section headers the state record is allowed to contain, in the order the frame writes them. */
+export const STATE_SECTIONS = ['exports', 'pwd', 'aliases', 'options', 'shopt', 'functions-count', 'functions'] as const
+
+/**
+ * Build the state-report tail that follows a completion record.
+ * @param functionCount - the function count the session last saw, or `undefined` to force a snapshot.
+ * @returns shell text that prints the sections, and the bodies only when they changed.
+ */
+export function stateReport(functionCount: number | undefined): string {
+  const conditional = functionCount === undefined ? '' : `; __dsh_n=$(declare -F | wc -l)`
+    + `; if [ "$__dsh_n" != '${functionCount}' ]; then __dsh_s=$(declare -f | wc -c)`
+    + `; printf '%s\\n' '#dsh-section functions'`
+    + `; if [ "$__dsh_s" -le ${FUNCTION_SNAPSHOT_CAP_BYTES} ]; then declare -f;`
+    + ` else printf '%s\\n' "#dsh-functions-skipped $__dsh_s"; fi; fi`
+  return `{ ${STATE_REPORT_BODY}${conditional}; } | base64 -w0`
+}
 
 /**
  * Text that exists only inside a frame this module wrote.
@@ -59,14 +98,17 @@ const STATE_REPORT = `{ export -p; printf 'PWD=%s\\n' "$PWD"; } | base64 -w0`
  * so neither the payload nor either record tag was in the bytes that needed recognising. Matching on
  * these instead catches the head, the tail, or the whole line.
  */
-export const FRAME_SIGNATURES: readonly string[] = [RECORD_TAG, STATE_TAG, '__dsh_status', STATE_REPORT]
+export const FRAME_SIGNATURES: readonly string[] = [RECORD_TAG, STATE_TAG, '__dsh_status', '#dsh-section']
 
 /**
  * Build the stdin line that runs `command` and reports its exit code.
  * @param command - the user's command, verbatim, any number of lines.
+ * @param functionCount - the shell's function count as last seen, or `undefined` to ask for a full
+ *   function snapshot on this frame (the first frame, and any frame whose command looks like a
+ *   definition).
  * @returns the frame to write, and the nonce its completion record must carry.
  */
-export function encodeFrame(command: string): CommandFrame {
+export function encodeFrame(command: string, functionCount?: number): CommandFrame {
   const nonce = newNonce()
   const payload = encodePayload(command)
   // `</dev/null` on the eval: a command that reads stdin must never consume protocol bytes.
@@ -76,7 +118,11 @@ export function encodeFrame(command: string): CommandFrame {
     + `__dsh_status=$?; `
     + `printf '\\0${RECORD_TAG}\\0%s\\0%s\\0' '${nonce}' "$__dsh_status"; `
     + `printf '\\0${STATE_TAG}\\0%s\\0%s\\0' '${nonce}' `
-    + `"$( ${STATE_REPORT} )"\n`
+    // The trailing comment is not decoration. The shell's line editor writes the echo of a frame as
+    // its **last ~78 bytes** (measured: `\r` then 79 bytes starting mid-nonce, terminated by a
+    // newline), so the head — where the payload and the record tags are — never reaches stderr.
+    // Putting a tag at the very end means every possible tail carries something recognisable.
+    + `"$( ${stateReport(functionCount)} )" # ${RECORD_TAG}\n`
   return { nonce, line, payload }
 }
 
@@ -87,9 +133,14 @@ export function encodeFrame(command: string): CommandFrame {
  * this machine: `bash-5.1$ eval "$(printf %s 'ZWNoby…' | base64 -d)" …`). That is protocol, not the
  * command's output, and showing it would tell the model its own framing was part of the result — and
  * in a real Desktop session it was: every call came back with a fragment of its own frame in
- * `[stderr]`. Matched on {@link FRAME_SIGNATURES} plus this frame's payload rather than on a prompt
- * pattern, because the prompt is whatever the user's rc file says it is, and because the echo can
- * arrive as the tail of a line whose head belongs to an earlier call.
+ * `[stderr]`.
+ *
+ * Two shapes have to be caught, because the shell does not deliver the echo whole: the complete line
+ * (matched by {@link FRAME_SIGNATURES}), and a **tail** cut at any offset — measured at 79 bytes,
+ * starting mid-nonce. The frame ends with `# <RECORD_TAG>` for that reason, and a line ending in any
+ * suffix of either tag is treated as protocol too, so no cut point can slip between the two rules.
+ * Matched on our own text rather than on a prompt pattern, because the prompt is whatever the user's
+ * rc file says it is.
  *
  * @param text - stderr accumulated for the command in flight, whole lines only.
  * @param payload - {@link CommandFrame.payload} of the frame currently in flight.
@@ -99,8 +150,16 @@ export function dropProtocolEcho(text: string, payload: string): string {
   return text
     .split('\n')
     .filter((line) => !FRAME_SIGNATURES.some(signature => line.includes(signature))
+      && !endsWithTagSuffix(line)
       && !(payload.length > 0 && line.includes(payload)))
     .join('\n')
+}
+
+/** Does this line end partway into one of our record tags, i.e. is it the tail of an echoed frame? */
+function endsWithTagSuffix(line: string): boolean {
+  const trimmed = line.trimEnd()
+  return [RECORD_TAG, STATE_TAG].some(tag => [4, 8, 12, 16].some(n =>
+    tag.length > n && trimmed.endsWith(tag.slice(tag.length - n))))
 }
 
 /** What one frame reported. */
@@ -183,6 +242,103 @@ function stripOneTag(buffer: Buffer, tag: string): Buffer {
     cursor = end
   }
   return Buffer.concat(parts)
+}
+
+/**
+ * Split one frame's state report into its sections.
+ * @param state - the decoded value of a state record.
+ * @returns each section's body, keyed by header name; absent sections are missing, not empty.
+ */
+export function parseState(state: string): Record<string, string[]> {
+  const sections: Record<string, string[]> = {}
+  let current: string[] | undefined
+  for (const line of state.split('\n')) {
+    if (line.startsWith('#dsh-section ')) {
+      current = sections[line.slice('#dsh-section '.length).trim()] = []
+      continue
+    }
+    if (line.startsWith('#dsh-functions-skipped')) current?.push(line)
+    else current?.push(line)
+  }
+  return sections
+}
+
+/** What {@link restoreScript} decided, so the outcome can be told to the model rather than hidden. */
+export interface RestorePlan {
+  /** Shell text that replays everything the session can restore, in a safe order. */
+  script: string
+  /** Sections deliberately not restored, each with the reason. */
+  skipped: string[]
+}
+
+/**
+ * Build the script that brings a rebuilt shell back to where the lost one was.
+ *
+ * Order matters: options and shell settings first (they change how the rest parses), then the
+ * exported environment, then aliases and functions, and the `cd` last so a directory that only
+ * exists because of an earlier section is still reachable.
+ *
+ * @param state - the decoded state record of the last settled command.
+ * @returns the replay script and anything it leaves out, with reasons.
+ */
+export function restoreScript(state: string): RestorePlan {
+  const sections = parseState(state)
+  const skipped: string[] = []
+  const keep = (name: string, prefixes: string[]): string[] => (sections[name] ?? [])
+    .filter(line => prefixes.some(prefix => line.startsWith(prefix)))
+  const options = keep('options', ['set -o ', 'set +o '])
+  const shopt = keep('shopt', ['shopt -'])
+  const exports = keep('exports', ['declare -x '])
+  const aliases = keep('aliases', ['alias '])
+  // `declare -f` output starts with the *function's own name*, not with `declare -f`, so this section
+  // is taken verbatim apart from the over-cap marker.
+  const functions = (sections.functions ?? []).filter(line => !line.startsWith('#dsh-'))
+  const skippedMarker = (sections.functions ?? []).find(line => line.startsWith('#dsh-functions-skipped'))
+  if (skippedMarker !== undefined) skipped.push(`functions (${skippedMarker.split(' ')[1]} bytes over the ${FUNCTION_SNAPSHOT_CAP_BYTES} byte cap)`)
+  const pwdLine = (sections.pwd ?? []).find(line => line.startsWith('PWD='))
+  const pwd = pwdLine?.slice(4)
+  if (pwd === undefined || pwd === '') skipped.push('working directory (not reported)')
+  const script = [
+    ...options, ...shopt, ...exports, ...aliases, ...functions,
+    ...(pwd === undefined || pwd === '' ? [] : [`cd ${JSON.stringify(pwd)} 2>/dev/null || true`]),
+  ].join('\n')
+  return { script, skipped }
+}
+
+/**
+ * The chunks a rebuilt shell is brought back with, in the order they must be sent.
+ *
+ * One frame, not one big one: `eval` parses its whole string before running any of it, so a
+ * `shopt -s extglob` on line 50 does nothing for the bash-completion function on line 1623 that needs
+ * extglob to *parse* — measured as `syntax error near unexpected token '('` and exit 2, with the
+ * replay silently failing and 91 rc functions coming back while the user's own did not. Each chunk is
+ * its own frame, so each is parsed after the previous one has taken effect.
+ *
+ * The bootstrap goes first: it is the baseline the user's state sits on top of, and replaying exports
+ * and aliases before it would let the rc files overwrite them.
+ *
+ * @param state - the decoded state record of the last settled command.
+ * @returns the scripts to send, in order, and what was left out.
+ */
+export function restoreChunks(state: string): { chunks: string[]; skipped: string[] } {
+  const plan = restoreScript(state)
+  const sections = parseState(state)
+  const skipped = plan.skipped
+  const options = [
+    ...(sections.options ?? []).filter(line => line.startsWith('set -o ') || line.startsWith('set +o ')),
+    ...(sections.shopt ?? []).filter(line => line.startsWith('shopt -')),
+  ].join('\n')
+  const environment = [
+    ...(sections.exports ?? []).filter(line => line.startsWith('declare -x ')),
+    ...(sections.aliases ?? []).filter(line => line.startsWith('alias ')),
+  ].join('\n')
+  const functions = (sections.functions ?? []).filter(line => !line.startsWith('#dsh-')).join('\n')
+  const pwdLine = (sections.pwd ?? []).find(line => line.startsWith('PWD='))
+  const cd = pwdLine === undefined || pwdLine === 'PWD=' ? '' : `cd ${JSON.stringify(pwdLine.slice(4))} 2>/dev/null || true`
+  return {
+    chunks: [BOOTSTRAP_COMMAND, options, environment, functions, cd].filter(chunk => chunk.trim().length > 0),
+    skipped,
+  }
 }
 
 /**

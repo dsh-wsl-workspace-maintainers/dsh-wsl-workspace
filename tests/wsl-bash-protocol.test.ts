@@ -13,7 +13,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { BOOTSTRAP_COMMAND, RECORD_TAG, SESSION_ARGV, STATE_TAG, dropProtocolEcho, encodeFrame, newNonce, readFrame, stripRecords } from '../src/host/wsl-bash-protocol.ts'
+import { BOOTSTRAP_COMMAND, RECORD_TAG, SESSION_ARGV, STATE_TAG, dropProtocolEcho, encodeFrame, newNonce, readFrame, restoreChunks, restoreScript, stripRecords } from '../src/host/wsl-bash-protocol.ts'
 
 const NUL = String.fromCharCode(0)
 
@@ -121,13 +121,77 @@ test('an echo delivered to a later call than the frame that wrote it is still re
     'the filter keys on both record tags, which every frame line carries')
 })
 
-test('a frame echo that arrives as only its tail is still recognised', () => {
-  // Recorded from this machine: bash's line editor put `\r` and the last 78 bytes of the echoed
-  // frame on stderr, starting mid-nonce, so the payload and both record tags were in the part that
-  // never arrived. Every real Desktop call carried that fragment in `[stderr]`.
-  const tail = `<b9-31ba5cefb5f0' "$( { export -p; printf 'PWD=%s\\n' "$PWD"; } | base64 -w0 )"\n`
-  assert.equal(dropProtocolEcho(tail, 'ZWNobyBub21lY29tbWFuZA=='), '',
-    'the tail carries neither payload nor tag, so the frame must be recognised by its own text')
+test('every tail the line editor could deliver is recognised as protocol', () => {
+  // Recorded from this machine: bash writes the echo of a frame to stderr as `\r` plus the **last 79
+  // bytes** of the line, terminated by a newline — the head, with the payload and both record tags,
+  // never arrives. So the invariant is not "the tail happens to contain something", it is that the
+  // frame ends with its own signature. Every cut point is tried, not one recorded string.
+  const frame = encodeFrame('echo PROBE_$((2*3)); pwd; whoami')
+  for (let start = 0; start < frame.line.length; start += 1) {
+    const tail = frame.line.slice(start)
+    if (tail.length > 80 || tail.trimEnd().length < 20) continue
+    assert.equal(dropProtocolEcho(tail, 'ZWNobyBub21lY29tbWFuZA=='), '',
+      `a ${tail.length}-byte tail starting at ${start} must be recognisable: ${JSON.stringify(tail.slice(0, 40))}`)
+  }
+  assert.ok(frame.line.trimEnd().endsWith(`# ${RECORD_TAG}`),
+    'the frame ends with its own tag, which is what makes the above true')
+})
+
+test('the state record is sections, and the replay orders them and drops what is absent', () => {
+  const state = [
+    '#dsh-section exports', 'declare -x FOO="bar"',
+    '#dsh-section pwd', 'PWD=/tmp',
+    '#dsh-section aliases', "alias ll='ls -l'",
+    '#dsh-section options', 'set -o emacs',
+    '#dsh-section shopt', 'shopt -s autocd',
+    '#dsh-section functions-count', '3',
+  ].join('\n')
+  const plan = restoreScript(state)
+  assert.ok(plan.script.indexOf('set -o emacs') < plan.script.indexOf('declare -x FOO'),
+    'options are replayed before anything that parses under them')
+  assert.ok(plan.script.includes("alias ll='ls -l'"), 'aliases come back')
+  assert.ok(plan.script.trimEnd().endsWith('cd "/tmp" 2>/dev/null || true'), 'the cd goes last, after the state it depends on')
+  assert.deepEqual(plan.skipped, [], 'nothing was left out, so nothing is reported as left out')
+})
+
+test('a function snapshot over the cap is skipped with its size, never truncated', () => {
+  const state = `#dsh-section functions-count\n85\n#dsh-section functions\n#dsh-functions-skipped 61083\n`
+  const plan = restoreScript(state)
+  assert.ok(plan.skipped.some(entry => /61083 bytes over the \d+ byte cap/.test(entry)), JSON.stringify(plan.skipped))
+  assert.ok(!plan.script.includes('declare -f'), 'half a function body replayed is a syntax error')
+})
+
+test('a state record without a working directory says so instead of quietly going home', () => {
+  const plan = restoreScript('#dsh-section exports\ndeclare -x A="1"\n')
+  assert.ok(plan.skipped.some(entry => entry.includes('working directory')), JSON.stringify(plan.skipped))
+})
+
+test('the restore is chunked so a shell option is live before the parse that needs it', () => {
+  const state = [
+    '#dsh-section options', 'set -o emacs',
+    '#dsh-section shopt', 'shopt -s extglob',
+    '#dsh-section exports', 'declare -x A="1"',
+    '#dsh-section aliases', "alias ll='ls -l'",
+    '#dsh-section functions', 'dshf () ', '{ ', '    echo x', '}',
+    '#dsh-section pwd', 'PWD=/tmp',
+  ].join('\n')
+  const { chunks } = restoreChunks(state)
+  assert.ok((chunks[0] ?? '').includes('set +H'), 'the bootstrap goes first: the user state sits on top of rc, not under it')
+  const extglob = chunks.findIndex(chunk => chunk.includes('shopt -s extglob'))
+  const functions = chunks.findIndex(chunk => chunk.includes('dshf () '))
+  assert.ok(extglob >= 0 && extglob < functions,
+    'one eval would parse the whole body before running the shopt, which is how the rc completion functions failed')
+  const last = chunks.at(-1) ?? ''
+  assert.ok(last.startsWith('cd "/tmp"'), 'the directory change is last')
+})
+
+test('the frame asks for function bodies only when the count moved', () => {
+  const quiet = encodeFrame('pwd', 3).line
+  assert.ok(quiet.includes("[ \"$__dsh_n\" != '3' ]"), 'the shell compares, so an unchanged snapshot costs nothing')
+  assert.ok(!encodeFrame('pwd').line.includes('declare -f'), 'no count known means no bodies requested')
+  assert.ok(encodeFrame('pwd', -1).line.includes('declare -f'), '-1 is the count no shell can report: always send them')
+  assert.ok(encodeFrame('pwd', -1).line.includes('"#dsh-functions-skipped $__dsh_s"'),
+    'the marker reports a byte count; in single quotes it reached the model as the literal `$__dsh_s`')
 })
 
 test('the session argv keeps its long options ahead of the shell name', () => {
