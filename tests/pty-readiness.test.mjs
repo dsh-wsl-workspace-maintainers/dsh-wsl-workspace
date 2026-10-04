@@ -174,7 +174,11 @@ test('the injected environment is minimal, not the host process environment', as
   const env = calls.spawned[0].env
   assert.ok(!('HOME' in env) && !('USERPROFILE' in env), `a user profile must not ride along: ${Object.keys(env).join(', ')}`)
   assert.ok(!Object.keys(env).some(key => /KEY|PASSWORD|SECRET|TOKEN/i.test(key)), 'no credential-shaped name is forwarded')
-  assert.match(env.PATH, /\\System32/i, 'and wsl.exe, resolved by name, is reachable')
+  // Checked by position and suffix, not by spelling: the probe joins the System32
+  // directory with `path.join`, so the separator is the host's own. An earlier
+  // assertion demanded a backslash here and reddened on the ubuntu runner.
+  assert.ok(env.PATH.split(';')[0].endsWith('System32'),
+    `wsl.exe, resolved by name, must be reachable first, saw ${JSON.stringify(env.PATH.slice(0, 60))}`)
 })
 
 test('the budget is a measured number, not a tuned one', () => {
