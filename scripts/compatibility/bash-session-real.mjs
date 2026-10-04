@@ -122,14 +122,6 @@ try {
   const noisy = await call('echo oops >&2')
   check("the command's own stderr still reaches the model", noisy.rendered.includes('[stderr]')
     && noisy.rendered.includes('oops'), JSON.stringify(noisy.rendered.slice(0, 60)))
-  // The signatures are the frame's own invariant text, not one particular rendering of it: measured
-  // here, bash's line editor writes only the TAIL of the echoed frame to stderr (79 bytes, starting
-  // mid-nonce, after a `\r`), so a filter keyed on the payload or the record tags — both in the head
-  // — recognises nothing. A cell that misses that is the vacuous green this file keeps naming.
-  const signatures = ['__DSH_WSL_BASH', 'eval "$(printf %s', '| base64 -d)"', '{ export -p;', '__dsh_status']
-  const dirty = renderedBodies.filter(body => signatures.some(signature => body.includes(signature)))
-  check('no protocol byte reaches the model, in any call', renderedBodies.length > 10 && dirty.length === 0,
-    `${dirty.length} of ${renderedBodies.length} bodies carry a frame signature: ${JSON.stringify(dirty[0]?.slice(0, 70) ?? '')}`)
 
   // Recovery has to be bounded in both directions, and both were measured wrong here: the old path
   // re-executed a frame whose deadline had merely passed (so a command with effects ran twice), and a
@@ -156,6 +148,38 @@ try {
   check('the next call is prompt after a cancel', afterCancel.text.includes('AFTER_CANCEL_6') && afterCancel.ms < 3_000,
     `${afterCancel.ms}ms`)
   await call(`rm -f ${marker}`)
+
+  // The terminal class. `sudo true` with no terminal was measured sitting until its deadline expired
+  // and returning nothing but `[timed out after 6000ms]`, then costing a session rebuild; through
+  // `script -qec` it answers in under half a second with sudo's own words. That is the difference
+  // between "bounded" and "usable".
+  const password = await call('sudo true', { timeoutMs: 8_000 })
+  // What sudo answers with belongs to the distribution's sudoers: root here and on the WSL1 runner is
+  // NOPASSWD and says nothing (exit 0), an ordinary user is asked for a password. The universal
+  // property is that the escalation ran and sudo's own verdict came back well inside the deadline
+  // instead of consuming it — which is what the same call did before `tty` existed (6.8 s, nothing
+  // but `[timed out after 6000ms]`).
+  check('sudo is escalated and answers inside its budget', password.ms < 4_000
+    && password.value?.timedOut === false
+    && (password.value?.exitCode === 0 || /[Pp]assword/.test(password.rendered)),
+  `${password.ms}ms exit=${password.value?.exitCode} :: ${JSON.stringify(password.rendered.slice(0, 60))}`)
+  const pty = await call('stty size; tty', { timeoutMs: 8_000, tty: true })
+  const [sizeLine = '', ttyLine = ''] = pty.text.trim().split('\n')
+  check('the escalated pty has a real size and name', sizeLine.trim() === '24 80' && ttyLine.startsWith('/dev/pts/'),
+    JSON.stringify(pty.text.trim()))
+
+  // The leak scan runs last so it covers every body above, escalated ones included. The signatures
+  // are the frame's own invariant text, not one rendering of it: measured here, bash's line editor
+  // writes only the TAIL of the echoed frame to stderr (79 bytes, starting mid-nonce, after a `\r`),
+  // so a filter keyed on the payload or the record tags — both in the head — recognises nothing.
+  // A cell that misses that is the vacuous green this file keeps naming.
+  const signatures = ['__DSH_WSL_BASH', 'eval "$(printf %s', '| base64 -d)"', '{ export -p;', '__dsh_status']
+  const dirty = renderedBodies.filter(body => signatures.some(signature => body.includes(signature)))
+  check('no protocol byte reaches the model, in any call', renderedBodies.length > 14 && dirty.length === 0,
+    `${dirty.length} of ${renderedBodies.length} bodies carry a frame signature: ${JSON.stringify(dirty[0]?.slice(0, 70) ?? '')}`)
+  check('an escalated body carries no stray carriage returns', !pty.rendered.includes('\r')
+    && !password.rendered.includes('\r'),
+  JSON.stringify((pty.rendered + password.rendered).replace(/\r/g, '<CR>').slice(0, 70)))
 } catch (error) {
   check('every call returned', false, String(error?.message ?? error).slice(0, 200))
 }
@@ -209,7 +233,7 @@ try {
     `the control harness failed before comparing: ${String(error?.message ?? error).slice(0, 120)}`)
 }
 
-const EXPECTED_CHECKS = 19
+const EXPECTED_CHECKS = 22
 const passed = results.filter(r => r.pass).length
 console.log(`${passed}/${results.length} checks passed (plane=${plane()}, distro=${distro}, user=${username}, cwd=${sessionCwd})`)
 if (results.length !== EXPECTED_CHECKS) {
