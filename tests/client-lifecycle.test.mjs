@@ -23,10 +23,14 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
  *   before the UI domain publishing `uiWorkspace` registers its service.
  * @param options.startService - which session starter to expose: 'ui',
  *   'legacy' (on `workspaces`), or 'none'.
+ * @param options.sidebarRight - expose the right-Sidebar navigation controller
+ *   (`sidebarRight`), which DSH gained in 0.1.5-rc.1 along with the document
+ *   preview; six declared releases have no such service.
+ * @param options.records - the workspace records the host route answers with.
  */
-function fixture({ legacy = false, late = false, startService = legacy ? 'legacy' : 'ui' } = {}) {
+function fixture({ legacy = false, late = false, startService = legacy ? 'legacy' : 'ui', sidebarRight = false, records = [] } = {}) {
   let plugin, dialog, subscriber, tick;
-  const effects = [], calls = [];
+  const effects = [], calls = [], opened = [], pending = [];
   const summary = legacy
     ? { blank: true, cwd: '\\\\wsl.localhost\\Ubuntu\\tmp\\fixture', agentPreset: 'standard' }
     : { blank: true, cwd: '\\\\wsl.localhost\\Ubuntu\\tmp\\fixture', projectionValues: { agentPreset: 'standard' } };
@@ -45,12 +49,30 @@ function fixture({ legacy = false, late = false, startService = legacy ? 'legacy
       create: async () => { calls.push(['create']); return { workspaceId: 'w1' }; },
     },
   };
+  if (sidebarRight) {
+    services.sidebarRight = {
+      openResource: (address, options) => { opened.push(['openResource', address, options]); },
+      openResourceIn: (sessionId, address, options) => { opened.push(['openResourceIn', sessionId, address, options]); },
+    };
+  }
   if (legacy) {
     services.sessions.noteAgentPreset = (_id, id) => { calls.push(['note', id]); setPreset(id); };
   }
   if (startService === 'legacy') {
     services.workspaces.startSession = id => { calls.push(['start', id]); };
   }
+
+  // cordis mixes `inject` onto every context and runs the callback once its
+  // dependencies are provided; the fixture runs it as soon as they all are.
+  const runInjections = () => {
+    for (let index = 0; index < pending.length; index += 1) {
+      const entry = pending[index];
+      if (!entry.deps.every(dep => services[dep] !== undefined)) continue;
+      pending.splice(index, 1);
+      entry.callback({ get: key => services[key], effect: fn => effects.push(fn()) });
+      index = -1;
+    }
+  };
 
   const mount = () => {
     if (legacy) {
@@ -75,12 +97,14 @@ function fixture({ legacy = false, late = false, startService = legacy ? 'legacy
     if (startService === 'ui') {
       services.uiWorkspace = { startSession: id => { calls.push(['start', id]); } };
     }
+    runInjections();
   };
   if (!late) mount();
 
   const ctx = {
     get: key => services[key],
     effect: fn => effects.push(fn()),
+    inject: (deps, callback) => { pending.push({ deps, callback }); runInjections(); },
     locale: { register: () => () => {}, bind: () => key => key },
     slots: { inject: (_name, fn) => fn(), register: config => { dialog = config.inject(); return () => {}; } },
   };
@@ -94,12 +118,16 @@ function fixture({ legacy = false, late = false, startService = legacy ? 'legacy
     },
     console,
     document: { getElementById: () => ({}), querySelector: () => ({}) },
-    // The plugin's host API calls (workspace key store) are not under test here.
-    fetch: async () => ({ ok: true, json: async () => ({ ok: true, value: [] }) }),
+    // The plugin's host API calls: only the workspace record read has a shape
+    // under test, and every other route answers an empty list.
+    fetch: async (_url, init) => {
+      const method = JSON.parse(init.body).method;
+      return { ok: true, json: async () => ({ ok: true, value: method === 'listWorkspaceRecords' ? records : [] }) };
+    },
   });
   plugin.apply(ctx);
   return {
-    calls, services, dialog, mount, summary, setPreset,
+    calls, services, dialog, mount, summary, setPreset, opened, pending,
     emit: () => subscriber?.(),
     tick: () => tick?.(),
     dispose: () => effects.reverse().forEach(fn => typeof fn === 'function' && fn()),
@@ -197,5 +225,93 @@ test('current: create & open never falls back to the legacy starter', async () =
   const error = await f.dialog.createWorkspace('/home/mille/ws', 'mille', 'Ubuntu');
   assert.equal(error, undefined);
   assert.deepEqual(f.starts(), ['w1']);
+  f.dispose();
+});
+
+// Issue #49: a WSL session's file references carry absolute LINUX paths, and
+// the host resolves such a path with `node:path.resolve(cwd, path)`, where a
+// POSIX absolute path is root-relative — so the preview reports the file
+// missing. These cases run the SHIPPED bundle and assert the address the
+// right-Sidebar controller receives, which is the whole repair.
+
+/** The address the shipped bundle builds for one path, as the chat view does. */
+const addressFor = (sessionId, cwd, path) => {
+  const normalized = path.replace(/\\/g, '/');
+  const root = cwd.replace(/\\/g, '/').replace(/\/+$/, '');
+  const relative = normalized.startsWith(`${root}/`) ? normalized.slice(root.length + 1) : normalized;
+  return `dsh-resource://file/session/${sessionId}/${relative}`;
+};
+
+test('current: a WSL reference is translated to the file the model named', async () => {
+  const f = fixture({ legacy: false, sidebarRight: true });
+  await flush();
+  // The fixture session's cwd is a WSL UNC path, so its references are WSL ones.
+  const cwd = f.summary.cwd;
+  const drvfs = addressFor('s1', cwd, '/mnt/d/AORUS/Documents/pkg/package.json');
+  f.services.sidebarRight.openResource(drvfs);
+  assert.deepEqual(f.opened, [['openResource', 'dsh-resource://file/session/s1/D:/AORUS/Documents/pkg/package.json', undefined]]);
+  f.opened.length = 0;
+  // An in-distribution path becomes the workspace-relative address, which the
+  // host resolves against the same cwd — the shape the issue reports for a
+  // workspace registered inside the distribution.
+  const inside = addressFor('s1', cwd, '/tmp/fixture/VERSION');
+  f.services.sidebarRight.openResource(inside);
+  assert.deepEqual(f.opened, [['openResource', 'dsh-resource://file/session/s1/VERSION', undefined]]);
+  f.dispose();
+});
+
+test('current: the translation also covers a tab action, and is undone on dispose', async () => {
+  const f = fixture({ legacy: false, sidebarRight: true });
+  await flush();
+  const controller = f.services.sidebarRight;
+  const address = addressFor('s1', f.summary.cwd, '/mnt/d/x.txt');
+  controller.openResourceIn('s1', address, { line: 3 });
+  assert.deepEqual(f.opened, [['openResourceIn', 's1', 'dsh-resource://file/session/s1/D:/x.txt', { line: 3 }]]);
+  // Disposal restores the controller's own methods, so an unloaded plugin
+  // leaves no wrapper behind.
+  f.dispose();
+  f.opened.length = 0;
+  controller.openResourceIn('s1', address, { line: 3 });
+  assert.deepEqual(f.opened, [['openResourceIn', 's1', address, { line: 3 }]]);
+});
+
+test('current: a drive workspace is translated from the registered distribution', async () => {
+  const cwd = 'D:\\AORUS\\Documents\\deepseek-harness\\default-workspace';
+  const f = fixture({
+    legacy: false,
+    sidebarRight: true,
+    records: [{ path: 'd:\\aorus\\documents\\deepseek-harness\\default-workspace', distro: 'Ubuntu', username: 'mille' }],
+  });
+  f.summary.cwd = cwd;
+  await flush();
+  f.services.sidebarRight.openResource(addressFor('s1', cwd, '/mnt/d/AORUS/Documents/deepseek-harness/default-workspace/pkg/a.json'));
+  assert.deepEqual(f.opened, [['openResource', 'dsh-resource://file/session/s1/pkg/a.json', undefined]]);
+  f.opened.length = 0;
+  // `/etc/hosts` is on no drive mount: only the distribution's share can serve
+  // it, and the record above is where that distribution comes from.
+  f.services.sidebarRight.openResource(addressFor('s1', cwd, '/etc/hosts'));
+  assert.deepEqual(f.opened, [['openResource', 'dsh-resource://file/session/s1///wsl.localhost/Ubuntu/etc/hosts', undefined]]);
+  f.dispose();
+});
+
+test('current: a session outside the WSL world keeps its references untouched', async () => {
+  const f = fixture({ legacy: false, sidebarRight: true });
+  f.summary.cwd = 'C:\\Users\\mille\\plain-workspace';
+  await flush();
+  const address = addressFor('s1', f.summary.cwd, '/mnt/d/x.txt');
+  f.services.sidebarRight.openResource(address);
+  assert.deepEqual(f.opened, [['openResource', address, undefined]]);
+  f.dispose();
+});
+
+test('a release without a right Sidebar loads, and the hook simply does not install', async () => {
+  // DSH 0.1.0-rc.7 … 0.1.3-alpha.2 ship no right Sidebar, no document preview
+  // and no resource model: there is no reference surface to fix, and the plugin
+  // must still mount (the W action and the variant binding are its other jobs).
+  const f = fixture({ legacy: false, sidebarRight: false });
+  await flush();
+  assert.equal(f.pending.length, 1);
+  assert.equal(f.services.sidebarRight, undefined);
+  assert.deepEqual(f.selected(), ['wsl-standard']);
   f.dispose();
 });

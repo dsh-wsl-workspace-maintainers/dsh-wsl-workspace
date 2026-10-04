@@ -133,3 +133,31 @@ export function getWindowsWorkspace(winPath: string): WorkspaceEntry | undefined
 export function listWorkspaceKeys(): string[] {
   return Object.keys(readStore())
 }
+
+/** One stored workspace as the client reads it back. */
+export interface WorkspaceRecord {
+  /** The store key: a canonical UNC path or a canonical Windows drive path. */
+  path: string
+  /** The WSL distribution, present for a `/mnt/<drive>` workspace. */
+  distro?: string
+  /** The Linux user bash runs as, when one is configured. */
+  username?: string
+}
+
+/**
+ * Every stored workspace with its credentials.
+ *
+ * The client half needs more than the keys: to translate a file reference it has
+ * to know which distribution a `/mnt/<drive>` workspace belongs to, because a
+ * path outside the drive mounts can only be opened through that distribution's
+ * UNC share. The keys alone cannot say.
+ * @returns one record per stored workspace.
+ */
+export function listWorkspaceRecords(): WorkspaceRecord[] {
+  return Object.entries(readStore()).map(([path, entry]) => {
+    const record: WorkspaceRecord = { path }
+    if (entry.distro !== undefined && entry.distro !== '') record.distro = entry.distro
+    if (entry.username !== undefined && entry.username !== '') record.username = entry.username
+    return record
+  })
+}
