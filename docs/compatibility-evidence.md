@@ -2184,3 +2184,55 @@ control that cannot start is the vacuous green this file already names twice. It
 Its two outcomes above, hang here and answer there in the same hour, are why the cell asserts only
 that the control ran.
 
+## Every Desktop call carried a fragment of its own frame (2026-10-04, after the seam fix)
+
+The seam fix worked, and the user's reading of the new run was right in a different way. The seven
+prompts all answered fast — `PROBE_6` + `/home/ruler` + `ruler` in 523 ms, `cd /tmp` then `pwd` →
+`/tmp`, `READ_BACK=kept_42`, `false` → `[exit code: 1]`, `sudo -n true` → 114 ms — and every one of
+them also carried this in its body:
+
+```
+[stderr]
+<b9-31ba5cefb5f0' "$( { export -p; printf 'PWD=%s\n' "$PWD"; } | base64 -w0 )"
+```
+
+That is our own framing, and the model was reading it on every call. The driver reported 13/13.
+
+### What the bytes actually do
+
+Instrumented at the raw pipe (`D:\Temp\issue51-matrix\stderr-windows.mjs`, then the session's own
+windows in `stderr-windows2.mjs`): bash echoes each line it reads to stderr, but the echo of a frame
+does not arrive as the line. Measured chunk for chunk:
+
+| what arrived on stderr | bytes |
+| --- | --- |
+| the prompt text, as its own chunk | 10 (`bash-5.1$ `) |
+| then a `\r` followed by **the last 78 bytes of the frame line**, starting in the middle of the nonce | 80 |
+| the frame's two records, on stdout as designed | 59 + 1660 |
+
+So the head of the echoed line — where the payload and both record tags live — is never written. The
+first version of the fix assumed the echo was cut by *my* window boundaries and made the windows
+line-aligned (`takeStderr` in `wsl-bash-session.ts`); measuring again showed the cut is the shell's,
+one frame per chunk, terminated by a newline, unrecognisable by payload or tag. Line alignment is
+still correct and stays, but what closes the leak is recognising the frame by text that only a frame
+contains: `RECORD_TAG`, `STATE_TAG`, `__dsh_status`, and the state-report command itself
+(`FRAME_SIGNATURES` in `wsl-bash-protocol.ts`).
+
+### The instrument lesson, which is the same one as issue #51
+
+This is the sentinel-scrape failure again, one layer down. My first two filters keyed on bytes the
+shell chose how to deliver — the payload, then the tags — and both were in the part that did not
+arrive. The rule that survives is the one the plan wrote for the completion check: never recognise
+protocol by a rendering; recognise it by text that exists only in what we ourselves wrote.
+
+The gate cell that now enforces it read the **rendered body** (`output.render`, which composes stdout
+plus `[stderr]`) instead of `stdout.text`, because every one of the thirteen existing cells looked at
+`stdout.text` and the leak was outside all of them. Two cells went in, and the first was written
+deliberately weak to test the test: keyed on `__DSH_WSL_BASH`, `eval "$(printf %s` and
+`| base64 -d)"` it reported green on a run whose every body still held the fragment. Keyed on the
+frame's own `{ export -p;` text it went **11 of 11 red**, and green after the `FRAME_SIGNATURES`
+change: `15/15` here on both planes and as both users (`root`, `ruler`), with the companion positive
+control (`echo oops >&2` → `[stderr]\noops\n`) riding along so a filter that dropped all stderr could
+not pass either.
+
+

@@ -48,6 +48,19 @@ function encodePayload(command: string): string {
   return Buffer.from(command, 'utf8').toString('base64')
 }
 
+/** The shell-state report every frame ends with: the working directory and the exported environment. */
+const STATE_REPORT = `{ export -p; printf 'PWD=%s\\n' "$PWD"; } | base64 -w0`
+
+/**
+ * Text that exists only inside a frame this module wrote.
+ *
+ * A frame's echo does not always arrive whole: measured on this machine, bash's line editor put
+ * `\r` and the **last 78 bytes** of the echoed frame on stderr, starting in the middle of the nonce,
+ * so neither the payload nor either record tag was in the bytes that needed recognising. Matching on
+ * these instead catches the head, the tail, or the whole line.
+ */
+export const FRAME_SIGNATURES: readonly string[] = [RECORD_TAG, STATE_TAG, '__dsh_status', STATE_REPORT]
+
 /**
  * Build the stdin line that runs `command` and reports its exit code.
  * @param command - the user's command, verbatim, any number of lines.
@@ -63,28 +76,30 @@ export function encodeFrame(command: string): CommandFrame {
     + `__dsh_status=$?; `
     + `printf '\\0${RECORD_TAG}\\0%s\\0%s\\0' '${nonce}' "$__dsh_status"; `
     + `printf '\\0${STATE_TAG}\\0%s\\0%s\\0' '${nonce}' `
-    + `"$( { export -p; printf 'PWD=%s\\n' "$PWD"; } | base64 -w0 )"\n`
+    + `"$( ${STATE_REPORT} )"\n`
   return { nonce, line, payload }
 }
 
 /**
  * Drop the shell's own echo of a frame from the stderr destined for the model.
  *
- * An interactive `bash` whose stdin is a pipe writes its prompt and the line it just read to
- * stderr (measured on this machine: `bash-5.1$ eval "$(printf %s 'ZWNoby…' | base64 -d)" …`). That
- * is protocol, not the command's output, and showing it would tell the model its own framing was
- * part of the result. Matched on the payload rather than on a prompt pattern, because the prompt is
- * whatever the user's rc file says it is.
+ * An interactive `bash` whose stdin is a pipe writes the line it just read to stderr (measured on
+ * this machine: `bash-5.1$ eval "$(printf %s 'ZWNoby…' | base64 -d)" …`). That is protocol, not the
+ * command's output, and showing it would tell the model its own framing was part of the result — and
+ * in a real Desktop session it was: every call came back with a fragment of its own frame in
+ * `[stderr]`. Matched on {@link FRAME_SIGNATURES} plus this frame's payload rather than on a prompt
+ * pattern, because the prompt is whatever the user's rc file says it is, and because the echo can
+ * arrive as the tail of a line whose head belongs to an earlier call.
  *
- * @param text - stderr accumulated for the command in flight.
- * @param payload - {@link CommandFrame.payload} of the frame that produced it.
- * @returns the same text with the echoed frame removed.
+ * @param text - stderr accumulated for the command in flight, whole lines only.
+ * @param payload - {@link CommandFrame.payload} of the frame currently in flight.
+ * @returns the same text with the echoed frames removed.
  */
 export function dropProtocolEcho(text: string, payload: string): string {
-  if (payload.length === 0 || !text.includes(payload)) return text
   return text
     .split('\n')
-    .filter((line) => !line.includes(payload))
+    .filter((line) => !FRAME_SIGNATURES.some(signature => line.includes(signature))
+      && !(payload.length > 0 && line.includes(payload)))
     .join('\n')
 }
 

@@ -155,8 +155,14 @@ export class WslBashSession {
     })
     handle.stderr?.on('data', (chunk: Buffer) => {
       this.err = Buffer.concat([this.err, chunk])
-      if (this.err.length > this.spec.maxOutputBytes * 2) {
-        this.err = this.err.subarray(this.err.length - this.spec.maxOutputBytes)
+      const cap = this.spec.maxOutputBytes * 2
+      if (this.err.length > cap) {
+        // Drop from the start up to the next line boundary: a frame's echo must never reach the
+        // reader as two half-lines, because the half that carries the payload is the only half the
+        // filter can recognise.
+        const from = this.err.length - this.spec.maxOutputBytes
+        const boundary = this.err.indexOf(0x0a, from < 0 ? 0 : from)
+        this.err = boundary < 0 ? this.err.subarray(this.err.length - cap) : this.err.subarray(boundary + 1)
       }
     })
     void handle.done.then(
@@ -177,15 +183,13 @@ export class WslBashSession {
       throw new Error('wsl-bash: the session has no stdin to write to')
     }
     const frame = encodeFrame(command)
-    const errStart = this.err.length
     const armed = deadline(signal, timeoutMs, 'WSL_BASH_TIMEOUT')
-    const started = Date.now()
     stdin.write(frame.line)
     for (;;) {
       const found = readFrame(this.out, frame.nonce)
       if (found !== undefined) {
         const stdout = stripRecords(this.out.subarray(0, found.recordStart)).toString('utf8')
-        const stderr = dropProtocolEcho(this.err.subarray(errStart).toString('utf8'), frame.payload)
+        const stderr = this.takeStderr(frame.payload)
         const truncated = this.outTruncated
         // Consume this window so the next command reads from a fresh buffer.
         this.out = this.out.subarray(found.nextOffset)
@@ -205,7 +209,7 @@ export class WslBashSession {
           settled: false,
           run: {
             stdout: stripRecords(this.out).toString('utf8'),
-            stderr: dropProtocolEcho(this.err.subarray(errStart).toString('utf8'), frame.payload),
+            stderr: this.takeStderr(frame.payload),
             exitCode: timedOut ? -1 : 1,
             timedOut,
             aborted: !timedOut,
@@ -214,9 +218,29 @@ export class WslBashSession {
           },
         }
       }
-      void started
       await new Promise(resolve => setTimeout(resolve, POLL_MS))
     }
+  }
+
+  /**
+   * Hand out the stderr that has completed a line since the last call, keeping any unterminated
+   * tail for the next one.
+   *
+   * The shell echoes each frame line to stderr, and the pipe can deliver that echo in pieces, so a
+   * window cut at a byte offset can start in the middle of an echo — and the half without the
+   * payload in it is unrecognisable as protocol. That is how every real Desktop call came back
+   * with a fragment of its own framing in `[stderr]`. Cutting at line boundaries instead means the
+   * filter always sees a whole echo line, whose tags identify it whatever frame wrote it.
+   *
+   * @param payload - the frame in flight's payload, for the case where the echo is one line.
+   * @returns the completed, filtered stderr for this call.
+   */
+  private takeStderr(payload: string): string {
+    const boundary = this.err.lastIndexOf(0x0a)
+    if (boundary < 0) return ''
+    const window = this.err.subarray(0, boundary + 1).toString('utf8')
+    this.err = this.err.subarray(boundary + 1)
+    return dropProtocolEcho(window, payload)
   }
 
   /** Kill the wedged child and bring back one that knows where we left off. */

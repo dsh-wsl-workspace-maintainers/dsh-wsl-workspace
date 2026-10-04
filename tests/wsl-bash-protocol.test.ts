@@ -111,6 +111,25 @@ test('the shell echo of a frame is dropped from stderr, and the command’s own 
   assert.equal(dropProtocolEcho('nothing here\n', frame.payload), 'nothing here\n', 'a no-op when nothing matches')
 })
 
+test('an echo delivered to a later call than the frame that wrote it is still recognised', () => {
+  const earlier = encodeFrame('echo first')
+  const current = encodeFrame('echo second')
+  const late = `${earlier.line.trim()}\nreal warning\n`
+  assert.ok(!dropProtocolEcho(late, current.payload).includes(earlier.payload),
+    'the pipe split the earlier echo, so the window carrying it holds a payload this call never had')
+  assert.ok(dropProtocolEcho(late, current.payload).includes('real warning'),
+    'the filter keys on both record tags, which every frame line carries')
+})
+
+test('a frame echo that arrives as only its tail is still recognised', () => {
+  // Recorded from this machine: bash's line editor put `\r` and the last 78 bytes of the echoed
+  // frame on stderr, starting mid-nonce, so the payload and both record tags were in the part that
+  // never arrived. Every real Desktop call carried that fragment in `[stderr]`.
+  const tail = `<b9-31ba5cefb5f0' "$( { export -p; printf 'PWD=%s\\n' "$PWD"; } | base64 -w0 )"\n`
+  assert.equal(dropProtocolEcho(tail, 'ZWNobyBub21lY29tbWFuZA=='), '',
+    'the tail carries neither payload nor tag, so the frame must be recognised by its own text')
+})
+
 test('the session argv keeps its long options ahead of the shell name', () => {
   assert.deepEqual([...SESSION_ARGV], ['--norc', '-i'])
   assert.ok(SESSION_ARGV[0]?.startsWith('--'),
