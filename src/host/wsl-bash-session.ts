@@ -295,6 +295,14 @@ export class WslBashSession {
     if (handle === undefined || stdin === undefined) {
       throw new Error('wsl-bash: the session has no stdin to write to')
     }
+    // A spill file belongs to one command. Left open across commands, the second call's answer would
+    // carry the first call's `full output` path — measured in `bash-parity-real`, where every probe
+    // after a 200 000-line one reported a spill.
+    this.closeSpills()
+    this.outSeen = this.out.length
+    this.outWritten = 0
+    this.errSeen = this.err.length
+    this.errWritten = 0
     // `-1` is a function count no shell can report, which is how "send the bodies whatever the
     // count" reaches the frame; `this.functionCount` asks the shell to compare and stay quiet.
     const frame = encodeFrame(command, forceFunctions ? -1 : this.functionCount)

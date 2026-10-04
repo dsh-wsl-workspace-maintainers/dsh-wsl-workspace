@@ -20,7 +20,7 @@
     "verify:lib-sync": "node scripts/verify-lib-sync.mjs",
     "verify:plane": "node scripts/verify-plane-log.mjs",
     "ci:pinned": "node ci/install-pinned.mjs",
-    "test:unit": "node --experimental-strip-types --test tests/variants.test.ts tests/paths.test.ts tests/locales.test.ts tests/readme-compat.test.mjs tests/wsl-output-decode.test.ts tests/default-distro-parity.test.ts tests/deliberate-reds.test.mjs tests/client-classnames.test.ts tests/support/fake-child-process.test.mjs tests/wsl-env.test.ts tests/wsl-bash-protocol.test.ts tests/wsl-bash-tty.test.ts tests/pty-readiness.test.mjs scripts/check-portable-spelling.test.mjs",
+    "test:unit": "node --experimental-strip-types --test tests/variants.test.ts tests/paths.test.ts tests/locales.test.ts tests/readme-compat.test.mjs tests/wsl-output-decode.test.ts tests/default-distro-parity.test.ts tests/deliberate-reds.test.mjs tests/client-classnames.test.ts tests/support/fake-child-process.test.mjs tests/wsl-env.test.ts tests/wsl-bash-protocol.test.ts tests/wsl-bash-tty.test.ts tests/wsl-bash-parity.test.ts tests/pty-readiness.test.mjs scripts/check-portable-spelling.test.mjs",
     "lint:portability": "node scripts/check-portable-spelling.mjs",
     "lint:portability:strict": "node scripts/check-portable-spelling.mjs --strict",
     "test:win32": "node --experimental-strip-types --test tests/wsl-skills.test.ts tests/fs-policy.test.ts tests/relay-node.test.mjs",
