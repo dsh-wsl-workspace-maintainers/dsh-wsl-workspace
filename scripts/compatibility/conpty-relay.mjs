@@ -59,8 +59,13 @@ function childEnvironment() {
     TERM: 'dumb',
     PAGER: 'cat',
     GIT_PAGER: 'cat',
-    PS1: 'DSH> ',
-    PROMPT_COMMAND: 'printf "\\033]133;D;%s\\007" "$?"; PS1=\'DSH> \'',
+    // The host's own values, not a paraphrase: `CONTROLLED_PROMPT` is lowercase
+    // `"dsh> "` and the backend compares the prompt tail against it byte for byte
+    // (`dsh-terminal-bash/lib/index.js:76,951-952`). An earlier draft of this gate
+    // injected an uppercase `'DSH> '`, so it could never have observed the contract
+    // arriving even if the relay had carried it across.
+    PS1: 'dsh> ',
+    PROMPT_COMMAND: 'printf "\\033]133;D;%s\\007" "$?"; PS1=\'dsh> \'',
     BASH_SILENCE_DEPRECATION_WARNING: '1',
     DSH_SHELL: '1',
     DSH_SESSION_ID: 'compat-session',
@@ -91,13 +96,25 @@ assert.equal(resolution.fallback, false, `no real node interpreter was found: ${
 console.log(`conpty-relay: interpreter ${resolution.path} (${resolution.source})`);
 
 const run = await underConpty(pty, resolution.path, [relay], 10_000);
+// Two different views of the same bytes: the readiness marker is an OSC sequence, so
+// it must be matched on the RAW output — the `printable` strip below deletes exactly
+// what it is looking for.
 const printable = run.output.replace(/\u001b\][^\u0007]*\u0007/g, '').replace(/\u001b\[[0-9;?]*[a-zA-Z]/g, '');
 assert.ok(
   run.output.length > 0,
   `the interpreter wrote nothing to the ConPTY (exit ${JSON.stringify(run.exit)} after ${run.ms}ms) — this is the issue #40 failure`,
 );
 assert.equal(run.exit, undefined, `the shell exited instead of staying up: ${JSON.stringify(run.exit)}`);
-assert.match(printable, /[$#]\s*$/, `no bash prompt in the ConPTY output: ${JSON.stringify(printable.slice(0, 200))}`);
+// The question is no longer "did some prompt appear" — a distribution default prompt
+// answers that while the session is still broken, which is what this assertion used to
+// certify (issue #51 point 2: the host injects its contract as Windows variables, and
+// nothing named them in WSLENV, so the shell came up as `user@host:~$` and the backend
+// could never recognise it). It is now "did the host's contract arrive", which is the
+// pair the backend itself compares.
+assert.ok(run.output.includes(']133;D;'),
+  `no OSC 133;D readiness marker reached the wire — PROMPT_COMMAND did not cross into the distribution: ${JSON.stringify(printable.slice(0, 200))}`);
+assert.match(printable, /dsh> /,
+  `the host's controlled prompt never appeared — the readiness contract is not in effect: ${JSON.stringify(printable.slice(0, 200))}`);
 
-console.log(`PASS conpty-relay: ${resolution.path} gives a live bash prompt under a real ConPTY (${run.output.length} bytes)`);
+console.log(`PASS conpty-relay: ${resolution.path} gives the host's controlled prompt under a real ConPTY (${run.output.length} bytes, marker + ${JSON.stringify('dsh> ')} both present)`);
 console.log('PASS conpty-relay: the interpreter is not the Electron executable, and the resolution reported no fallback');

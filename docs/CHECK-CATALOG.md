@@ -19,6 +19,7 @@ run the same commands: the `npm run test:*` buckets below.
 | `tests/wsl-output-decode.test.ts` | the `wsl.exe` output sniff (`src/shared/wsl.ts:102`): NUL bytes ⇒ UTF-16LE, none ⇒ UTF-8, empty ⇒ `''`, odd length ⇒ no throw, a non-buffer ⇒ a named error rather than a silent empty list. Also `wslExecutableCandidates` (the #36 PATH/System32 fallback) and `listDistros()` parsed from a **faked** child_process, so the UTF-16 branch is exercised with no distribution and no `wsl.exe` — `grep -rn utf16 tests/` used to find one hit, `exec-shape.mjs:42`, which needs both | node ≥ 24 | ci.yml#lint-build |
 | `tests/client-classnames.test.ts` | no `className` in `src/client/` ships without a rule in `src/client/styles.ts` or a stated reason. There is no `.css` file in the tree (`find src -name '*.css'` → 0), so nothing else can see this pairing — an unstyled class renders with browser defaults and nobody notices. Who owes what is decided by **shape**: `block--state` of a block that is itself applied is a real state and must be registered with a ticket reference; a container name may be exempted with a reason. Mutation control run here: an unregistered `dww-night-unstyled-probe` → RED `unstyled classNames`; a `dww-help--night-probe` → RED `unstyled modifiers registered nowhere`; restore → GREEN. Currently registers `dww-action--wide` (no rule; wide and rail render identically) as a pending product item — issue #44 §6 | node ≥ 24 | ci.yml#lint-build |
 | `tests/support/fake-child-process.test.mjs` | the fixture other checks lean on: a scripted answer must reach a **static ESM import** of `execFile` after `syncBuiltinESMExports()`, and must not reach it without `--import`. Positive control in both directions — the first version of this fixture patched at module-load time, so "armed" was true even in the run meant to prove the wrapper never ran, which is exactly the false green this whole pass is fixing. Also asserts an unmatched call becomes `FAKE_UNMATCHED` rather than a real spawn, and a killed run carries `signal` without a numeric `code` | node ≥ 24 | ci.yml#lint-build |
+| `tests/wsl-env.test.ts` | the readiness bridge that carries the host's `PS1`/`PROMPT_COMMAND` across the WSL boundary (issue #51 point 2): both keys named in `WSLENV` when injected, a key the host did not inject never named (so a pwsh-dialect host and a host with no contract produce an untouched environment), ambient `WSLENV` preserved with its `/p`/`/l`/`/u` flags and never duplicated, **no `/p` on prompt values** (that flag rewrites a path into `/mnt/<drive>/…`, and a prompt string contains backslashes and colons that are prompt text), and the caller's object is not mutated. Offline because `wsl-relay.ts` spawns `wsl.exe` at load, which is why the arithmetic sits in `src/shared/wsl-env.ts`. 6 tests; the live half of the same claim is the rewritten `conpty-relay` assertion below | node ≥ 24 (`npm run test:unit`) | ci.yml#lint-build |
 | `scripts/check-docs-parity.mjs` | documentation parity, split out of #42: each README must carry exactly the section **names** declared in the checker (v0.7.5 inserting `## Compatibility` is what killed positional checks), eight behaviour bullets, the tool tokens (`wsl-search`, `wsl-relay`, `bash_background`, `readlink`, `FS_SANDBOX_DENIED`), no claim the English authority dropped, no version range inside a changelog pointer, the manifest repository in all nine languages, every relative link in every `*.md` resolving, and `CHANGELOG.md` / `CHANGELOG.zh.md` agreeing on the release list with the newest entry equal to `package.json`'s version. Mutation control: `npm run test:docs -- --root <v0.7.5 tree>` reports 93 RED and exits 1 | node ≥ 24 — no host packages, no WSL, no network (`npm run test:docs`) | ci.yml#lint-build |
 
 ## B. Node buckets needing the pinned host packages — `npm run test:node`
@@ -107,6 +108,34 @@ relay interpreter under a real ConPTY, per the case's `runtime.json`) at the
 same tier: it is registered in Run-Checks.ps1 for the maintainer sweep and
 needs a booted case manifest, so no cloud fixture exists for it yet —
 recorded here rather than silently dropped from the automation map.
+
+**Its prompt assertion was rewritten for issue #51, because it was the thing that
+failed to catch the defect.** It used to require `/[$#]\s*$/` over output whose injected
+`PS1` was `'DSH> '` — uppercase, so it could never match the host's lowercase
+`CONTROLLED_PROMPT`, and a distribution default ending in `$ ` satisfied it regardless.
+That is why a green run of this gate coexisted with a persistent shell whose readiness
+contract never reached the distribution. It now asserts the two facts the backend itself
+compares: the OSC `133;D;` marker on the raw bytes, and the literal `dsh> ` after the
+escape strip, with the injected values taken verbatim from `dsh-terminal-bash:951-952`.
+Controls run 2026-10-04 against the real relay under a real ConPTY at
+`\\wsl.localhost\Ubuntu\home` (the reporter's exact cwd): with the bridge → `PASS … marker
++ "dsh> " both present` (1487 bytes); dropping `env: bridgeReadiness(process.env)` from
+`lib/wsl-relay.js` → `AssertionError: no OSC 133;D readiness marker reached the wire`,
+restored byte-identical. First run locally: it needs a `runtime.json` whose `runtimeRoot`
+holds `node-pty` at the pnpm-nested path — a junction over the pinned tree supplies it, and
+the pinned `node-pty` is `1.2.0-beta.15`, the version the host itself ships.
+
+**Two reds on this machine are environmental, not regressions, and were measured as such
+against an unmodified HEAD worktree (`git worktree add … HEAD --detach`, same command, same
+output):** `tests/smoke.ts` dual-access compares `windowsToMntPath(tmpdir())` (`\Temp`, as
+`os.tmpdir()` reports it here) with the fs plane's real-case form (`\TEMP`), so it fails only
+on a temp directory whose casing differs; overriding `TMPDIR`/`TEMP`/`TMP` to a
+casing-consistent path makes the whole bucket pass through `SMOKE PASSED`, `dual access OK`,
+and both `PASS` shells. `scripts/compatibility/skills-real.mjs` is missing
+`deep-check`/`linked-check` — the two skills that arrive through a directory symlink into
+`/mnt/<drive>` — on this WSL2 distro (kernel 6.18.40.1); the CI runner that reports it green
+is WSL1. Both are recorded rather than fixed here, and neither is caused by the relay change
+this section describes.
 
 
 ## E. Compatibility matrix

@@ -22,11 +22,19 @@
  * failure is reported on stderr and exits non-zero, so a broken shell surfaces
  * instead of leaving a silent dead terminal.
  *
+ * The spawn environment is not simply inherited. WSL imports a Windows variable
+ * into a distribution only when `WSLENV` names it, and the host injects its bash
+ * readiness contract as ordinary Windows variables — so an inherited environment
+ * starts a shell whose prompt the host can never recognise, which is the failure
+ * issue #51 reported as a session that never settles. `bridgeReadiness` names the
+ * keys the host actually set and leaves everything else alone.
+ *
  * @module dsh-wsl-workspace/host/wsl-relay
  */
 
 import { spawn } from 'node:child_process'
 import { isValidWslUsername, parseWslUnc, windowsToMntPath } from '../shared/paths.ts'
+import { bridgeReadiness } from '../shared/wsl-env.ts'
 import { defaultDistroSync } from '../shared/wsl.ts'
 
 /** Shell signals whose arrival means this relay should take the shell down. */
@@ -79,7 +87,7 @@ const argv = [
   '-lc', command,
 ]
 
-const child = spawn(argv[0] ?? 'wsl.exe', argv.slice(1), { stdio: 'inherit' })
+const child = spawn(argv[0] ?? 'wsl.exe', argv.slice(1), { stdio: 'inherit', env: bridgeReadiness(process.env) })
 child.on('error', (error: Error) => fail(`persistent shell: cannot start ${argv[0] ?? 'wsl.exe'} (${error.message})`))
 child.on('exit', (code, signal) => process.exit(signal === null ? code ?? 0 : 1))
 for (const signal of FORWARDED_SIGNALS) {

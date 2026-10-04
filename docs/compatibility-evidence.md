@@ -1848,3 +1848,58 @@ vendored host file, and no vendored `@deepseek-ai` module reads `dshReleases` at
 lives in `dsh-plugin-manager`, which is not vendored. So whether an unlisted release fails open or
 closed cannot be answered from here, and the honest interim change to the declaration is a decision
 for the maintainer, not an invention of a key.
+
+### The #51 matrix, run on this machine (2026-10-04, plugin 0.7.6 at `14c444d`)
+
+Harness, stated first because two of the readings depend on it: Windows 10.0.19045,
+WSL 3.0.1.0 / kernel 6.18.40.1, distro Ubuntu (default user `ruler` from `/etc/wsl.conf`),
+the reporter's **own payload executable** (`…/primary-runtime/dependencies/node/bin/node.exe`,
+`v24.21.0`), and the **real** terminal seam — `@deepseek-ai/dsh-subprocess-local@0.2.0-rc.2`
+over `dsh-win32-process@0.2.0-rc.2` and `node-pty@1.2.0-beta.15`, all three at the versions the
+0.2.0-rc.2 host declares. Driver scripts live outside the repository (`D:/Temp/issue51-matrix/`).
+Two writes landed inside the distribution and are stated rather than glossed: the fixture
+directories under `/home/ruler/` that these runs created and removed again, and `/home/ruler/.bash_history`,
+which the interactive probe shells appended to (last entries `echo T3_MARKER`, `echo T5_MARKER`,
+mtime 2026-10-04 10:26) — the user's own history file was not otherwise modified, and removing
+those lines is left as an offer rather than done unasked. Both distros were left `Stopped`, which is
+how they were found.
+
+**Point 1 — node.exe with a UNC cwd does not crash here, cold or warm.** Five cwd cells
+(`\wsl.localhost\Ubuntu`, `\home`, `\home\ruler`, and two depths under a fixture tree, one with a
+`package.json` at the parent and one without) × two states (distro freshly `--terminate`d, and
+running): `--version` exits **0 in 117–167 ms warm, 1251–186 ms cold** in every cell, printing
+`v24.21.0`. The `package.json`-walk hypothesis is refuted as a *necessary* condition — the deep
+cell without any ancestor `package.json` boots fine, so reaching for `\?\UNC\wsl.localhost\package.json`
+is not by itself fatal on this kernel. What the reporter saw is still a real signature
+(`connection reset by peer` on a 9P read); it is just not a property of node-with-a-UNC-cwd, and
+this machine cannot produce it. **Not fixed, because there is nothing here to fix**, and the
+claim is narrowed rather than dismissed: their error names the provider root, which is where a
+share that has vanished answers from.
+
+**Point 2 — the contract really does not cross, and it is fixable on the plugin side.** The
+shipped relay under a real ConPTY at the reporter's exact cwd (`\wsl.localhost\Ubuntu\home`)
+starts, stays up, and reaches a prompt — but the prompt is the **distribution default**:
+`OSC 133;D` absent, `dsh> ` absent, over 1591 bytes. Naming the two keys in `WSLENV` — one
+environment line in the relay, `src/shared/wsl-env.ts` — flips both readings to present on the
+same wire with nothing else changed. One nuance the report did not have: `PS1` itself does not
+survive the crossing (an interactive `bash` assigns its own), and that does not matter, because
+the host's `PROMPT_COMMAND` text re-assigns `PS1` at every prompt. So the bridge needs the
+marker variable, and the profile chain the relay runs (`bash -lc`) does not undo it.
+This is what `scripts/compatibility/conpty-relay.mjs` now asserts. Its previous assertion was
+`/[$#]\s*$/` against an injected `'DSH> '` — uppercase, so it could never have matched the host's
+lowercase prompt, and a distribution default ending in `$ ` satisfied it anyway. The gate that
+was supposed to cover this stage was constructed to pass without the contract.
+
+**Point 3 — the mechanism the report names cannot be what fails here.** `inspectForeground()`
+was polled six times per topology, 800 ms apart, through the real seam: the shipped topology
+(node → relay → `wsl.exe`) and the report's own topology (`wsl.exe` + an in-distro rcfile) both
+returned the **same** `{processGroupId: 0, inputWaiting: false}` at every poll, wire quiet
+between polls — no churn, no `undefined`, no throw. `processGroupId === shellPgid` is therefore
+`0 === 0`, which is *true*: on this machine the foreground leg of the strict predicate is
+satisfied trivially, and cannot explain a 300 s wait. Note `pid` is `0` for every PTY this host
+build spawns — `cmd.exe` included, measured through raw `node-pty` as well as the seam — so a
+zero-valued answer is this platform's norm, not a WSL blind spot. What is also true is that the
+rcfile topology does produce marker + literal prompt, so their contract was satisfied and the
+settle failure lives in whatever the host build they run reports; that half cannot be measured
+from a repository that does not vendor `dsh-win32-process`'s Desktop copy, and is left open
+rather than asserted either way.
