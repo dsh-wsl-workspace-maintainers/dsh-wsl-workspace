@@ -112,11 +112,16 @@ export class WslBashSession {
     try {
       if (this.disposed) throw new Error('wsl-bash: the session is closed')
       const first = await this.execute(command, timeoutMs, signal)
-      if (first.settled || signal?.aborted === true) return first.run
-      // Nothing came back for a frame we did write: the shell is occupied or gone. Rebuild it and
-      // give the command one more chance, so the caller sees a timeout with a live shell after it
-      // rather than a session that stays broken for the rest of the agent's run.
+      if (first.settled) return first.run
+      // The frame went out and no record came back. Two different worlds, and the difference that
+      // matters is whether the command may have run. A dead child cannot still hold the shell, so
+      // replaying there is safe and keeps a crash transparent. A live one may be mid-command, and a
+      // command that merely exceeded its deadline must not be executed a second time — `git commit`,
+      // `curl -X POST`, `rm`. So rebuild either way, which kills whatever is wedged and stops the
+      // *next* call queueing behind it, and re-execute only when the child was already gone.
+      const childGone = this.exited
       await this.rebuild()
+      if (!childGone || signal?.aborted === true) return { ...first.run, restarted: true }
       const second = await this.execute(command, timeoutMs, signal)
       return { ...second.run, restarted: true }
     } finally {

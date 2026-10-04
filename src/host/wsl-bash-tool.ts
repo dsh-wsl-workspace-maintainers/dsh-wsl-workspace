@@ -150,6 +150,18 @@ function resolveUser(config: ResolvedConfig): string | undefined {
   return undefined
 }
 
+/**
+ * The host's abort shape. `dsh-tool-bash` throws `toolAborted()` on a caller cancel — a
+ * `HarnessError` reading `tool call aborted` with `name` set to `AbortError` — and the trace renders
+ * that as a cancelled call. Returning a result instead would put `[exit code: 1]` on a command the
+ * user stopped, which reads as if their command had failed.
+ */
+function toolAborted(): Error {
+  const error = new Error('tool call aborted')
+  error.name = 'AbortError'
+  return error
+}
+
 /** Render one finished run the way the host's tool does, so the trace text is the same shape. */
 function renderRun(value: ForegroundOutput): { type: 'text'; text: string }[] {
   let body = value.stdout.text
@@ -329,6 +341,7 @@ export function apply(ctx: Context, config?: Config): void {
         })
       }
       const run = await session.run(command, timeoutMs, exec.signal)
+      if (run.aborted) throw toolAborted()
       return toForeground(run, timeoutMs)
     },
   })

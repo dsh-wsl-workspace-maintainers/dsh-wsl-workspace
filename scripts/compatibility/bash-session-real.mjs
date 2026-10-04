@@ -68,9 +68,9 @@ const exec = { signal: AbortSignal.timeout(180_000), agent: owner }
 const renderedBodies = []
 
 /** One tool call, timed, with the text the model would read. */
-async function call(command) {
+async function call(command, options = {}) {
   const started = Date.now()
-  const args = { command, description: 'compatibility driver: session bash' }
+  const args = { command, description: 'compatibility driver: session bash', ...options }
   const value = await tool.execute(args, exec)
   const parts = tool?.output?.render?.(args, value) ?? []
   const rendered = parts.map(part => String(part?.text ?? '')).join('')
@@ -130,6 +130,32 @@ try {
   const dirty = renderedBodies.filter(body => signatures.some(signature => body.includes(signature)))
   check('no protocol byte reaches the model, in any call', renderedBodies.length > 10 && dirty.length === 0,
     `${dirty.length} of ${renderedBodies.length} bodies carry a frame signature: ${JSON.stringify(dirty[0]?.slice(0, 70) ?? '')}`)
+
+  // Recovery has to be bounded in both directions, and both were measured wrong here: the old path
+  // re-executed a frame whose deadline had merely passed (so a command with effects ran twice), and a
+  // cancelled `sleep 20` left the shell busy, making the *next* call wait ~18 s for it.
+  const marker = `/tmp/dsh-session-real-${process.pid}.count`
+  const slow = await call(`echo run >> ${marker}; sleep 6`, { timeoutMs: 2_000 })
+  check('a slow command reports its own deadline, not a hang', slow.value?.timedOut === true
+    && slow.rendered.includes('[timed out after 2000ms]'), `${slow.ms}ms ${JSON.stringify(slow.rendered.slice(0, 40))}`)
+  const counted = await call(`wc -l < ${marker}`)
+  check('a timed-out command ran exactly once', counted.text.trim() === '1',
+    `count=${JSON.stringify(counted.text.trim())} (a retry would read 2)`)
+
+  const controller = new AbortController()
+  setTimeout(() => controller.abort(), 1_500)
+  let abortName = 'returned without throwing'
+  try {
+    await tool.execute({ command: 'sleep 20', description: 'compatibility driver: cancel' },
+      { signal: controller.signal, agent: owner })
+  } catch (error) {
+    abortName = String(error?.name ?? error)
+  }
+  check('a cancelled call aborts in the host’s shape', abortName === 'AbortError', abortName)
+  const afterCancel = await call('echo AFTER_CANCEL_$(( 2 * 3 ))')
+  check('the next call is prompt after a cancel', afterCancel.text.includes('AFTER_CANCEL_6') && afterCancel.ms < 3_000,
+    `${afterCancel.ms}ms`)
+  await call(`rm -f ${marker}`)
 } catch (error) {
   check('every call returned', false, String(error?.message ?? error).slice(0, 200))
 }
@@ -183,7 +209,7 @@ try {
     `the control harness failed before comparing: ${String(error?.message ?? error).slice(0, 120)}`)
 }
 
-const EXPECTED_CHECKS = 15
+const EXPECTED_CHECKS = 19
 const passed = results.filter(r => r.pass).length
 console.log(`${passed}/${results.length} checks passed (plane=${plane()}, distro=${distro}, user=${username}, cwd=${sessionCwd})`)
 if (results.length !== EXPECTED_CHECKS) {
