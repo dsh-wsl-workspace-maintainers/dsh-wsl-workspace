@@ -1,4 +1,7 @@
 {
-  "errors": 212,
-  "recorded": "2026-09-30"
+  "errors": 209,
+  "banned": [
+    "TS2515"
+  ],
+  "recorded": "2026-10-04"
 }

@@ -1772,3 +1772,79 @@ Three things survive the closure, each with a stated verdict rather than silence
 3. Small, but it bit a contributor: `dsh plugin add <directory>` on Desktop links, and a link out
    of a package-carrying tree makes the plugin fail to load at all — worse-looking than the defect.
    `TESTING.md` now states the precondition where the Desktop pass meets it.
+
+## Issue #51: a Desktop 0.2.x workspace where every `bash` call failed (2026-10-04, plugin 0.7.6)
+
+**What the reporter saw.** DSH Desktop 0.2.0-rc.2, workspace `\wsl.localhost\Ubuntu\home`,
+plugin 0.7.5: every `bash` call returns `Error: PTY shell exited during startup`, while the file
+tools work. Their report lists four independent incompatibilities and asks for host-side help on
+two of them. The report is attached to the issue, so this section records what could be measured
+here and what could not.
+
+**Proven from this tree, and fixed here (point 4 of four).** `@deepseek-ai/dsh-shell@0.2.0-rc.2`
+declares the seam as `abstract resolve` + `abstract execute(spec): Promise<ShellExecution>`
+(`lib/types/index.d.ts:61,69`), and the host's `@deepseek-ai/dsh-tool-bash` calls
+`await (await ctx.shell.execute(ctx.shell.resolve(request))).result()`. `WslShellExecutor`
+implemented `resolve`/`run`/`start` — the 0.1.x contract — and did not implement `execute`.
+The compiler has been saying so in these words:
+
+```
+src/shell.ts(157,14): error TS2515: Non-abstract class 'WslShellExecutor' does not implement
+  inherited abstract member execute from class 'ShellExecutor'.
+```
+
+read from `tsc --noEmit` on 2026-10-04, together with two sibling gaps of the same family
+(`onExpiry` missing on the spec at `:202`, `observed` missing on the handle at `:410`). The
+count-only budget hid all three: the gate compares the number of `error TS` lines with
+`ci/typecheck-baseline.json`, and the tree reported **212 of 212** — the budget met exactly.
+Because `src/host/variants.ts` mounts that same host tool whenever there is no persistent shell,
+the fallback leg was broken too, which is why the reporter's workaround had to patch both files.
+The fix is one primitive (`spawnExecution`) with three faces on it, plus
+`tests/shell-execute-shape.mjs`, plus a `banned` code list in the same baseline — see
+[CHECK-CATALOG.md](CHECK-CATALOG.md) for the controls run against it.
+
+**Proven from this tree, and fixed here (a cause the report did not name).** When
+`resolveRelayNode()` finds no real node it returns `fallback: true`, whose `source` states in its
+own words that "a PTY child started from it produces no output" — and 0.7.5/0.7.6 mounted the PTY
+world anyway after a `console.warn`. Measured in issue #40's table (this file, above): the Electron
+binary under a real ConPTY writes **0 bytes** and exits 0, which is exactly
+`waitReason === 'session_exit'` in `LocalPtySession.initialize()` — the reporter's literal error
+message, reachable without any UNC path involved. The decision is now
+`persistentShellAllowed(probe, relay)` in `src/shared/relay-node.ts`, and a fallback answer demotes
+the world to the one-shot `bash` instead of shipping a terminal that cannot start.
+
+**Not reproduced, and therefore not fixed here (point 1).** "node.exe crashes instantly when
+started with a `\wsl.localhost\…` cwd" contradicts two first-hand readings already in this
+repository: the interpreter table directly above, run on this machine with the same payload node
+the reporter names (24.21.0) under a real ConPTY at cwd `\wsl.localhost\Ubuntu\home\mille`,
+produced 170 bytes and a live prompt; and the retraction recorded in
+[CHECK-CATALOG.md](CHECK-CATALOG.md), where 20/20 spawns with a UNC cwd succeeded once the shell
+stopped eating an escaping layer. Both readings are of *spawn*, not of node's own nearest
+`package.json` walk, so they do not refute the mechanism — but the failing read in their error text
+is `\?\UNC\wsl.localhost\package.json`, which is the 9P root, and `connection reset by peer` there
+is the signature this file already documents for an idle distro whose share has vanished. Two
+differences between their workspace and every green run recorded here are candidates and neither
+can be settled without a live measurement: `/home` versus a user home (the walk stops at the first
+ancestor carrying a `package.json`), and a cold share versus a held-open one.
+
+**Not settled, and the report's own mechanism has a hole in it (points 2 and 3).** Point 2 is true
+as a fact about the host: `childEnvironment()` injects `PS1`/`PROMPT_COMMAND` as *Windows*
+environment variables, and nothing in this plugin puts them in `WSLENV` — grep finds the two names
+only inside `scripts/compatibility/conpty-relay.mjs:62-63`, hand-copied. This file even records the
+consequence without naming it: the green run's captured prompt was `mille@mikao:~$`, the
+distribution default, not `dsh> `. What is not settled is the cost, because the host has an idle
+fallback (`pollReadiness`, `inferred_idle`, `idleSilenceMs` default 3000) that should complete a
+command at a latency penalty rather than hang. Point 3's hang cannot be explained by the predicate
+the report cites: `foreground?.processGroupId === this.shellPgid` compares `undefined` with
+`undefined` when the inspection returns nothing, which is *true*, and an inspection that throws
+routes to `failActive` — an error, not 300 seconds. `@deepseek-ai/dsh-win32-process` is not vendored
+in this repository, so `inspectForeground()`'s real shape can only be measured on a Desktop install;
+and the 300 s was measured on the report's own hand-edited `shellPath = wsl.exe` topology, not on
+the shipped `node → wsl-relay → wsl.exe` one.
+
+**Not implementable as written (their suggested remedy 4).** `dsh.compatibility.blocklist` does not
+exist: the string appears zero times outside `node_modules` in this tree and zero times in any
+vendored host file, and no vendored `@deepseek-ai` module reads `dshReleases` at all — the reading
+lives in `dsh-plugin-manager`, which is not vendored. So whether an unlisted release fails open or
+closed cannot be answered from here, and the honest interim change to the declaration is a decision
+for the maintainer, not an invention of a key.

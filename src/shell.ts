@@ -19,6 +19,7 @@ import z from '@deepseek-ai/schemastery'
 import { ShellExecutor } from '@deepseek-ai/dsh-shell'
 import type {
   CollectedOutput,
+  ShellExecution,
   ShellExecRequest,
   ShellExecSpec,
   ShellProcess,
@@ -188,7 +189,9 @@ export class WslShellExecutor extends ShellExecutor {
    * Resolve a request into a fully-specified spec: fill `workdir` from
    * `config.cwd`, and `timeoutMs` from `config.timeoutMs`, capped at
    * `config.maxTimeoutMs`. The tool layer calls this before
-   * {@link run}/{@link start}, so those methods receive explicit values.
+   * {@link execute}/{@link run}/{@link start}, so those methods receive explicit
+   * values. `onExpiry` is defaulted to `'kill'`; a background producer that must
+   * outlive `timeoutMs` resolves it to `'none'` instead.
    */
   resolve(request: ShellExecRequest): ShellExecSpec {
     const timeoutMs = clampTimeout(
@@ -203,6 +206,7 @@ export class WslShellExecutor extends ShellExecutor {
       command: request.command,
       workdir: request.workdir ?? this.config.cwd ?? process.cwd(),
       timeoutMs,
+      onExpiry: request.onExpiry ?? 'kill',
       stdoutMaxBytes,
       ...request.signal ? { signal: request.signal } : {},
       ...request.stdin !== undefined ? { stdin: request.stdin } : {},
@@ -210,6 +214,20 @@ export class WslShellExecutor extends ShellExecutor {
       ...request.dshEnv !== undefined ? { dshEnv: request.dshEnv } : {},
       sandboxPolicy: request.sandboxPolicy,
     }
+  }
+
+  /**
+   * Execute a resolved spec and return the live handle with its foreground
+   * projection. This is the seam shape the 0.2.x host calls —
+   * `await (await ctx.shell.execute(ctx.shell.resolve(request))).result()` — and
+   * a background caller uses the same handle's `readOutput`/`observed`/`kill`
+   * without ever calling {@link ShellExecution.result}, so it never observes that
+   * projection's rejection either.
+   * @param spec - the resolved execution spec.
+   * @returns the live execution handle.
+   */
+  async execute(spec: ShellExecSpec): Promise<ShellExecution> {
+    return this.spawnExecution(spec)
   }
 
   /**
@@ -369,57 +387,107 @@ export class WslShellExecutor extends ShellExecutor {
     return { stdout, stderr }
   }
 
-  /** Run one command in the foreground. */
+  /**
+   * Run one command in the foreground and return its settled result. Kept
+   * because 0.1.x hosts and this plugin's own checks call it; on 0.2.x the host
+   * goes through {@link execute}, so both faces must stay in step — which they
+   * do by construction, since this is one line on top of that primitive.
+   */
   async run(spec: ShellExecSpec): Promise<ShellRunResult> {
-    const plan = this.plan(spec)
-    using d = deadline(spec.signal, spec.timeoutMs, 'WSL_BASH_TIMEOUT')
-    const handle = this.ctx.subprocess.spawn(this.spawnSpec(plan, spec, spec.stdoutMaxBytes, d.signal))
-    const outcome = await handle.done
-    const collected = WslShellExecutor.collected(handle)
-    // Only this executor's timeout reason counts as timedOut; outer deadlines count as aborts.
-    const timedOut = timeoutOf(d.signal, 'WSL_BASH_TIMEOUT') !== undefined
-    const aborted = d.signal.aborted && !timedOut
-    return {
-      ...outcome,
-      timedOut,
-      aborted,
-      timeoutMs: spec.timeoutMs,
-      stdout: finalOutput(collected.stdout),
-      stderr: finalOutput(collected.stderr),
-    }
+    return this.spawnExecution(spec).result()
   }
 
-  /** Start one command in the background and return its live handle. */
+  /**
+   * Start one command in the background and return its live handle. The host's
+   * background producers (and this plugin's `job_*` tools, via
+   * `src/host/wsl-jobs.ts`) resolve their request with `onExpiry: 'none'`, which
+   * is what leaves `timeoutMs` unarmed here; the deadline policy lives in the
+   * spec, not in this method.
+   */
   start(spec: ShellExecSpec): ShellProcess {
+    return this.spawnExecution(spec)
+  }
+
+  /**
+   * The seam's only primitive: translate the spec, arm the deadline the spec
+   * asks for, spawn, and hand back the live handle.
+   *
+   * `onExpiry: 'none'` arms nothing — the caller's signal and {@link
+   * ShellProcess.kill} are then the only ways to stop the command, and
+   * `timeoutMs` is merely echoed into the result. Otherwise one fused deadline
+   * drives both the timeout and the caller's cancellation, so
+   * {@link ShellRunResult.timedOut} and `aborted` report the single first cause
+   * rather than both.
+   *
+   * The handle's `done` never rejects: a spawn that never produced a process
+   * settles as `killed` and leaves its story on the read path, while
+   * {@link ShellExecution.result} rejects for exactly that infrastructure
+   * failure. Nonzero exits, timeout kills, and abort kills all resolve.
+   * @param spec - the resolved execution spec.
+   * @returns the live execution handle, foreground-projectionable.
+   */
+  private spawnExecution(spec: ShellExecSpec): ShellExecution {
     const plan = this.plan(spec)
-    // Background runs ignore timeoutMs; callers stop them through kill() or spec.signal.
-    const running = this.ctx.subprocess.spawn(this.spawnSpec(plan, spec, this.config.maxOutputBytes, spec.signal))
+    const armed = spec.onExpiry === 'none'
+      ? undefined
+      : deadline(spec.signal, spec.timeoutMs, 'WSL_BASH_TIMEOUT')
+    // Explicit, not `using`: the deadline outlives this method, because a
+    // background handle is returned while its process is still running. It is
+    // released when the process settles, and on the one path that settles
+    // synchronously — a spawn that throws before producing a handle.
+    const release = (): void => armed?.[Symbol.dispose]()
+    let running: SubprocessHandle
+    try {
+      running = this.ctx.subprocess.spawn(
+        this.spawnSpec(plan, spec, spec.stdoutMaxBytes, armed?.signal ?? spec.signal),
+      )
+    } catch (error) {
+      release()
+      throw error
+    }
     const collected = WslShellExecutor.collected(running)
+
+    // One branch per settlement cause, captured once so both `done` and the
+    // on-demand `result()` projection read the same facts.
+    type Settled =
+      | { ok: true; outcome: Awaited<SubprocessHandle['done']> }
+      | { ok: false; error: unknown }
+    const settled: Promise<Settled> = running.done.then(
+      (outcome): Settled => ({ ok: true, outcome }),
+      (error: unknown): Settled => ({ ok: false, error }),
+    )
 
     // A spawn failure produces no process output, so the subprocess service has
     // nothing to buffer; the note is delivered exactly once through the read path.
-    let spawnFailureNote: string | undefined
+    let spawnFailure: unknown
+    let failureNoted = false
     const consumeSpawnFailure = (): string => {
-      const note = spawnFailureNote ?? ''
-      spawnFailureNote = undefined
-      return note
+      if (spawnFailure === undefined || failureNoted) return ''
+      failureNoted = true
+      return `spawn failed: ${String(spawnFailure)}`
     }
 
     let stdoutOffset = 0
     let stderrOffset = 0
-    const proc: ShellProcess = {
+    let resultPromise: Promise<ShellRunResult> | undefined
+    const execution: ShellExecution = {
       status: 'running',
       exitCode: null,
       signal: null,
-      done: running.done.then((outcome) => {
-        if (proc.status === 'running') {
-          proc.status = spec.signal?.aborted === true || outcome.signal !== null ? 'killed' : 'completed'
+      done: settled.then((settledValue) => {
+        release()
+        if (!settledValue.ok) {
+          spawnFailure = settledValue.error
+          execution.status = 'killed'
+          return
         }
-        proc.exitCode = outcome.exitCode
-        proc.signal = outcome.signal
-      }, (error: unknown) => {
-        proc.status = 'killed'
-        spawnFailureNote = `spawn failed: ${String(error)}`
+        if (execution.status === 'running') {
+          execution.status = spec.signal?.aborted === true || settledValue.outcome.signal !== null
+            ? 'killed'
+            : 'completed'
+        }
+        execution.exitCode = settledValue.outcome.exitCode
+        execution.signal = settledValue.outcome.signal
       }),
       readOutput: (): ShellProcessRead => {
         const out = collected.stdout.readFrom(stdoutOffset)
@@ -437,14 +505,38 @@ export class WslShellExecutor extends ShellExecutor {
           ...err.spillPath !== undefined ? { stderrSpillPath: err.spillPath } : {},
         }
       },
+      // Independent cursors over the same captured streams `readOutput` drains,
+      // so an observer can follow a background command without stealing bytes
+      // from the job tool that owns it.
+      observed: { stdout: collected.stdout, stderr: collected.stderr },
       kill: (): boolean => {
-        if (proc.status !== 'running') return false
-        proc.status = 'killed'
+        if (execution.status !== 'running') return false
+        execution.status = 'killed'
         running.terminate()
         return true
       },
+      result: (): Promise<ShellRunResult> => {
+        if (resultPromise === undefined) {
+          resultPromise = settled.then((settledValue) => {
+            if (!settledValue.ok) throw settledValue.error
+            // Only this executor's timeout reason counts as timedOut; outer
+            // deadlines count as aborts.
+            const timedOut = armed !== undefined && timeoutOf(armed.signal, 'WSL_BASH_TIMEOUT') !== undefined
+            const aborted = armed?.signal.aborted === true && !timedOut
+            return {
+              ...settledValue.outcome,
+              timedOut,
+              aborted,
+              timeoutMs: spec.timeoutMs,
+              stdout: finalOutput(collected.stdout),
+              stderr: finalOutput(collected.stderr),
+            }
+          })
+        }
+        return resultPromise
+      },
     }
-    return proc
+    return execution
   }
 }
 

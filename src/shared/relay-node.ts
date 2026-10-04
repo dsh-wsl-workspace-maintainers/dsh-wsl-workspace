@@ -290,3 +290,26 @@ export async function resolveRelayNode(): Promise<RelayNodeResolution> {
     fallback: true,
   }
 }
+
+/**
+ * Whether the world may mount the persistent (PTY) shell, given the substrate
+ * probe's answer and the interpreter the relay would be started with.
+ *
+ * A `fallback: true` resolution is not a degraded-but-usable answer: what it
+ * resolved to is the Electron executable, and `resolveRelayNode()` says in its
+ * own words that a PTY child started from it produces no output. Mounting the PTY
+ * world on top of that turns every `bash` call into issue #40's
+ * `PTY shell exited during startup`, which is what issue #51 reported from a
+ * Desktop whose payload layout matched none of the candidates. Demoting costs the
+ * session its shell state — the one-shot executor needs no PTY, so the model
+ * still gets a working `bash`.
+ * @param probeSaysYes - what `supportsPersistentShell` answered.
+ * @param relay - the resolution for the chosen interpreter, absent when the probe already said no.
+ * @returns true only when both halves agree the shell can start.
+ */
+export function persistentShellAllowed(
+  probeSaysYes: boolean,
+  relay: RelayNodeResolution | undefined,
+): boolean {
+  return probeSaysYes && relay !== undefined && relay.fallback !== true
+}

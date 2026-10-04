@@ -36,7 +36,7 @@ import { homedir } from 'node:os'
 import { joinUnc, mntToWindowsPath, normalizeLinuxPath, isAbsoluteLinuxPath, isValidWslUsername, parseWslUnc } from './shared/paths.ts'
 import { canonicalWslUnc, getWindowsWorkspace, getWorkspaceUsername, listWorkspaceKeys, registerWindowsWorkspace, setWorkspaceUsername } from './shared/wsl-credentials.ts'
 import { defaultDistro, listDistros } from './shared/wsl.ts'
-import { isElectronHost, resolveRelayNode } from './shared/relay-node.ts'
+import { isElectronHost, persistentShellAllowed, resolveRelayNode } from './shared/relay-node.ts'
 import { isWslVariantId, transformPresetForWsl, unquoteScalar, variantIdFor } from './host/variants.ts'
 import { WslSkillsProvider, type WslSkillsRegistryFace } from './host/wsl-skills.ts'
 
@@ -897,18 +897,19 @@ export function apply(ctx: Context, config: Config): void {
         disposers.push(retire)
       }
       void (async () => {
-        const persistentShell = await supportsPersistentShell(ctx)
+        const probeSaysYes = await supportsPersistentShell(ctx)
         // The PTY backend starts `shellPath` with `shellArgs`, so the relay's
         // interpreter is this plugin's one choice in that stack. It has to be a
         // real node: on DSH Desktop `process.execPath` is the Electron
         // executable, and an Electron binary under a ConPTY writes nothing at
         // all — which is the "PTY shell exited during startup" failure of
         // issue #40. See `src/shared/relay-node.ts`.
-        const relay = persistentShell ? await resolveRelayNode() : undefined
+        const relay = probeSaysYes ? await resolveRelayNode() : undefined
+        const persistentShell = persistentShellAllowed(probeSaysYes, relay)
         if (relay !== undefined && isElectronHost()) {
           const detail = relay.rejected.length === 0 ? '' : ` (rejected: ${relay.rejected.join('; ')})`
           if (relay.fallback) {
-            console.warn(`dsh-wsl-workspace: persistent shell: ${relay.source}${detail}`)
+            console.warn(`dsh-wsl-workspace: persistent shell: not mounted, ${relay.source}${detail}`)
           } else {
             console.log(`dsh-wsl-workspace: persistent shell: relay interpreter is ${relay.path} — ${relay.source}${detail}`)
           }

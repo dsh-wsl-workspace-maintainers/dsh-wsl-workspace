@@ -13,6 +13,7 @@ import {
   classifyNodeProbe,
   isElectronHost,
   pathNodeCandidates,
+  persistentShellAllowed,
   probeRelayNode,
   relayNodeCandidates,
   resolveRelayNode,
@@ -136,4 +137,27 @@ test('the PATH lookup answers with a list, never throws', async () => {
   const candidates = await pathNodeCandidates(process.platform);
   assert.ok(Array.isArray(candidates));
   for (const candidate of candidates) assert.match(candidate.source, /on PATH/);
+});
+
+// The mount decision is this table, and issue #51 is the row that was missing:
+// a `fallback: true` resolution names the Electron executable, and an Electron
+// binary under a ConPTY writes nothing at all — so mounting the PTY world on it
+// makes every `bash` call fail with issue #40's message instead of degrading.
+test('a fallback interpreter demotes the persistent shell, and only that', () => {
+  const resolved = (fallback) => ({
+    path: fallback ? ELECTRON : BUNDLED,
+    source: 'fixture',
+    rejected: [],
+    fallback,
+  });
+  assert.equal(persistentShellAllowed(true, resolved(false)), true,
+    'probe yes + real node: mount, exactly as before');
+  assert.equal(persistentShellAllowed(true, resolved(true)), false,
+    'probe yes + Electron last resort: demote, which is the issue #51 row');
+  assert.equal(persistentShellAllowed(false, resolved(false)), false,
+    'a probe that already said no stays no');
+  assert.equal(persistentShellAllowed(true, undefined), false,
+    'no interpreter answer is not a yes: the mount needs both halves');
+  assert.equal(persistentShellAllowed(false, undefined), false,
+    'neither half: no mount');
 });

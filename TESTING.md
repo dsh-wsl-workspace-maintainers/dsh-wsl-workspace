@@ -214,8 +214,12 @@ Two levels, in order of cost:
    `bash_background` + `job_list` must produce a job id and a `running`/`completed` status
    (that path failed separately — see below). The boot log must contain
    `dsh-wsl-workspace: persistent shell: relay interpreter is …`, naming the interpreter it
-   chose; if that line names the Electron executable, the log also lists every candidate it
-   rejected and why. Close the window and stop the process when done.
+   chose. When no candidate answers as a real node the line instead reads
+   `persistent shell: not mounted, …` and lists every candidate it rejected and why — since
+   issue #51 that is a **demotion, not a warning**: the Electron executable is what such a
+   host falls back to, #40 measured that a PTY child started from it writes nothing, so the
+   world ships without the PTY rows and keeps the one-shot `bash` (no shell state across
+   calls, but every call works). Close the window and stop the process when done.
 
    **A local directory is added as a link, so where you point it decides whether the plugin can
    load at all.** `dsh plugin add <dir>` writes a `link:` dependency, and Node resolves bare
@@ -290,3 +294,11 @@ pre-existing `tsc --noEmit` errors in this tree; the gate is that the count does
 machine-enforced since the CI consolidation by `npm run typecheck:gate` against
 `ci/typecheck-baseline.json` (`--record` to rebaseline after a reviewed change; the count
 is environment-bound, record it from the environment the gate runs in).
+
+**A budget is not coverage, and issue #51 is the proof.** The same baseline also carries
+`banned: ["TS2515"]`: a line with a banned code reddens **at any count**. `src/shell.ts` has
+been reporting "does not implement inherited abstract member execute" since the 0.2.x seam
+landed, and it sat inside a budget that was met exactly (212 of 212) — so a provider missing
+the very method its host calls passed CI. `node scripts/typecheck-gate.mjs --self-test`,
+which `npm run test:node` now runs, proves that second rule bites without needing a broken
+tree, and `--record` refuses while a banned violation stands.

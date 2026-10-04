@@ -235,6 +235,11 @@ export function apply(ctx: Context, config?: Config): void {
       const workdir = args.workdir ?? exec.agent?.session?.header?.cwd
       const request = {
         command: args.command,
+        // A job is started precisely so it can outlive one command's timeout:
+        // the shell executor's `start()` honours `timeoutMs` unless this says
+        // otherwise, so leaving it defaulted would kill the job at the
+        // executor's 120 s foreground timeout. Cancellation is `cancel()` below.
+        onExpiry: 'none' as const,
         ...workdir === undefined ? {} : { workdir },
         ...dshEnv === undefined ? {} : { dshEnv },
       }
