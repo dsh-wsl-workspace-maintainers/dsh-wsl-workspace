@@ -2389,3 +2389,17 @@ byte-identical (`git diff --stat` empty for that file) and re-green 33/33.
 is a separate workflow on its own schedule), `scripts/compatibility/installed-copy.mjs` is not wired
 into `ci.yml` at all (it needs this machine's Desktop profile), and the reap cell was checked only for
 the `sleep`-named probes — the 4 000-function journal cell and the spill cell were not re-instrumented.
+
+The first gap was closed the same evening: `compat.yml` dispatched on this branch at head `9d91b78`
+(frame **37223406931**, the whole rolling window, repo is PUBLIC so the Windows minutes are not
+billed). `read-window` ✓, and one job per entry, each ending `verify-dsh-compat: OK — 1 verdict(s),
+all PASS compatible` with its own verdict line: `0.2.0-rc.2 PASS compatible`, `0.2.0-rc.1 PASS
+compatible`, `0.1.7-rc.2 PASS compatible`. Those jobs pack the **working tree** and install that tarball
+(the step is named `pack and unpack the working tree (never test a published artifact for an
+unpublished commit)`), so this is the first compat pass that ever carried the session `bash`, and the
+rc.2 log shows the new chunk in the pack (`lib/wsl-bash-tool-C7flW-l_.js`, 49.4 kB with an 88.7 kB map).
+What the compat matrix does **not** look at, stated because a green there is often read as more than
+it is: it probes install → boot → the plugin's HTTP route → uninstall → reprobe (`✔ no plugin errors
+in the boot log`, `✔ plugin route gone after removal (405)`), and never enumerates which tools
+mounted — so it does not say whether the persistent-bash world came up on that runner, and it is not
+evidence about `bash` behaviour. The behaviour claim is `bash-session-real` / `bash-parity-real` above.
