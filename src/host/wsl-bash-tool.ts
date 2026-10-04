@@ -76,6 +76,13 @@ type ResolvedConfig = typeof DEFAULTS & Config
 /** The defaults as a resolved config, for callers that build a spec before a plugin row exists. */
 export const PROBE_CONFIG: ResolvedConfig = { ...DEFAULTS }
 
+/**
+ * Declared for readers and for a host that mounts the module object. The host's loader
+ * (`cordis-plugin-loader`, `unwrapExports`) hands cordis `exports.default` — this module's bare
+ * `apply` — so neither `inject` nor `Config` reaches the fiber, and `ctx.subprocess` then throws
+ * `cannot get property "subprocess" without inject`. The code below therefore resolves the seam with
+ * `ctx.get('subprocess')`, which bypasses the inject requirement, as the rest of this plugin does.
+ */
 export const inject = ['subprocess']
 
 /** The tool-execution face this tool reads. */
@@ -244,6 +251,19 @@ export function apply(ctx: Context, config?: Config): void {
   const tools = ctx.get('tools') as unknown as { register?: (tool: unknown) => (() => void) | void } | undefined
   if (tools?.register === undefined) return
 
+  // `ctx.get` rather than `ctx.subprocess`, even though `inject` names the service: the host's
+  // loader passes `exports.default ?? exports` to `ctx.plugin`, so a module-level `inject` never
+  // reaches the fiber and every property access the tool made threw
+  // `cannot get property "subprocess" without inject`. It passed 13/13 in a driver that mounted the
+  // module object directly, and failed every call in Desktop.
+  const spawnHost = (): WslBashSpawnHost => {
+    const subprocess = ctx.get('subprocess') as unknown as WslBashSpawnHost['subprocess'] | undefined
+    if (subprocess === undefined || typeof subprocess.spawn !== 'function') {
+      throw new Error('wsl-bash: this host exposes no subprocess service to start a shell with')
+    }
+    return { subprocess }
+  }
+
   const sessions = new Map<string, WslBashSession>()
   const cleanup = () => {
     for (const session of sessions.values()) void session.dispose()
@@ -301,7 +321,7 @@ export function apply(ctx: Context, config?: Config): void {
         if (spec === undefined) {
           throw new Error('wsl-bash: no WSL distribution could be resolved for this session')
         }
-        session = new WslBashSession(ctx as unknown as WslBashSpawnHost, spec)
+        session = new WslBashSession(spawnHost(), spec)
         sessions.set(ownerKey, session)
         await session.start().catch((error: unknown) => {
           sessions.delete(ownerKey)

@@ -2120,3 +2120,67 @@ And one planning consequence, said plainly: **`ci.yml#wsl-gate` cannot catch thi
 WSL1 frame establishes that our session protocol works; it establishes nothing about the PTY tier's
 hang, because that tier does not hang there. The frames that can see it are this machine and a real
 Desktop session — which is why the Desktop reading is still on the list rather than assumed covered.
+
+## The host's plugin loader unwraps `exports.default`, and my driver did not (2026-10-04)
+
+The Desktop E2E pass over the session tier failed, and the product's own transcript
+(`~/.dsh/sessions/--wsl.localhost-Ubuntu-home-ruler--/session-b7b8f571-…/session.v4.jsonl.zstd`,
+read back with `D:\Temp\issue51-matrix\count-in-transcript.mjs`) says why:
+
+| seq | what the log holds |
+| --- | --- |
+| 21, 33, 49 | the **PTY** tier still in place: three calls each burned the host's 300 s deadline |
+| 73 | `Error: invalid arguments: missing required property "description"` — the model's first call after our tool replaced the PTY one |
+| 81, 86, 94 | `Error: cannot get property "subprocess" without inject`, three tool results, 15 mentions of the string across the log |
+| 105 onward | the agent gave up on `bash` and pivoted to `bash_background` — 9 `started background job` |
+
+The last two rows answer the question "why did the working directory and the exported variable not
+survive": they were never run by the session shell. Every `bash` call errored at the seam, and the
+model's workaround was the background-job tool, whose jobs are separate processes — so `export` in
+one job cannot be seen by the next. The persistence cells in the driver were green; the calls the
+model actually made were not ours.
+
+Row 73 is **not** a defect: the host's own one-shot tool declares `description` required too
+(`@deepseek-ai/dsh-tool-bash/lib/index.js:496-499`), so a model omitting it gets the same error from
+the tool this plugin replaces. Row 81 is ours.
+
+### The mechanism
+
+`cordis-plugin-loader` normalises a module before mounting it — `unwrapExports` returns
+`exports.default ?? exports` (`lib/index.js:663-669`), and `Context.registry.plugin` then reads
+`plugin.inject` and `plugin.Config` off whatever it got (`cordis/lib/index.js:1635`). A module whose
+default export is a **bare function** therefore arrives with no `inject`: the fiber has no declared
+service, the proxy trap refuses the property, and the message is exactly
+`cannot get property "subprocess" without inject` (`cordis/lib/index.js:676`). The one-shot executor
+never showed this because its default export is a **class** carrying `static inject`
+(`src/shell.ts:159,543`), which survives the same unwrap.
+
+So `export const inject = ['subprocess']` in `src/host/wsl-bash-tool.ts` was a declaration nothing
+read. The fix is the one this repository already uses everywhere else — resolve the seam with
+`ctx.get('subprocess')`, which is documented as the read that bypasses the inject requirement
+(`cordis/lib/index.js:756`) — in `wsl-bash-tool.ts`, and the tool now fails with
+`this host exposes no subprocess service` if the service genuinely is not there.
+
+### Why 13/13 could coexist with every real call failing
+
+The driver mounted the plugin as `ctx.plugin(moduleObject)`, and cordis does read `inject` off a
+module object. The product mounts `moduleObject.default`. Same file, same config, opposite outcome —
+the driver was measuring a channel the product does not use. `bash-session-real.mjs` now calls
+`ctx.plugin(sessionTool.default ?? sessionTool)`, which is the loader's shape; it went red with the
+Desktop message verbatim before the one-line product fix and 13/13 after, on both planes:
+
+| plane | first call | after that | the PTY control, same command |
+| --- | --- | --- | --- |
+| `src` | 520 ms (session boot included) | 22-34 ms | did **not** answer inside 8 s — `Your command timed out after 8 seconds` |
+| `lib` | ~500 ms | ~30 ms | answered in 4256 ms |
+
+The control needed its own correction. `dsh-terminal-bash` builds the PTY child's environment
+itself — a fixed set, `TERM`/`PS1`/`PROMPT_COMMAND`/`DSH_SESSION_ID` (`lib/index.js:936-955`) — so
+`DSH_WSL_USER` set in the driver's process never reaches the relay, and the shell comes up as the
+distribution's default user. Pointed at the driver's own session directory (`…\Ubuntu\root`) it died
+with `chdir(/root) Permission denied` and the cell reported "PTY shell exited during startup": a
+control that cannot start is the vacuous green this file already names twice. It now starts in
+`/tmp`, which every user can enter, and the command being compared does not depend on the directory.
+Its two outcomes above, hang here and answer there in the same hour, are why the cell asserts only
+that the control ran.
+
