@@ -1928,3 +1928,13 @@ cold/warm matrix as the refutation of the universal claim; this paragraph is the
 refutation was not mistaken for an explanation. Machine state was restored after the run
 (`--terminate`, then `--shutdown` when `vmmem` held 605 MB past both distros reporting `Stopped`;
 both `Stopped` and no `vmmem` afterwards, matching the pre-run baseline).
+
+### The 267 that was mine, not the platform's (m1c/m1d, 2026-10-04)
+
+After M1-teardown, one ConPTY-gate run failed with `the interpreter wrote nothing to the ConPTY (exit {"exitCode":267} after 1580ms)` while the distro was stopped, and I read that as the production differential: node-pty (what the backend actually uses) failing at a UNC cwd where plain `child_process.spawn` does not. Two measurements killed that reading inside one turn:
+
+- **m1d** ran the production shape directly — `node-pty` from the pinned tree, the payload `node.exe`, `{UNC home, SystemRoot} × {distro stopped, distro warm}`, with a plain-spawn reading at the same instant. **All four cells: `ok`, exit 0, 154 bytes, ~1.2 s.** There is no cwd-or-state differential in the production spawn shape.
+- The gate then **passed (1534 bytes, marker + controlled prompt) when re-run under a stable interpreter**. The 267 was the interpreter path this CLI session was launched through — an `fnm_multishells\<pid>_<ts>\node.exe` directory that fnm had since removed. 267 is `ERROR_DIRECTORY`, and it named the *executable's* directory, not the UNC cwd.
+- A third artifact of the same instrument: m1c's `dir \wsl.localhost` column reported the provider root as absent **in every cell, including before the shutdown** — listing the share-list level is not a state signal on this platform, so that column measured nothing and its "8 of 8 cells with the root absent" line in the log is noise. The m1c run's real output is only the negative: 8 cells, node exits 0 at the UNC cwd in all of them.
+
+This is recorded rather than quietly dropped, because it is the same mistake the gate in `conpty-relay.mjs` was built to make: a failing instrument that produces a plausible mechanism. The M1-teardown conclusion above stands — the reporter's crash text was not produced in any cell here — and the attribution now has one fewer candidate explanation, since "share state breaks the PTY spawn shape" is refuted for the four states measured.

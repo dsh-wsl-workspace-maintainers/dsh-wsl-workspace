@@ -21,6 +21,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { resolveRelayNode } from '../../src/shared/relay-node.ts';
+import { CONTROLLED_PROMPT, readinessContract } from '../../src/shared/wsl-env.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const plugin = path.resolve(here, '../..');
@@ -45,6 +46,11 @@ function nodePtyPath(runtimeRoot) {
   throw new Error(`conpty-relay: no node-pty under ${runtimeRoot} (tried ${candidates.join(', ')})`);
 }
 
+/** Escape a literal for use inside a `RegExp` built from a value, not a pattern. */
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /** The PTY backend's own child environment: scrubbed parent, then overrides. */
 function childEnvironment() {
   const env = {};
@@ -59,13 +65,13 @@ function childEnvironment() {
     TERM: 'dumb',
     PAGER: 'cat',
     GIT_PAGER: 'cat',
-    // The host's own values, not a paraphrase: `CONTROLLED_PROMPT` is lowercase
-    // `"dsh> "` and the backend compares the prompt tail against it byte for byte
-    // (`dsh-terminal-bash/lib/index.js:76,951-952`). An earlier draft of this gate
-    // injected an uppercase `'DSH> '`, so it could never have observed the contract
-    // arriving even if the relay had carried it across.
-    PS1: 'dsh> ',
-    PROMPT_COMMAND: 'printf "\\033]133;D;%s\\007" "$?"; PS1=\'dsh> \'',
+    // Taken from the plugin's single declaration, not re-typed here. This file used
+    // to hand-spell an uppercase `'DSH> '`, which is how a gate built to watch the
+    // readiness contract could never have matched the host's lowercase prompt — and a
+    // distribution default ending in `$ ` satisfied the old assertion anyway.
+    // `scripts/check-host-prompt-parity.mjs` is what keeps the declaration honest
+    // against the host package (`dsh-terminal-bash/lib/index.js:76,951-952`).
+    ...readinessContract(),
     BASH_SILENCE_DEPRECATION_WARNING: '1',
     DSH_SHELL: '1',
     DSH_SESSION_ID: 'compat-session',
@@ -113,8 +119,8 @@ assert.equal(run.exit, undefined, `the shell exited instead of staying up: ${JSO
 // pair the backend itself compares.
 assert.ok(run.output.includes(']133;D;'),
   `no OSC 133;D readiness marker reached the wire — PROMPT_COMMAND did not cross into the distribution: ${JSON.stringify(printable.slice(0, 200))}`);
-assert.match(printable, /dsh> /,
+assert.match(printable, new RegExp(escapeRegExp(CONTROLLED_PROMPT.trimEnd())),
   `the host's controlled prompt never appeared — the readiness contract is not in effect: ${JSON.stringify(printable.slice(0, 200))}`);
 
-console.log(`PASS conpty-relay: ${resolution.path} gives the host's controlled prompt under a real ConPTY (${run.output.length} bytes, marker + ${JSON.stringify('dsh> ')} both present)`);
+console.log(`PASS conpty-relay: ${resolution.path} gives the host's controlled prompt under a real ConPTY (${run.output.length} bytes, marker + ${JSON.stringify(CONTROLLED_PROMPT)} both present)`);
 console.log('PASS conpty-relay: the interpreter is not the Electron executable, and the resolution reported no fallback');

@@ -26,6 +26,28 @@
 export const READINESS_KEYS: readonly string[] = ['PS1', 'PROMPT_COMMAND']
 
 /**
+ * The prompt string the host compares the tail against. This is a COPY of a host
+ * constant, which is exactly the shape that rots silently — `scripts/check-host-prompt-parity.mjs`
+ * is the gate that compares it against the installed `@deepseek-ai/dsh-terminal-bash`
+ * and reddens on drift. Keep one declaration here; `scripts/compatibility/conpty-relay.mjs`
+ * and the boot-time readiness probe both read it rather than re-typing it.
+ */
+export const CONTROLLED_PROMPT = 'dsh> '
+
+/**
+ * The contract values as the host injects them: `CONTROLLED_PROMPT`, and the
+ * `PROMPT_COMMAND` that emits the OSC `133;D;` marker and re-assigns `PS1` at every
+ * prompt. Byte-for-byte the pair `dsh-terminal-bash` writes into its PTY children.
+ * @returns the two entries the backend expects to see in a bash child environment.
+ */
+export function readinessContract(): Record<string, string> {
+  return {
+    PS1: CONTROLLED_PROMPT,
+    PROMPT_COMMAND: `printf "\\033]133;D;%s\\007" "$?"; PS1='${CONTROLLED_PROMPT}'`,
+  }
+}
+
+/**
  * The environment for `wsl.exe`, with the readiness keys named in `WSLENV`.
  *
  * Ambient `WSLENV` entries survive and are never duplicated; a key absent or empty

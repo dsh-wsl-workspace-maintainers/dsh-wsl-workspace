@@ -37,6 +37,7 @@ import { joinUnc, mntToWindowsPath, normalizeLinuxPath, isAbsoluteLinuxPath, isV
 import { canonicalWslUnc, getWindowsWorkspace, getWorkspaceUsername, listWorkspaceKeys, registerWindowsWorkspace, setWorkspaceUsername } from './shared/wsl-credentials.ts'
 import { defaultDistro, listDistros } from './shared/wsl.ts'
 import { isElectronHost, persistentShellAllowed, resolveRelayNode } from './shared/relay-node.ts'
+import { probePersistentShellReadiness } from './host/pty-readiness.ts'
 import { isWslVariantId, transformPresetForWsl, unquoteScalar, variantIdFor } from './host/variants.ts'
 import { WslSkillsProvider, type WslSkillsRegistryFace } from './host/wsl-skills.ts'
 
@@ -626,14 +627,15 @@ function publishVariant(staging: string, dest: string): void {
  * spawn failure instead, which is the "supported" answer.
  * @param ctx - plugin context; the `subprocess` service is looked up with `get`
  *   and waited for briefly, because the world is generated during profile boot.
- * @returns true when the persistent shell may be mounted.
+ * @returns whether the persistent shell may be mounted, and the service face the
+ *   readiness stage probes with (undefined when there was nothing to probe).
  */
-async function supportsPersistentShell(ctx: Context): Promise<boolean> {
+async function supportsPersistentShell(ctx: Context): Promise<{ ok: boolean; subprocess: SubprocessProbeFace | undefined }> {
   // POSIX hosts have an inspector on every declared release, and a WSL world is
   // Windows-only anyway.
-  if (process.platform !== 'win32') return true
+  if (process.platform !== 'win32') return { ok: true, subprocess: undefined }
   const subprocess = await waitForSubprocess(ctx)
-  if (subprocess?.spawnTerminal === undefined) return true
+  if (subprocess?.spawnTerminal === undefined) return { ok: true, subprocess }
   try {
     const handle = await subprocess.spawnTerminal({
       argv: ['dsh-wsl-workspace-pty-probe-does-not-exist'],
@@ -645,9 +647,9 @@ async function supportsPersistentShell(ctx: Context): Promise<boolean> {
     // Unexpectedly alive: this host starts a PTY for a missing program, so the
     // terminal stack works. Take the probe process down again.
     await handle?.terminate?.()
-    return true
+    return { ok: true, subprocess }
   } catch (error) {
-    return !isTerminalInspectionUnsupported(error)
+    return { ok: !isTerminalInspectionUnsupported(error), subprocess }
   }
 }
 
@@ -897,21 +899,41 @@ export function apply(ctx: Context, config: Config): void {
         disposers.push(retire)
       }
       void (async () => {
-        const probeSaysYes = await supportsPersistentShell(ctx)
+        const probe = await supportsPersistentShell(ctx)
         // The PTY backend starts `shellPath` with `shellArgs`, so the relay's
         // interpreter is this plugin's one choice in that stack. It has to be a
         // real node: on DSH Desktop `process.execPath` is the Electron
         // executable, and an Electron binary under a ConPTY writes nothing at
         // all — which is the "PTY shell exited during startup" failure of
         // issue #40. See `src/shared/relay-node.ts`.
-        const relay = probeSaysYes ? await resolveRelayNode() : undefined
-        const persistentShell = persistentShellAllowed(probeSaysYes, relay)
+        const relay = probe.ok ? await resolveRelayNode() : undefined
+        let persistentShell = persistentShellAllowed(probe.ok, relay)
         if (relay !== undefined && isElectronHost()) {
           const detail = relay.rejected.length === 0 ? '' : ` (rejected: ${relay.rejected.join('; ')})`
           if (relay.fallback) {
             console.warn(`dsh-wsl-workspace: persistent shell: not mounted, ${relay.source}${detail}`)
           } else {
             console.log(`dsh-wsl-workspace: persistent shell: relay interpreter is ${relay.path} — ${relay.source}${detail}`)
+          }
+        }
+        // issue #51 needed the next question answered too — whether a WSL shell
+        // under this host actually reaches the state the backend's own completion
+        // check looks for — because a host can pass the first and fail every
+        // `bash` call afterwards. Bounded at 15 s and win32-only; a host whose
+        // terminal face this probe cannot read is reported as unverified rather
+        // than failed.
+        if (persistentShell && process.platform === 'win32') {
+          const readiness = await probePersistentShellReadiness(probe.subprocess, {
+            relayPath,
+            nodePath: relay?.path ?? process.execPath,
+          })
+          if (!readiness.ready) {
+            persistentShell = false
+            console.warn(`dsh-wsl-workspace: persistent shell: not mounted, readiness probe failed — ${readiness.detail}`)
+          } else if (readiness.unverifiable === true) {
+            console.warn(`dsh-wsl-workspace: persistent shell: mounted unverified — ${readiness.detail}`)
+          } else {
+            console.log(`dsh-wsl-workspace: persistent shell: readiness probe passed — ${readiness.detail}`)
           }
         }
         await materializeVariants(agentPresets, dshHome, {
