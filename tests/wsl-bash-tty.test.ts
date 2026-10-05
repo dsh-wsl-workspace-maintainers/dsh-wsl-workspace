@@ -26,9 +26,19 @@ test('the credential and keyboard classes are escalated, and ordinary commands a
   assert.equal(needsTty('env -i vim file'), true)
   assert.equal(needsTty('ssh host true'), true)
   assert.equal(needsTty('git status'), false, 'git reaches a terminal only in special subcommands')
-  assert.equal(needsTty('echo hi | sudo -v'), false, 'documented limit: the decision reads the first word')
+  assert.equal(needsTty('echo hi | sudo -v'), true, 'every top-level segment is read: a compound command runs its terminal-waiting part too')
+  assert.equal(needsTty('cd /tmp && vim f'), true, 'measured cost of reading only the first word: 121 703 ms in a real session')
+  assert.equal(needsTty('printf \'x\\n\'; vim f'), true)
+  assert.equal(needsTty('echo "sudo reboot"'), false, 'a quoted word is not a command position')
   assert.equal(needsTty(''), false)
   assert.equal(firstWord('   '), '')
+})
+
+test('the class of a compound command is the strongest one any segment carries', () => {
+  assert.equal(ttyClass('sudo -n true; vim f'), 'keyboard', 'the keyboard part is what the deadline pays for')
+  assert.equal(ttyClass('sudo -n true; man ls'), 'credential')
+  assert.equal(ttyClass('man ls | head -3'), 'optional')
+  assert.equal(ttyClass('git status'), 'none')
 })
 
 test('the pager class is not escalated, because on the pipe it answers better', () => {
@@ -111,8 +121,8 @@ test('a shell wrapper is read one layer deep, and an unreadable one is not guess
   assert.equal(needsTty("bash -c 'sudo true'"), true)
   assert.equal(needsTty('sh -c "passwd"'), true)
   assert.equal(needsTty('bash -l -c "sudo -n true"'), true, 'other flags before -c are skipped')
-  assert.equal(needsTty("bash -c 'echo hi; sudo -v'"), false,
-    'only the inner command’s first word decides — a wrapper that mentions sudo later is not a terminal case')
+  assert.equal(needsTty("bash -c 'echo hi; sudo -v'"), true,
+    'the wrapper’s inner segments are read too — the rule is per segment, not per first word')
   assert.equal(needsTty('bash -c "echo hi"'), false)
   assert.equal(needsTty("bash -c 'sudo true"), false, 'an unterminated quote is left alone, not escalated on a guess')
   assert.equal(needsTty("grep -r 'sudo' /var/log"), false, 'a search is not a wrapper')

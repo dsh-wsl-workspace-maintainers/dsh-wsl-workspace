@@ -89,6 +89,19 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   `top`) still costs its deadline plus a rebuild — measured 5.7-6.1 s with a screen dump — because the
   frame gives a pty `/dev/null` for input rather than letting the program eat the next command's bytes.
 
+- **The class is now read from every top-level segment, because a real session cost 121 703 ms for the
+  old rule.** The checklist of ordinary commands was driven through a real dsh 0.2.0-rc.2 session (its
+  own `DSH_HOME`, its own port, a scripted local provider so no inference was bought): 27 rows, read
+  back from the session's own durable log. Bare `vim`, `sudo` and `bash -c 'sudo true'` behaved as
+  designed — 8 s bound with the note, sudo's own verdict in 130 ms with the password note, the pager
+  class answering in 73 ms. But the same pass, with a `printf` in front of the editor, measured the
+  older first-word rule sitting out the **full two-minute default** and handing the model the screen's
+  raw escapes. The rule now takes the strongest class any top-level segment carries (`cd /tmp && vim f`
+  is an editor case), quoted text is not a command position, and a keyboard part outranks a credential
+  part because it is the part that sets the deadline. The pass also caught a false promise in the tool
+  description: a live display on a pipe does not print a document, it refuses — `top: failed tty get`,
+  exit 1, 687 ms — so the description now says that and points at `top -bn1`.
+
 - **A failure this tool did not predict now names its own layer.** An escalated call that ends badly
   without matching one of the known shapes (a password, a waiting keyboard) appends
   `[this call ran on a pseudo-terminal (script -qec, one stream): re-run the same command with "tty": false to rule this layer out before looking anywhere else]`,

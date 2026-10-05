@@ -125,10 +125,37 @@ export function ttyClass(command: string): TtyClass {
     if (TTY_OPTIONAL_COMMANDS.has(word)) return 'optional'
     return 'none'
   }
-  const own = classify(firstWord(command))
-  if (own !== 'none') return own
+  // The strongest class any top-level segment carries: a compound command runs its keyboard-waiting
+  // part whatever came first, and reading only the first word was measured costing the full two
+  // minutes (`printf 'x\n'; vim note.txt` → 121 703 ms of screen redraw in a real session).
+  // The class decides the deadline, so the segment that can never be satisfied outranks the rest: a
+  // keyboard-waiting part next to a credential part is bounded, not given the full two minutes.
+  const RANK: Record<TtyClass, number> = { none: 0, optional: 1, credential: 2, keyboard: 3 }
+  const candidates = [...firstWords(command), ...firstWordsOfWrapper(command)]
+  let best: TtyClass = 'none'
+  for (const word of candidates) {
+    const own = classify(word)
+    if (RANK[own] > RANK[best]) best = own
+  }
+  return best
+}
+
+/** The first word of every top-level segment, so `cd /tmp && vim f` reads `vim` as well as `cd`. */
+function firstWords(command: string): string[] {
+  // Quoted text is blanked first: `echo "sudo reboot"` has no command position inside the quotes, and
+  // reading one would escalate a command that needs no terminal. An escape sequence inside double
+  // quotes is not modelled — crude on purpose, and a shape this cannot read only ever under-reads.
+  const masked = command
+    .replace(/'[^']*'?/g, ' ')
+    .replace(/"(?:[^"\\]|\\.)*"?/g, ' ')
+    .replace(/\$\((?:[^()]|\([^()]*\))*\)/g, ' ')
+  return masked.split(/[;&|\n]+/).map(segment => firstWord(segment))
+}
+
+/** The command text inside a `bash -c` wrapper, read one layer, or nothing when there is none. */
+function firstWordsOfWrapper(command: string): string[] {
   const inner = wrappedCommand(command)
-  return inner === undefined ? 'none' : classify(firstWord(inner))
+  return inner === undefined ? [] : firstWords(inner)
 }
 
 /**

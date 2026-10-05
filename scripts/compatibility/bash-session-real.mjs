@@ -275,6 +275,23 @@ try {
   // and the only live discriminator would be a program that hangs on a real terminal, which would make
   // the cell's cost the very defect it is measuring.
 
+  // The bound has to follow the *program that waits*, not the program that happens to come first. A
+  // real session measured the cost of the older rule — `printf '%s\n' X; vim note.txt` was not escalated
+  // at all, sat out the configured two minutes, and handed the model the screen's raw escapes
+  // (`\u001b[24;1H` and friends, because the pipe path never folds them): 121 703 ms for nothing.
+  const compound = await call("printf 'x\\n'; vim /etc/hostname", {})
+  check('a keyboard-waiting program is bounded even when it is not the first segment',
+    compound.value?.timeoutMs === 8_000 && compound.ms < 20_000
+    && (compound.value?.timedOut !== true || /keyboard nobody is typing/.test(compound.rendered)),
+    JSON.stringify({ ms: compound.ms, deadline: compound.value?.timeoutMs, timedOut: compound.value?.timedOut }))
+  // The other half of the same session pass: a live display on a pipe does not wait, it refuses. `top`
+  // answered `top: failed tty get` in 687 ms with exit 1 — so it is *not* the deadline case, and the
+  // tool's description must not promise the model that a bare `top` prints something.
+  const refuses = await call('top', {})
+  check('a live display without a terminal refuses at once rather than waiting',
+    refuses.ms < 15_000 && /failed tty get/.test(refuses.rendered) && refuses.value?.exitCode === 1,
+    JSON.stringify({ ms: refuses.ms, exit: refuses.value?.exitCode, tail: refuses.rendered.replace(/\s+/g, ' ').slice(-46) }))
+
   // ---------------------------------------------------------------- this round's behaviour
   // A relative `workdir` is resolved against the session directory, the way the host's one-shot tool
   // does (`resolveWorkdir`): measured there, `docs` becomes `/home/ruler/docs` and bash's own `cd`
@@ -507,7 +524,7 @@ try {
     `the control harness failed before comparing: ${String(error?.message ?? error).slice(0, 120)}`)
 }
 
-const EXPECTED_CHECKS = 45
+const EXPECTED_CHECKS = 47
 const passed = results.filter(r => r.pass).length
 console.log(`${passed}/${results.length} checks passed (plane=${plane()}, distro=${distro}, user=${username}, cwd=${sessionCwd})`)
 if (results.length !== EXPECTED_CHECKS) {

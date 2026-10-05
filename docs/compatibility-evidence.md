@@ -2520,3 +2520,139 @@ it is: it probes install → boot → the plugin's HTTP route → uninstall → 
 in the boot log`, `✔ plugin route gone after removal (405)`), and never enumerates which tools
 mounted — so it does not say whether the persistent-bash world came up on that runner, and it is not
 evidence about `bash` behaviour. The behaviour claim is `bash-session-real` / `bash-parity-real` above.
+
+
+## The checklist driven through a real dsh session (2026-10-05, second round)
+
+Everything above drives the tool from a harness. This section is the same commands sent through the
+product's own agent loop, so the readings are the bytes a model would read.
+
+**How it was run, and what it did not touch.** `E:\dsh-plugins\docs\PLUGIN-RULES.md` §H.5/§H.7 records
+the official surfaces, so no new device was invented: the installed 0.2.0-rc.2 CLI was launched over
+channel ② (`ELECTRON_RUN_AS_NODE=1` + `--expose-internals` on the `app.asar` tree) as `--profile web
+--no-open --host 127.0.0.1 --port 19411` with `DSH_HOME=D:\Temp\issue51-dsh-drive\home`; the plugin was
+installed into that profile with `dsh plugin --profile web add file:…`; the model was the local scripted
+provider `E:\dsh-plugins\tools\mock-llm-provider\server.mjs` on 19410, declared as a `ck51mock` route in
+the profile patch — **so no inference request was bought and DeepSeek's balance was not used**. The
+session was created and prompted over the host's own remotes (`session/create`, `session/prompt`) after
+exchanging the launch token for the cookie, and the answers were read back from the session's own
+durable log (`session.v4.jsonl.zstd`, 87 frames, decoded frame by frame). The user's running instance
+(19387, PID 21164) was never connected to: both ports were confirmed to have **0 listeners** after
+teardown and 19387 still had its original owner.
+
+Two passes, because one fixture could not ask the question. Pass one prefixed each command with a
+`printf` marker so the scripted provider could find its place in the history — and that prefix turned out
+to change what the tool does, so pass two re-sent the six terminal-shaped commands exactly as a model
+writes them.
+
+### Pass one — 27 rows, marker-prefixed (times are `tool/result.time − tool/call.time` from the log)
+
+| # | the call | ms | what the product returned |
+| --- | --- | --- | --- |
+| 1 | `pwd` | 655 | /home/ruler/ck51-workspace |
+| 2 | `export CK51_VAR=hello42; echo set=$?` | 36 | set=0 |
+| 3 | `echo "[$CK51_VAR]"` | 39 | [hello42] |
+| 4 | `cd /tmp && pwd` | 35 | /tmp |
+| 5 | `pwd` | 30 | /tmp |
+| 6 | `cat > ck51-note.txt <<'CK51EOF' line one $notexpand...` | 36 | 2 |
+| 7 | `cat ck51-note.txt` | 27 | line one $notexpanded `backtick` line two |
+| 8 | `printf '%s\n' "中文 éèü ✓ 🎯"` | 56 | 中文 éèü ✓ 🎯 |
+| 9 | `git status --porcelain; echo exit=$?` | 55 | exit=128 [stderr] fatal: not a git repository (or any of the parent direct |
+| 10 | `git init -q ck51repo && cd ck51repo && git log --on...` | 83 | exit=128 [stderr] fatal: your current branch 'master' does not have any co |
+| 11 | `python3 -c "print(sum(range(10)))"` | 113 | 45 |
+| 12 | `node -e 'console.log(process.platform, 6*7)'` | 485 | linux 42 |
+| 13 | `seq 1 5000 \| grep -n 4777 \| head -3` | 68 | 4777:4777 |
+| 14 | `seq 1 200000 \| sed 's/^/row /'` | 131 | 42 row 152743 row 152744 row 152745 row 152746 row 152747 row 152748 row 1 |
+| 15 | `( sleep 2; echo BG_DONE > ck51-bg.txt ) & echo laun...` | 26 | launched [stderr] [1] 36163 |
+| 16 | `cat ck51-bg.txt 2>/dev/null; echo exit=$?` | 34 | exit=1 |
+| 17 | `sh -c "exit 7"` | 29 | [exit code: 7] |
+| 18 | `sudo -n true; echo exit=$?` | 97 | exit=1 [stderr] sudo: a password is required |
+| 19 | `bash -c 'sudo -n true; echo wrap=$?'` | 68 | wrap=1 [stderr] sudo: a password is required |
+| 20 | `man ls 2>/dev/null \| head -3; echo exit=$?` | 162 | LS(1) User Commands |
+| 21 | `top -bn1 2>/dev/null \| head -4; echo exit=$?` | 200 | top - 10:26:20 up 9:24, 0 users, load average: 0.07, 0.02, 0.00 Tasks: |
+| 22 | `vim ck51-note.txt` | 121703 | [24;1H"ck51-note.txt" [New][2;1H~ |
+| 23 | `echo "it's $(echo sub) $(echo '
+
+### Pass two — the same shape with pristine commands
+
+| # | pristine call | ms | reading |
+| --- | --- | --- | --- |
+| 1 | `top` | 687 | [stderr] top: failed tty get [exit code: 1] |
+| 2 | `vim ck51-note.txt` | 9829 | "ck51-note.txt" 2L, 18Bline one line two ~ |
+| 3 | `sudo true` | 130 | [sudo] password for ruler: sudo: no password was provided sudo: a passwor |
+| 4 | `less ck51-note.txt` | 73 | line one line two |
+| 5 | `bash -c 'sudo true'` | 118 | [sudo] password for ruler: sudo: no password was provided sudo: a passwor |
+| 6 | `git status` | 55 | [stderr] fatal: not a git repository (or any of the parent directories): . |
+
+### What this pass settled
+
+| row | verdict | whose behaviour |
+| --- | --- | --- |
+| 1-5, 27 | state is real in the product: `export` reaches the next call, `cd` reaches the next call, and the shell is still the same one after a 1.5 s timeout and a restart | ours, **[measured in a live session]** |
+| 6-8, 23-24 | the framing holds for heredocs, multi-line loops, nested quotes, `$( )` and non-ASCII — nothing was re-written or lost on the way in | ours, **[measured in a live session]** |
+| 9-10, 17 | failures arrive as the program's own words plus `[exit code: N]`, including `128` from git; the `[stderr]` section appears on the pipe path | ours, **[measured in a live session]** |
+| 13-14 | a pipeline behaves, and a 2.2 MB stream is not truncated: the body says `Omitted 470246 bytes. Full formatted result stored at: …` and points at a readable file | the host's retention layer, **[measured in a live session]** |
+| 15-16 | a command ending in `&` returns at once with `[1] 36163` on stderr, and the *next* call cannot see its output yet (`exit=1`) — the hazard the tool description warns about, reproduced in the model's own face | documented, **[measured in a live session]** |
+| 20-21, pass-two 4 | the pager class stays on the pipe and answers in tens of milliseconds (`man` 162 ms, `less` 73 ms); no pager was opened, no overstrike reached the model | ours, **[measured in a live session]** |
+| 18-19 | `sudo -n` answers with sudo's own verdict in 68-97 ms; with the `-n` form neither call needed a terminal, and pass two shows bare `sudo true` escalated in 130 ms with the password note attached | ours, **[measured in a live session]** |
+| 25 | `head: cannot open 'ck51-link.txt'` is **correct**: row 10 had `cd ck51repo`, so the link was made there and `ck51-note.txt` is not in that directory — the expectation in the checklist was written without the earlier `cd`, not a product defect | the fixture's, **[measured in a live session]** |
+| 22 | **a real defect, and the reason pass two exists.** The older rule read only the command's first word, so `printf 'x\n'; vim note.txt` was not escalated at all: it sat out the configured two-minute default (**121 703 ms**) and returned the screen's raw escapes (`\u001b[24;1H`, `~` rows) because the pipe path never folds them. Pass two's bare `vim` was escalated, cut at 8 s, and folded — the same program, 9 829 ms, with the note | ours, fixed the same round |
+
+**The fix, and what it cost to know.** The class is now the strongest one carried by *any* top-level
+segment (`cd /tmp && vim f` is an editor case; a quoted word is not a command position; the keyboard
+part outranks the credential part because it is the part that sets the deadline). Two live cells pin it:
+`printf 'x\n'; vim /etc/hostname` must report an 8000 ms deadline, and bare `top` must **not** be one —
+pass two measured `top: failed tty get`, exit 1, 687 ms, which also corrected a sentence the tool had
+been telling models: a live display on a pipe does not print a document, it refuses outright, so the
+description now says `top -bn1`. The whole checklist costs about 2 300 s of wall clock, and 121 s of
+that was the single defect it found.
+
+**Not covered by this pass, named rather than folded into the readings.** The provider is scripted, so
+this says nothing about whether a *real* model picks these commands or reads these notes well — it says
+what the tool returns when the calls arrive. Only one session existed in one window, so cross-instance
+(two Desktop windows) isolation is still unmeasured. The `wsl-standard` preset was absent for the first
+~10 s after the port listened (the variants are published by a fire-and-forget effect during profile
+boot) and the driver polls for it — a timing fact about boot, not about `bash`, and not verified against
+the desktop profile. Pass one's row 14 spill path and row 26 restart are the host's own retention and
+recovery shapes; they were read, not instrumented.
+)" && echo 'single...` | 29 | it's sub $ single'quoted |
+| 24 | `for i in 1 2 3; do echo "loop=$i" done` | 58 | loop=1 loop=2 loop=3 |
+| 25 | `ln -sfn ck51-note.txt ck51-link.txt && readlink ck5...` | 55 | ck51-note.txt [stderr] head: cannot open 'ck51-link.txt' for reading: No s |
+| 26 | `sleep 30` | 3145 | [timed out after 1500ms] [the shell was restarted to recover; for work tha |
+| 27 | `echo ALIVE_$(( 20 + 6 )) && pwd` | 73 | ALIVE_26 /tmp/ck51repo |
+
+### Pass two — the same shape with pristine commands
+
+<<TABLE2>>
+
+### What this pass settled
+
+| row | verdict | whose behaviour |
+| --- | --- | --- |
+| 1-5, 27 | state is real in the product: `export` reaches the next call, `cd` reaches the next call, and the shell is still the same one after a 1.5 s timeout and a restart | ours, **[measured in a live session]** |
+| 6-8, 23-24 | the framing holds for heredocs, multi-line loops, nested quotes, `$( )` and non-ASCII — nothing was re-written or lost on the way in | ours, **[measured in a live session]** |
+| 9-10, 17 | failures arrive as the program's own words plus `[exit code: N]`, including `128` from git; the `[stderr]` section appears on the pipe path | ours, **[measured in a live session]** |
+| 13-14 | a pipeline behaves, and a 2.2 MB stream is not truncated: the body says `Omitted 470246 bytes. Full formatted result stored at: …` and points at a readable file | the host's retention layer, **[measured in a live session]** |
+| 15-16 | a command ending in `&` returns at once with `[1] 36163` on stderr, and the *next* call cannot see its output yet (`exit=1`) — the hazard the tool description warns about, reproduced in the model's own face | documented, **[measured in a live session]** |
+| 20-21, pass-two 4 | the pager class stays on the pipe and answers in tens of milliseconds (`man` 162 ms, `less` 73 ms); no pager was opened, no overstrike reached the model | ours, **[measured in a live session]** |
+| 18-19 | `sudo -n` answers with sudo's own verdict in 68-97 ms; with the `-n` form neither call needed a terminal, and pass two shows bare `sudo true` escalated in 130 ms with the password note attached | ours, **[measured in a live session]** |
+| 25 | `head: cannot open 'ck51-link.txt'` is **correct**: row 10 had `cd ck51repo`, so the link was made there and `ck51-note.txt` is not in that directory — the expectation in the checklist was written without the earlier `cd`, not a product defect | the fixture's, **[measured in a live session]** |
+| 22 | **a real defect, and the reason pass two exists.** The older rule read only the command's first word, so `printf 'x\n'; vim note.txt` was not escalated at all: it sat out the configured two-minute default (**121 703 ms**) and returned the screen's raw escapes (`\u001b[24;1H`, `~` rows) because the pipe path never folds them. Pass two's bare `vim` was escalated, cut at 8 s, and folded — the same program, 9 829 ms, with the note | ours, fixed the same round |
+
+**The fix, and what it cost to know.** The class is now the strongest one carried by *any* top-level
+segment (`cd /tmp && vim f` is an editor case; a quoted word is not a command position; the keyboard
+part outranks the credential part because it is the part that sets the deadline). Two live cells pin it:
+`printf 'x\n'; vim /etc/hostname` must report an 8000 ms deadline, and bare `top` must **not** be one —
+pass two measured `top: failed tty get`, exit 1, 687 ms, which also corrected a sentence the tool had
+been telling models: a live display on a pipe does not print a document, it refuses outright, so the
+description now says `top -bn1`. The whole checklist costs about 2 300 s of wall clock, and 121 s of
+that was the single defect it found.
+
+**Not covered by this pass, named rather than folded into the readings.** The provider is scripted, so
+this says nothing about whether a *real* model picks these commands or reads these notes well — it says
+what the tool returns when the calls arrive. Only one session existed in one window, so cross-instance
+(two Desktop windows) isolation is still unmeasured. The `wsl-standard` preset was absent for the first
+~10 s after the port listened (the variants are published by a fire-and-forget effect during profile
+boot) and the driver polls for it — a timing fact about boot, not about `bash`, and not verified against
+the desktop profile. Pass one's row 14 spill path and row 26 restart are the host's own retention and
+recovery shapes; they were read, not instrumented.
