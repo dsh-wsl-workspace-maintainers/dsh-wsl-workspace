@@ -37,4 +37,8 @@ re-run, without reopening the session wondering where to look.
 - `scripts/compatibility/bash-session-real.mjs` — the live cells that assert each line appears when it
   should and does not when it should not (47 cells, run on two planes on every `checks` frame).
 - The host log: an escalated call emits `wsl-bash: pseudo-terminal for class=… deadline=…ms` at debug
-  level, so a backend log can answer "was this call escalated?" without the transcript.
+  level. Where that lands depends on the launch tier — `dsh web` and `headless` write it to the process
+  stdout a driver holds in a file, and the installed desktop keeps its child's stdout in memory only,
+  so on a desktop window this line is readable from a crash file or through whatever log-reading plugin
+  is mounted, not from a steady-state log (the host publishes none). The transcript-side lines above are
+  the ones that are always available.

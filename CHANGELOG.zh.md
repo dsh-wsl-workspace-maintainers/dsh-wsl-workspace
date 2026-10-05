@@ -46,7 +46,8 @@
 
 - **一个本工具没预料到的失败现在会自己报是哪一层。** 走了伪终端、又不落在已知形状（要密码、要按键）里就收尾失败的调用，会补一行
   `[this call ran on a pseudo-terminal (script -qec, one stream): re-run the same command with "tty": false to rule this layer out before looking anywhere else]`，
-  同一个决策还以 debug 级写进宿主日志（`wsl-bash: pseudo-terminal for class=… deadline=…ms`），使后端日志也能回答"这发是不是 pty"。哪种症状属于哪一层的对照表（含宿主 PTY 档自己的哨号——issue #51 最初就是冲着它提的）在
+  同一个决策还以 debug 级写进宿主日志（`wsl-bash: pseudo-terminal for class=… deadline=…ms`），使 `dsh web`/`headless`
+  的日志也能回答"这发是不是 pty"（装机桌面端把子进程 stdout 只留在内存，所以那一档可读的一半仍是转录正文）。哪种症状属于哪一层的对照表（含宿主 PTY 档自己的哨号——issue #51 最初就是冲着它提的）在
   [docs/tty-triage.md](docs/tty-triage.md)，那张表点名的每一行都由 `bash-session-real` 的一格钉住（现在 47 格，两档平面都跑）。
 
 - **终端现在按类别给，因为这直接决定 agent 的期限。** 默认每发期限是两分钟，而等按键的程序永远等不到按键，旧的一条规则可能把这整段时间花在"换回一屏画面的碎片"上。一份名单换成三个集合：**凭据类**（`sudo`、`su`、`ssh`/`scp`/`sftp`/`rsync`、`passwd`、`gpg`、数据库客户端、`ssh-keygen`）保留终端与完整期限；**编辑器与复用器类**（`vim`、`nano`、`emacs`、`ed`、`tmux`、`screen`、`telnet`、`ftp`）保留终端，但当这次调用既没写 `tty` 也没写 `timeoutMs` 时上限 8 秒，并且正文说明该改用什么写法（`vim -es -c '…' -c wq`、`tmux new -d 'cmd'`）；**分页器与全屏报表类**（`man`、`info`、`less`、`more`、`pg`、`top`、`htop`、`gh`、`aws`、`gcloud`、`az`、`virsh`、`mongod`）**不再自动升级**——实测 `man ls` 自动升级是 743 毫秒掉进分页器等按键，走管道是 177 毫秒拿到整页；`vim` 现在报 `deadline: 8000`，而默认会是 120000。调用自己写了期限或写了 `tty` 就是它接手了这段等待，两者都不再被压短；想要分页器仍可显式 `tty: true`。分类这件事还顺手照出一个死字母：`firstWord` 遇到连字符就停，所以 `ssh-copy-id`、`ssh-keygen`、`redis-cli` 写在名单里却永远匹配不上——现在能匹配了，测试把这条钉住。
