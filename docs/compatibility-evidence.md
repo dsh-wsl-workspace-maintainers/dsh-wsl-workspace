@@ -2656,3 +2656,38 @@ what the tool returns when the calls arrive. Only one session existed in one win
 boot) and the driver polls for it — a timing fact about boot, not about `bash`, and not verified against
 the desktop profile. Pass one's row 14 spill path and row 26 restart are the host's own retention and
 recovery shapes; they were read, not instrumented.
+
+## The installed desktop's own turn, and the two things it said (2026-10-05, third round)
+
+The user restarted DSH Desktop at **11:26:20** (backend PID 13276, read from `Get-Process.StartTime`) and
+sent `printf x; vim note.txt` into his own WSL session at **11:52:40**. My install of the current build
+landed at **11:51:03** — after his restart — so that turn ran on the 00:43 bytes, and it read as a
+failure of the fix when it was a failure of ordering. Recorded here because the ordering is now a check,
+not an assumption: before asking anyone to restart, read the backend's start time and compare it with the
+installed `lib` mtime.
+
+The turn itself is worth more than the ordering mistake, because it is the first reading of **what a real
+model actually sends** (his provider, `sensenova / deepseek-v4-flash`, so real tokens):
+
+| field | reading from `session-b7b8f571…` |
+| --- | --- |
+| `agent-preset/selected` | `wsl-standard` — our variant, in his window |
+| the model's call | `{"command":"printf x; vim note.txt","description":"Print x then open note.txt in vim",`**`"timeoutMs":15000`**`}` |
+| the tool's body | `x` + `\u001b[24;1H"note.txt" [New]~ …` + `[stderr] Vim: Warning: Output is not to a terminal` |
+| what that proves | not escalated (a pty has no `[stderr]` section and vim would not warn), so the first-word rule was defeated by the model's own `printf` — the same shape pass one measured at 121 703 ms |
+| what the model did next | called `read /tmp/note.txt` → `not found`, then summarised in Chinese and completed the turn |
+
+**The design fact it exposed.** A model names its own deadline. Under the rule as written — the 8 s bound
+applies only when the call gave neither `tty` nor `timeoutMs` — that call would have been escalated by the
+new per-segment rule and still have received a generic sentence instead of the non-interactive form, which
+is the half of the requirement that says *provide the solution*. So the hint is now keyed to the **class**
+and the deadline stays the caller's: we do not silently shorten what we were told, but a keyboard-class
+timeout always says what to use instead. Two cells, 49 total now:
+
+- `vim /etc/hostname` with `timeoutMs: 4000` → deadline stays 4000, hint present. Measured `{"ms":5104,"deadline":4000,"hint":true}` on both planes.
+- `sleep 5` with `tty: true, timeoutMs: 1000` → the body may claim a restart only if the session reports one; the two sentences are produced from different facts and are asserted against each other. Measured `{"claimedRecovery":true,"actuallyRestarted":true}` — **an escalated timeout really does rebuild the session**, which is a cost of that tier worth knowing.
+
+**What this pass did not measure.** It is one turn in one window on the *old* bytes; the new bytes have
+not yet been driven through his desktop, only through the harness (49/49 both planes) and the scripted
+session. Cross-instance isolation, a distribution without `script`, and `Defaults requiretty` remain
+unmeasured.

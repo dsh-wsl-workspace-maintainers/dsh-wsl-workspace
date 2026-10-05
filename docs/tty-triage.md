@@ -15,7 +15,7 @@ re-run, without reopening the session wondering where to look.
 | what you see | whose it is | confirm with | fix |
 | --- | --- | --- | --- |
 | `[this call ran on a pseudo-terminal (script -qec, one stream): re-run the same command with "tty": false …]` | ours, and it is telling you it does not know either — this is the unforeseen-failure line | re-send the identical command with `"tty": false` | if the plain call behaves, the terminal is the layer; if it fails the same way, it is the program and this note is your evidence to look there |
-| `[this program waits for a keyboard nobody is typing into: give it a non-interactive form …]` | ours, keyboard class (`vim`, `nano`, `tmux`, `screen`, `telnet`, `ftp`), bounded to 8 s | none needed — a wait that cannot be satisfied is not a bug in the shell | use the batch form (`vim -es -c 's/../../g' -c wq file`, `tmux new -d 'cmd'`), or the file tools |
+| `[this program waits for a keyboard nobody is typing into: give it a non-interactive form …]` | ours, keyboard class (`vim`, `nano`, `tmux`, `screen`, `telnet`, `ftp`) — the deadline is 8 s when the call named none of its own and whatever the call asked for when it did, but the hint rides either way | none needed — a wait that cannot be satisfied is not a bug in the shell | use the batch form (`vim -es -c 's/../../g' -c wq file`, `tmux new -d 'cmd'`), or the file tools |
 | `[sudo asked for a password and this shell has nobody to type it …]` | the distribution's sudoers, not this plugin | `sudo -n true` — it answers in milliseconds either way | run the session as a `NOPASSWD` user or as root (`DSH_WSL_USER`); the agent cannot type a password in any layer |
 | `[stderr]` missing although the command wrote to fd 2, or the output interleaves | expected under a terminal: a pty has one stream | re-run with `"tty": false` to get the separation back | nothing to fix; if the separation matters, that call must not be escalated |
 | text like `N\bNA\bAM\bME\bE` | escalated output whose overstrike was *not* folded — a regression, since the fold is gated | re-run with `"tty": false`: clean text confirms the layer | report it; `normaliseTtyOutput` in `src/host/wsl-bash-tty.ts` owns the fold and a cell in `bash-session-real` asserts it |
@@ -35,7 +35,7 @@ re-run, without reopening the session wondering where to look.
   two gates. The notes above are `field-notes`, `behaviour-terminal-classes`,
   `behaviour-escalated-streams`, `behaviour-overstrike` and `behaviour-no-tty`.
 - `scripts/compatibility/bash-session-real.mjs` — the live cells that assert each line appears when it
-  should and does not when it should not (47 cells, run on two planes on every `checks` frame).
+  should and does not when it should not (49 cells, run on two planes on every `checks` frame).
 - The host log: an escalated call emits `wsl-bash: pseudo-terminal for class=… deadline=…ms` at debug
   level. Where that lands depends on the launch tier — `dsh web` and `headless` write it to the process
   stdout a driver holds in a file, and the installed desktop keeps its child's stdout in memory only,

@@ -271,6 +271,24 @@ try {
     && (bounded.value?.timedOut !== true || /keyboard nobody is typing/.test(bounded.rendered)),
     JSON.stringify({ ms: bounded.ms, deadline: bounded.value?.timeoutMs, timedOut: bounded.value?.timedOut,
       note: /keyboard nobody is typing/.test(bounded.rendered) }))
+  // The hint belongs to the class, not to whether this tool applied its own bound. A real session
+  // measured why that matters: the model did not send `vim note.txt`, it sent
+  // `{"command":"printf x; vim note.txt","timeoutMs":15000}` — naming a deadline of its own, which
+  // under the older rule bought it the generic restart sentence instead of the non-interactive form.
+  const namedDeadline = await call('vim /etc/hostname', { timeoutMs: 4_000 })
+  check('a keyboard-class call that named its own deadline still gets the keyboard hint',
+    namedDeadline.value?.timedOut === true && namedDeadline.value?.timeoutMs === 4_000
+    && /keyboard nobody is typing/.test(namedDeadline.rendered),
+    JSON.stringify({ ms: namedDeadline.ms, deadline: namedDeadline.value?.timeoutMs,
+      hint: /keyboard nobody is typing/.test(namedDeadline.rendered) }))
+  // And a timed-out terminal call must not narrate a recovery that did not happen: the two sentences
+  // are produced from different facts, so asserting they agree catches the claim without trusting it.
+  const ptyTimeout = await call('sleep 5', { tty: true, timeoutMs: 1_000 })
+  const claimedRecovery = /shell was restarted to recover/.test(ptyTimeout.rendered)
+  const actuallyRestarted = /was restarted and its directory/.test(ptyTimeout.rendered)
+  check('a timed-out call says a restart only when the session had one',
+    ptyTimeout.value?.timedOut === true && claimedRecovery === actuallyRestarted,
+    JSON.stringify({ claimedRecovery, actuallyRestarted, timedOut: ptyTimeout.value?.timedOut }))
   // The `tty: false` veto is asserted offline instead (`tests/wsl-bash-tty.test.ts`): it is a decision,
   // and the only live discriminator would be a program that hangs on a real terminal, which would make
   // the cell's cost the very defect it is measuring.
@@ -524,7 +542,7 @@ try {
     `the control harness failed before comparing: ${String(error?.message ?? error).slice(0, 120)}`)
 }
 
-const EXPECTED_CHECKS = 47
+const EXPECTED_CHECKS = 49
 const passed = results.filter(r => r.pass).length
 console.log(`${passed}/${results.length} checks passed (plane=${plane()}, distro=${distro}, user=${username}, cwd=${sessionCwd})`)
 if (results.length !== EXPECTED_CHECKS) {

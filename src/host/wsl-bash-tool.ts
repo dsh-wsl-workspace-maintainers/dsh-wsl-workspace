@@ -232,13 +232,23 @@ interface BackgroundOutput {
 }
 
 /** Shape a session run into the host's result contract. */
-function toForeground(run: WslBashRun, timeoutMs: number, escalated: boolean, keyboard = false): ForegroundOutput {
+function toForeground(run: WslBashRun, timeoutMs: number, escalated: boolean, keyboardClass = false): ForegroundOutput {
   const killed = run.exitCode < 0
   const notes: string[] = []
   if (run.timedOut) {
-    notes.push(keyboard
-      ? '[this program waits for a keyboard nobody is typing into: give it a non-interactive form (`top -bn1`, `vim -es -c \'…\' -c wq file`, `tmux new -d \'cmd\'`) or run the command that prints and exits]'
-      : '[the shell was restarted to recover; for work that outlives one call pass run_in_background: true, or use bash_background]')
+    // The keyboard hint belongs to the class, not to whether this tool applied its own bound: a call
+    // that named a 15 s deadline of its own still cannot type into a keyboard.
+    if (keyboardClass) {
+      notes.push('[this program waits for a keyboard nobody is typing into: give it a non-interactive form (`top -bn1`, `vim -es -c \'…\' -c wq file`, `tmux new -d \'cmd\'`) or run the command that prints and exits]')
+    }
+    // Only say a restart happened when the session says it did — measured, not assumed, by the cell
+    // that times out an escalated `sleep`.
+    else if (run.restarted) {
+      notes.push('[the shell was restarted to recover; for work that outlives one call pass run_in_background: true, or use bash_background]')
+    }
+    else {
+      notes.push('[the call reached its deadline; for work that outlives one call pass run_in_background: true, or use bash_background]')
+    }
   }
   if (run.restarted) {
     notes.push(run.skipped === undefined || run.skipped.length === 0
@@ -449,7 +459,7 @@ export function apply(ctx: Context, config?: Config): void {
       // directory the call asked for. `tty: false` is a veto, not a no-op: measured, `man ls` with
       // `tty: false` came back with the pty's overstrike exactly as the automatic rule produced it,
       // which left the model no way to ask for the plain pipe.
-      const { escalated, keyboard, deadlineMs } = decideTty(args.command, args.tty, args.timeoutMs, timeoutMs)
+      const { escalated, keyboardClass, deadlineMs } = decideTty(args.command, args.tty, args.timeoutMs, timeoutMs)
       if (escalated) {
         logging?.debug?.(`wsl-bash: pseudo-terminal for class=${ttyClass(args.command)} deadline=${deadlineMs}ms`)
       }
@@ -490,7 +500,7 @@ export function apply(ctx: Context, config?: Config): void {
       }
       const run = await session.run(command, deadlineMs, exec.signal)
       if (run.aborted) throw toolAborted()
-      return toForeground(run, deadlineMs, escalated, keyboard)
+      return toForeground(run, deadlineMs, escalated, keyboardClass)
     },
   })
 

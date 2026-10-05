@@ -72,10 +72,12 @@ test('the three classes are disjoint and together are the whole old whitelist', 
 
 test('the keyboard bound applies only to a call that named neither deadline nor terminal', () => {
   assert.deepEqual(decideTty('vim notes.md', undefined, undefined, 120_000),
-    { escalated: true, keyboard: true, deadlineMs: KEYBOARD_TIMEOUT_MS },
+    { escalated: true, keyboard: true, keyboardClass: true, deadlineMs: KEYBOARD_TIMEOUT_MS },
     'the default deadline is two minutes on a program that cannot be satisfied')
   assert.equal(decideTty('vim notes.md', undefined, 30_000, 30_000).deadlineMs, 30_000,
     'an explicit timeoutMs is the caller taking the wait; capping it would be overriding what we were told')
+  assert.equal(decideTty('vim notes.md', undefined, 30_000, 30_000).keyboardClass, true,
+    'but the class is still the keyboard one, so the body still says what to use instead — a real session measured the model sending `timeoutMs: 15000` with `vim` in it')
   assert.equal(decideTty('vim notes.md', true, undefined, 120_000).keyboard, false,
     'an explicit tty:true is the same kind of intent')
   assert.equal(decideTty('sudo true', undefined, undefined, 120_000).deadlineMs, 120_000,

@@ -191,6 +191,11 @@ export interface TtyDecision {
   escalated: boolean
   /** Whether the keyboard-class bound applies to this call's deadline. */
   keyboard: boolean
+  /** Whether the command *is* keyboard-class, bound applied or not. The hint about what to use
+   * instead belongs to the class: a call that named its own 15 s deadline still cannot type into a
+   * keyboard, and a model does name one — measured in a real session, where the model sent
+   * `{"command":"printf x; vim note.txt","timeoutMs":15000}`. */
+  keyboardClass: boolean
   /** The deadline to run the call with. */
   deadlineMs: number
 }
@@ -207,12 +212,12 @@ export interface TtyDecision {
 export function decideTty(command: string, tty: boolean | undefined, requestedMs: number | undefined,
   ceilingMs: number): TtyDecision {
   const escalated = shouldEscalate(command, tty)
+  const keyboardClass = escalated && ttyClass(command) === 'keyboard'
   // The bound applies only when the call shows no intent of its own: naming a deadline or a terminal
   // is the caller taking the wait. Capping an explicit `timeoutMs` would be this tool silently
   // overriding what it was told — the same shape as ignoring `run_in_background`.
-  const keyboard = escalated && tty === undefined && requestedMs === undefined
-    && ttyClass(command) === 'keyboard'
-  return { escalated, keyboard, deadlineMs: keyboard ? Math.min(ceilingMs, KEYBOARD_TIMEOUT_MS) : ceilingMs }
+  const keyboard = keyboardClass && tty === undefined && requestedMs === undefined
+  return { escalated, keyboard, keyboardClass, deadlineMs: keyboard ? Math.min(ceilingMs, KEYBOARD_TIMEOUT_MS) : ceilingMs }
 }
 
 /**

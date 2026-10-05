@@ -89,6 +89,15 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   `top`) still costs its deadline plus a rebuild — measured 5.7-6.1 s with a screen dump — because the
   frame gives a pty `/dev/null` for input rather than letting the program eat the next command's bytes.
 
+- **The keyboard hint is given by class, not by whether we applied our own bound.** The first live
+  session of this on the installed desktop did not send `vim note.txt`; the model sent
+  `{"command":"printf x; vim note.txt","timeoutMs":15000}` — naming its own deadline, which under the
+  older rule bought it a generic sentence instead of the non-interactive form that would have ended the
+  wait. The deadline still belongs to the caller (we do not silently shorten what we were told), but the
+  body now always says what to use instead when the program is one that waits for keys. A second cell
+  makes the timeout wording check itself: it may claim a restart only when the session reported one, and
+  the measurement there is that an escalated `sleep` really does rebuild the session.
+
 - **The class is now read from every top-level segment, because a real session cost 121 703 ms for the
   old rule.** The checklist of ordinary commands was driven through a real dsh 0.2.0-rc.2 session (its
   own `DSH_HOME`, its own port, a scripted local provider so no inference was bought): 27 rows, read
