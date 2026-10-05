@@ -2436,16 +2436,33 @@ values. A duplicated ledger row id was introduced and removed during this pass, 
 than by the gates — `tests/wsl-bash-parity.test.ts` already asserts ids are unique, and the duplicate
 was cleared before that bucket was run, so the gate never got to say anything about it.
 
-**Left deliberately, and what it would take to change:** the keyboard-waiting class (`less`, `more`,
-`pg`, `man`, `info`, `vim`, `nano`, `emacs`, `top`, `htop`, `tmux`, `screen`) is on the auto-escalation
-list, and every one of them measured above costs its deadline plus a session rebuild because there is
-no input to give. Narrowing the list, or answering that class immediately with a note instead of
-running it, changes what the user sees in a live session, so it is a decision rather than a fix — the
-numbers above are the arithmetic for it. Also unmeasured on purpose or by limits: a distribution
-without `script` (only Ubuntu is installed here, so the fallback is untested and would surface as
-`script: command not found` for a `sudo` call); `sudo`'s behaviour under `Defaults requiretty`;
-wrappers deeper than one layer (`bash -c "bash -c 'sudo x'"`); and whether `script` propagates an
-inner exit code on every util-linux version (it did here: sudo's `1` came back).
+**Then the list became classes, on agent-cost grounds.** The default per-call deadline is 120 s
+(`timeoutMs: 120_000`, max 600 s), and a program waiting for a keyboard that never arrives cannot be
+satisfied inside any deadline — so the question was not "does it get a terminal" but "what does an
+agent pay for the guess". Three sets, each with its own treatment:
+
+| class | members | terminal | deadline | why |
+| --- | --- | --- | --- | --- |
+| credential | `sudo su doas ssh scp sftp rsync passwd chpasswd gpg ssh-copy-id ssh-keygen mysql mariadb psql sqlplus redis-cli mongosh` (18) | always | as configured | nothing else answers them; escalated, `sudo` returns in 46-166 ms with its own words |
+| keyboard | `vim vi nvim view nano pico emacs ed tmux screen telnet ftp` (12) | always | **8 s**, and only when the call names neither `tty` nor `timeoutMs` | an agent does write the batch forms (`vim -es -c '…' -c wq`, `tmux new -d 'cmd'`), so refusing outright would close a door; waiting two minutes to say "no keyboard" is the worst of the three |
+| optional | `htop top less more pg man info gh az gcloud aws virsh mongod` (13) | never, unless asked | — | each has a pipe form that is strictly better: measured `man ls` on the pipe = 177 ms and the whole page, auto-escalated = 743 ms into a pager; `top -bn1`, `gh --version`, `mongod --version` print and exit |
+
+The bound is asserted on the **bound** (`value.timeoutMs === 8000`), not on the hang, because whether
+`vim` hangs or exits is the distribution's business — a runner without `vim` still shows the cap
+applied. Writing the classes also found a dead letter: `firstWord` stopped at a hyphen, so
+`ssh-copy-id`, `ssh-keygen` and `redis-cli` were in the whitelist and could never match anything. They
+can now, which is a behaviour change for three commands and is said so in the changelog rather than
+slipped in. Measured after the change, both planes: `man ls > /dev/null; tty` ⇒
+`{"ms":177,"tail":"RC=0 not a tty"}`, `vim /etc/hostname` ⇒
+`{"ms":9634,"deadline":8000,"timedOut":true,"note":true}`.
+
+**Left unmeasured, and what it would take:** a distribution without `script` (only Ubuntu is installed
+here, so the fallback is untested and would surface as `script: command not found` for a `sudo` call);
+`sudo`'s behaviour under `Defaults requiretty`; wrappers deeper than one layer
+(`bash -c "bash -c 'sudo x'"`); and whether `script` propagates an inner exit code on every util-linux
+version (it did here: sudo's `1` came back). Unchanged by this pass: an escalated call still has one
+stream, and the keyboard class still costs 8 s plus a session rebuild when it is genuinely run
+interactively — bounded now, not eliminated.
 
 ## Cloud frame 37221289492, read step by step, and the cell that turned out to be about the fixture (2026-10-05)
 

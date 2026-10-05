@@ -20,24 +20,61 @@
  */
 
 /**
- * First words whose ordinary use is interactive. Deliberately narrow: `git`, `docker` and `curl`
- * reach a terminal only in special subcommands, and wrapping them would add CR noise to the
- * commands a model runs a hundred times a day.
+ * Commands that need a terminal because what they ask for cannot be answered any other way: a
+ * password, a passphrase, an interactive authentication step. Escalated automatically, full deadline.
+ */
+export const CREDENTIAL_COMMANDS: ReadonlySet<string> = new Set([
+  'sudo', 'su', 'doas', 'ssh', 'scp', 'sftp', 'rsync', 'passwd', 'chpasswd', 'gpg',
+  'ssh-copy-id', 'ssh-keygen', 'mysql', 'mariadb', 'psql', 'sqlplus', 'redis-cli', 'mongosh',
+])
+
+/**
+ * Commands that wait for a keyboard and will not produce anything until it arrives. Still escalated
+ * — an agent legitimately uses their batch forms (`vim -es -c '…' -c wq`, `tmux new -d 'cmd'`) and a
+ * terminal is the only way to find out — but their deadline is bounded to {@link KEYBOARD_TIMEOUT_MS}
+ * and a timeout says so in the body, because the default deadline is two minutes.
+ */
+export const KEYBOARD_COMMANDS: ReadonlySet<string> = new Set([
+  'vim', 'vi', 'nvim', 'view', 'nano', 'pico', 'emacs', 'ed', 'tmux', 'screen', 'telnet', 'ftp',
+])
+
+/**
+ * Commands that reach a terminal only because the first word says so, and each of which has a
+ * non-interactive spelling that is what an agent almost always wants: on a pipe `man`, `less` and
+ * `top -bn1` print the whole document or a snapshot in milliseconds, while on a terminal they open a
+ * pager that waits for keys. Not escalated; `tty: true` still forces one for the rare call that needs
+ * the pty itself (measured: auto-escalating `man ls` turned a 50 ms answer into a pager).
+ */
+export const TTY_OPTIONAL_COMMANDS: ReadonlySet<string> = new Set([
+  'htop', 'top', 'less', 'more', 'pg', 'man', 'info', 'gh', 'az', 'gcloud', 'aws', 'virsh', 'mongod',
+])
+
+/** What a call is given a terminal for, or `none`. */
+export type TtyClass = 'credential' | 'keyboard' | 'optional' | 'none'
+
+/** The deadline given to the keyboard class when the call does not ask for longer. */
+export const KEYBOARD_TIMEOUT_MS = 8_000
+
+/**
+ * The commands escalated automatically: the credential and keyboard classes. The optional class is
+ * deliberately absent — it is reachable through `tty: true`, which is what a caller who really wants
+ * a pager says.
  */
 export const TTY_COMMANDS: ReadonlySet<string> = new Set([
-  'sudo', 'su', 'doas', 'ssh', 'scp', 'sftp', 'rsync', 'telnet', 'ftp',
-  'passwd', 'chpasswd', 'gpg', 'ssh-copy-id', 'ssh-keygen',
-  'vim', 'vi', 'nvim', 'view', 'nano', 'pico', 'emacs', 'ed',
-  'htop', 'top', 'less', 'more', 'pg', 'man', 'info',
-  'mysql', 'mariadb', 'psql', 'sqlplus', 'redis-cli', 'mongosh', 'mongod',
-  'gh', 'az', 'gcloud', 'aws', 'virsh', 'tmux', 'screen',
+  ...CREDENTIAL_COMMANDS,
+  ...KEYBOARD_COMMANDS,
 ])
+
 
 /**
  * The command's first word, with leading assignments and an `env` prefix skipped, so
  * `LANG=C sudo reboot` and `env -i vim file` are recognised. (Written as a token loop rather than
  * one alternation because `scripts/verify-lib.mjs` reads the built chunk for unbound calls, and a
  * regex containing `env(` looks like one.)
+ *
+ * The hyphen is part of the name, not a stop: without it `ssh-copy-id`, `ssh-keygen` and `redis-cli`
+ * were unreachable entries of the whitelist — the scan stopped at `ssh` and `redis`, which are in no
+ * class at all, so those three commands were never escalated no matter what the list said.
  */
 export function firstWord(command: string): string {
   let rest = command.trimStart()
@@ -57,29 +94,57 @@ export function firstWord(command: string): string {
     if (flag === null) break
     rest = rest.slice(flag[0].length)
   }
-  const match = /^([A-Za-z_][A-Za-z0-9_]*)/.exec(rest)
+  const match = /^([A-Za-z_][A-Za-z0-9_-]*)/.exec(rest)
   return match?.[1] ?? ''
 }
 
 /**
- * Whether this command should be given a terminal of its own.
+ * The command inside a `bash -c` wrapper, one layer, or undefined when there is nothing readable
+ * there. `bash -c 'sudo true'` was measured sitting until its deadline expired and returning
+ * `(no output)` plus a session rebuild, while bare `sudo true` answers in 46 ms — the original
+ * issue's symptom reproduced one layer in, and a model writes the wrapper constantly.
  *
- * Two shapes are read: the command's own first word, and the first word inside a shell wrapper —
- * `bash -c 'sudo true'` was measured sitting until its deadline expired and returning
- * `(no output) [timed out after 4000ms]` plus a session rebuild, while bare `sudo true` answers in
- * 46 ms. That is the original issue's symptom reproduced one layer in, and a model writes the
- * wrapper constantly.
+ * The inner text is taken only as far as the next quote character: crude on purpose. An extraction
+ * that stops early can only ever under-read the inner command, which falls back to the behaviour
+ * before this existed — a wrapper whose contents cannot be read is not escalated on a guess.
+ */
+function wrappedCommand(command: string): string | undefined {
+  const match = /^(?:bash|sh|zsh|dash)\s+(?:-\S+\s+)*?-\w*c\s+(['"])([^'"]*)\1/.exec(command.trim())
+  return match?.[2]
+}
+
+/**
+ * Which class of terminal this command wants, if any.
+ * @param command - the model's command, verbatim.
+ * @returns `credential`, `keyboard`, `optional` or `none`, looking through one shell wrapper.
+ */
+export function ttyClass(command: string): TtyClass {
+  const classify = (word: string): TtyClass => {
+    if (CREDENTIAL_COMMANDS.has(word)) return 'credential'
+    if (KEYBOARD_COMMANDS.has(word)) return 'keyboard'
+    if (TTY_OPTIONAL_COMMANDS.has(word)) return 'optional'
+    return 'none'
+  }
+  const own = classify(firstWord(command))
+  if (own !== 'none') return own
+  const inner = wrappedCommand(command)
+  return inner === undefined ? 'none' : classify(firstWord(inner))
+}
+
+/**
+ * Whether this command should be given a terminal without being asked.
  *
- * The wrapper is read one layer deep, and the inner text is taken only as far as the next quote
- * character: crude on purpose. An extraction that stops early can only ever under-read the inner
- * command's first word, which falls back to the behaviour before this existed — a wrapper whose
- * contents cannot be read is not escalated, rather than escalated on a guess.
+ * The credential and keyboard classes; deliberately **not** the optional one, whose members answer
+ * better on the pipe (`man ls` measured as a pager on a terminal and as the whole page in
+ * milliseconds on a pipe). `tty: true` reaches a terminal for anything.
+ * @param command - the model's command, verbatim.
+ * @returns true when the command is escalated automatically.
  */
 export function needsTty(command: string): boolean {
-  if (TTY_COMMANDS.has(firstWord(command))) return true
-  const wrapper = /^(?:bash|sh|zsh|dash)\s+(?:-\S+\s+)*?-c\s+(['"])([^'"]*)\1/.exec(command.trim())
-  return wrapper !== null && TTY_COMMANDS.has(firstWord(wrapper[2] ?? ''))
+  const classification = ttyClass(command)
+  return classification === 'credential' || classification === 'keyboard'
 }
+
 
 /**
  * The whole escalation decision, in one place so the veto is testable without a distribution.
@@ -91,6 +156,36 @@ export function needsTty(command: string): boolean {
 export function shouldEscalate(command: string, tty: boolean | undefined): boolean {
   if (tty === false) return false
   return tty === true || needsTty(command)
+}
+
+/** What the terminal decision and the deadline came out to, for one call. */
+export interface TtyDecision {
+  /** Whether the command is wrapped in `script`. */
+  escalated: boolean
+  /** Whether the keyboard-class bound applies to this call's deadline. */
+  keyboard: boolean
+  /** The deadline to run the call with. */
+  deadlineMs: number
+}
+
+/**
+ * The whole decision, so the bound is testable without a distribution.
+ * @param command - the model's command, verbatim.
+ * @param tty - the call's `tty` argument, if it named one.
+ * @param requestedMs - the call's own `timeoutMs`, if it named one.
+ * @param ceilingMs - the deadline the tool would otherwise use, already clamped to the configured
+ * maximum.
+ * @returns whether to escalate, whether the keyboard bound applies, and the deadline to use.
+ */
+export function decideTty(command: string, tty: boolean | undefined, requestedMs: number | undefined,
+  ceilingMs: number): TtyDecision {
+  const escalated = shouldEscalate(command, tty)
+  // The bound applies only when the call shows no intent of its own: naming a deadline or a terminal
+  // is the caller taking the wait. Capping an explicit `timeoutMs` would be this tool silently
+  // overriding what it was told — the same shape as ignoring `run_in_background`.
+  const keyboard = escalated && tty === undefined && requestedMs === undefined
+    && ttyClass(command) === 'keyboard'
+  return { escalated, keyboard, deadlineMs: keyboard ? Math.min(ceilingMs, KEYBOARD_TIMEOUT_MS) : ceilingMs }
 }
 
 /**

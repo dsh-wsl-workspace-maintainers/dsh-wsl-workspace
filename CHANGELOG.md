@@ -89,6 +89,22 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   `top`) still costs its deadline plus a rebuild — measured 5.7-6.1 s with a screen dump — because the
   frame gives a pty `/dev/null` for input rather than letting the program eat the next command's bytes.
 
+- **The terminal is now given by class, which is what an agent's deadline depends on.** The default
+  per-call deadline is two minutes, and a program that waits for a keyboard never receives one, so the
+  automatic rule could spend the whole wait to produce a screen fragment. Three sets replace one list:
+  **credential** commands (`sudo`, `su`, `ssh`/`scp`/`sftp`/`rsync`, `passwd`, `gpg`, database clients,
+  `ssh-keygen`) keep a terminal and the full deadline; **editor and multiplexer** commands (`vim`,
+  `nano`, `emacs`, `ed`, `tmux`, `screen`, `telnet`, `ftp`) keep the terminal but are bounded to 8 s
+  when the call names neither `tty` nor `timeoutMs`, and the body then says what to run instead
+  (`vim -es -c '…' -c wq`, `tmux new -d 'cmd'`); **pagers and full-screen reports** (`man`, `info`,
+  `less`, `more`, `pg`, `top`, `htop`, `gh`, `aws`, `gcloud`, `az`, `virsh`, `mongod`) are not
+  escalated at all — measured, `man ls` was a 743 ms trip into a pager when auto-escalated and a
+  177 ms full page on the pipe, and `vim` now reports `deadline: 8000` where the default would have
+  been 120000. Naming a deadline or a `tty` is the caller taking the wait, so neither is capped for
+  them, and `tty: true` still opens a pager on request. Writing the classes also exposed a dead letter:
+  `firstWord` stopped at a hyphen, so `ssh-copy-id`, `ssh-keygen` and `redis-cli` were in the list but
+  could never match — they are reachable now, and the test says so.
+
 - **A DSH Desktop profile generated no WSL variant at all (issue #47).** The variant
   generator asked the host for two modules at call time — the entry-list dialect and the
   YAML engine under it — on the assumption that host and plugin share a `node_modules`.

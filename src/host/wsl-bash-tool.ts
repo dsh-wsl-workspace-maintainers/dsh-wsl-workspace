@@ -28,7 +28,7 @@ import { bridgeEnv } from '../shared/wsl-env.ts'
 import { SESSION_ARGV } from './wsl-bash-protocol.ts'
 import { WslBashSession, type WslBashRun, type WslBashSessionSpec, type WslBashSpawnHost } from './wsl-bash-session.ts'
 import { startBackgroundJob } from './wsl-jobs.ts'
-import { needsTty, normaliseTtyOutput, wrapForTty } from './wsl-bash-tty.ts'
+import { decideTty, normaliseTtyOutput, wrapForTty } from './wsl-bash-tty.ts'
 
 /** The tool name — the same one the host's tools register, so only one may be mounted. */
 export const TOOL_NAME = 'bash'
@@ -232,11 +232,13 @@ interface BackgroundOutput {
 }
 
 /** Shape a session run into the host's result contract. */
-function toForeground(run: WslBashRun, timeoutMs: number, escalated: boolean): ForegroundOutput {
+function toForeground(run: WslBashRun, timeoutMs: number, escalated: boolean, keyboard = false): ForegroundOutput {
   const killed = run.exitCode < 0
   const notes: string[] = []
   if (run.timedOut) {
-    notes.push('[the shell was restarted to recover; for work that outlives one call pass run_in_background: true, or use bash_background]')
+    notes.push(keyboard
+      ? '[this program waits for a keyboard nobody is typing into: give it a non-interactive form (`top -bn1`, `vim -es -c \'…\' -c wq file`, `tmux new -d \'cmd\'`) or run the command that prints and exits]'
+      : '[the shell was restarted to recover; for work that outlives one call pass run_in_background: true, or use bash_background]')
   }
   if (run.restarted) {
     notes.push(run.skipped === undefined || run.skipped.length === 0
@@ -361,7 +363,7 @@ export function apply(ctx: Context, config?: Config): void {
 
   const tool = defineTool({
     name: TOOL_NAME,
-    description: 'Run a bash command inside this WSL distribution. The shell is persistent: `cd`, exported variables, activated virtualenvs, aliases and shell functions survive between calls, so use absolute paths or an explicit `cd` when a call must not depend on where the last one left off. A command that reads from stdin is given /dev/null. Commands that need a real terminal (`sudo`, `ssh`, an editor) are given a pseudo-terminal of their own automatically; pass `tty: true` to force one for anything else. For work that must outlive one call pass `run_in_background: true` — it starts a tracked job (`job_output` to read, `job_kill` to stop) in a separate process, so it does not see this shell\'s `cd` or `export`.',
+    description: 'Run a bash command inside this WSL distribution. The shell is persistent: `cd`, exported variables, activated virtualenvs, aliases and shell functions survive between calls, so use absolute paths or an explicit `cd` when a call must not depend on where the last one left off. A command that reads from stdin is given /dev/null. A command that cannot be answered any other way (`sudo`, `ssh`, a database client, an editor) is given a pseudo-terminal of its own automatically; pagers and full-screen reports (`man`, `less`, `more`, `top`, `htop`, `gh`) are not — on a pipe they print the whole document in milliseconds, on a terminal they wait for keys — so pass `tty: true` when the pager itself is what you want. An editor or multiplexer left waiting for a keyboard is stopped after 8 seconds and says so. For work that must outlive one call pass `run_in_background: true` — it starts a tracked job (`job_output` to read, `job_kill` to stop) in a separate process, so it does not see this shell\'s `cd` or `export`.',
     parameters: {
       command: { type: 'string', required: true, description: 'The bash command to run.' },
       description: {
@@ -373,10 +375,10 @@ export function apply(ctx: Context, config?: Config): void {
         type: 'string',
         description: 'Working directory for this call. Defaults to the session workspace; a relative path resolves against it.',
       },
-      timeoutMs: { type: 'number', description: 'Per-call deadline in milliseconds.' },
+      timeoutMs: { type: 'number', description: 'Per-call deadline in milliseconds. An editor or multiplexer escalated automatically is bounded to 8000 when this call names no deadline and no `tty`, because the rest of the wait is a keyboard nobody types into; set it here (or set `tty`) to own the full deadline.' },
       tty: {
         type: 'boolean',
-        description: 'Run the command on a pseudo-terminal. Applied automatically for `sudo`, `ssh`, editors and similar — including inside a `bash -c` wrapper; set it to true for anything else that fails with a terminal-related error, or to false to keep the ordinary pipe for a command that would otherwise be given one.',
+        description: 'Run the command on a pseudo-terminal. Applied automatically for the commands that cannot answer any other way — `sudo`, `su`, `ssh`/`scp`/`sftp`/`rsync`, `passwd`, `gpg`, database clients, editors (`vim`, `nano`, `emacs`) — including inside a `bash -c` wrapper. Not applied to pagers and full-screen reports (`man`, `info`, `less`, `more`, `pg`, `top`, `htop`, `gh`, `aws`): on the pipe they print everything in milliseconds, on a terminal they wait for keys. Set true when the pager itself is wanted, false to keep the ordinary pipe for a command the rule would otherwise wrap.',
       },
       run_in_background: {
         type: 'boolean',
@@ -435,7 +437,7 @@ export function apply(ctx: Context, config?: Config): void {
       // directory the call asked for. `tty: false` is a veto, not a no-op: measured, `man ls` with
       // `tty: false` came back with the pty's overstrike exactly as the automatic rule produced it,
       // which left the model no way to ask for the plain pipe.
-      const escalated = args.tty !== false && (args.tty === true || needsTty(args.command))
+      const { escalated, keyboard, deadlineMs } = decideTty(args.command, args.tty, args.timeoutMs, timeoutMs)
       const payload = escalated ? wrapForTty(args.command) : args.command
       // The session already starts in the workspace; an explicit `workdir` only has to move it.
       const workdir = args.workdir === undefined ? undefined : resolveCwd(args, exec)
@@ -471,9 +473,9 @@ export function apply(ctx: Context, config?: Config): void {
           throw error instanceof Error ? error : new Error(String(error))
         })
       }
-      const run = await session.run(command, timeoutMs, exec.signal)
+      const run = await session.run(command, deadlineMs, exec.signal)
       if (run.aborted) throw toolAborted()
-      return toForeground(run, timeoutMs, escalated)
+      return toForeground(run, deadlineMs, escalated, keyboard)
     },
   })
 

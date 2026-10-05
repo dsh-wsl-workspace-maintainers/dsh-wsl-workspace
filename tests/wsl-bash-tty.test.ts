@@ -5,9 +5,22 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { TTY_COMMANDS, firstWord, needsTty, normaliseTtyOutput, shouldEscalate, wrapForTty } from '../src/host/wsl-bash-tty.ts'
+import {
+  CREDENTIAL_COMMANDS,
+  KEYBOARD_COMMANDS,
+  KEYBOARD_TIMEOUT_MS,
+  TTY_COMMANDS,
+  TTY_OPTIONAL_COMMANDS,
+  decideTty,
+  firstWord,
+  needsTty,
+  normaliseTtyOutput,
+  shouldEscalate,
+  ttyClass,
+  wrapForTty,
+} from '../src/host/wsl-bash-tty.ts'
 
-test('the interactive class is recognised, and ordinary commands are left alone', () => {
+test('the credential and keyboard classes are escalated, and ordinary commands are left alone', () => {
   assert.equal(needsTty('sudo true'), true)
   assert.equal(needsTty('LANG=C sudo reboot'), true, 'a leading assignment must not hide the command')
   assert.equal(needsTty('env -i vim file'), true)
@@ -18,14 +31,48 @@ test('the interactive class is recognised, and ordinary commands are left alone'
   assert.equal(firstWord('   '), '')
 })
 
-test('the whitelist is the narrow one, not a grab bag', () => {
-  for (const word of ['sudo', 'ssh', 'vim', 'less', 'mysql', 'gpg']) {
-    assert.ok(TTY_COMMANDS.has(word), `${word} belongs`)
+test('the pager class is not escalated, because on the pipe it answers better', () => {
+  // Measured on this distribution: `man ls` under `script` opened a pager and waited for a keyboard,
+  // while the same call on the pipe printed the whole page, and `top -bn1 | head` needed the pty only
+  // because it was watching for `q`. `tty: true` still opens the pager for whoever wants it.
+  for (const command of ['man ls', 'less /etc/hostname', 'top', 'htop -b', 'info ls', 'gh --version',
+    'mongod --version']) {
+    assert.equal(needsTty(command), false, `${command} must stay on the pipe`)
+    assert.equal(ttyClass(command), 'optional')
+    assert.equal(shouldEscalate(command, true), true, `${command} is reachable by asking`)
+    assert.equal(shouldEscalate(command, false), false)
   }
-  for (const word of ['git', 'docker', 'curl', 'npm', 'make', 'cat']) {
-    assert.ok(!TTY_COMMANDS.has(word), `${word} must not be wrapped`)
+  // A hyphen is part of a command name. Three whitelist entries carried one, and the scan that stops
+  // at `ssh` / `redis` made them dead letters: escalated by the list, unreachable by the code.
+  assert.equal(ttyClass('redis-cli ping'), 'credential')
+  assert.equal(ttyClass('ssh-keygen -t ed25519'), 'credential')
+  assert.equal(needsTty('ssh-copy-id user@host'), true)
+  assert.equal(ttyClass('-x'), 'none', 'a leading flag is not a command name')
+})
+
+test('the three classes are disjoint and together are the whole old whitelist', () => {
+  const all = [...CREDENTIAL_COMMANDS, ...KEYBOARD_COMMANDS, ...TTY_OPTIONAL_COMMANDS]
+  assert.equal(new Set(all).size, all.length, 'a word in two classes makes the bound ambiguous')
+  assert.equal(all.length, 43, `${all.length} words: ${JSON.stringify(all.filter((word, index) => all.indexOf(word) !== index))}`)
+  assert.equal(TTY_COMMANDS.size, CREDENTIAL_COMMANDS.size + KEYBOARD_COMMANDS.size)
+  for (const word of all) {
+    assert.equal(needsTty(word), !TTY_OPTIONAL_COMMANDS.has(word), `${word} classification disagrees with the sets`)
   }
 })
+
+test('the keyboard bound applies only to a call that named neither deadline nor terminal', () => {
+  assert.deepEqual(decideTty('vim notes.md', undefined, undefined, 120_000),
+    { escalated: true, keyboard: true, deadlineMs: KEYBOARD_TIMEOUT_MS },
+    'the default deadline is two minutes on a program that cannot be satisfied')
+  assert.equal(decideTty('vim notes.md', undefined, 30_000, 30_000).deadlineMs, 30_000,
+    'an explicit timeoutMs is the caller taking the wait; capping it would be overriding what we were told')
+  assert.equal(decideTty('vim notes.md', true, undefined, 120_000).keyboard, false,
+    'an explicit tty:true is the same kind of intent')
+  assert.equal(decideTty('sudo true', undefined, undefined, 120_000).deadlineMs, 120_000,
+    'the credential class keeps its deadline: it answers in milliseconds once it has a terminal')
+  assert.equal(decideTty('man ls', undefined, undefined, 120_000).escalated, false)
+})
+
 
 test('the wrapper travels as one line and carries the stty inside the pty', () => {
   const wrapped = wrapForTty("echo it's $(date) >&2")

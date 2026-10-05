@@ -244,6 +244,23 @@ try {
   check('a terminal-requiring command inside a wrapper is still given one',
     nested.value?.timedOut !== true && nested.ms < 4_000,
     `${nested.ms}ms exit=${nested.value?.exitCode} :: ${JSON.stringify(nested.rendered.slice(0, 46))}`)
+  // The pager class answers better on the pipe (`man` prints the whole page; on a terminal it opens a
+  // pager that waits for keys), so it is not escalated — asserted through the program's own eyes rather
+  // than a timing guess, and `tty: true` remains the door for whoever wants the pager.
+  const stays = await call('man ls > /dev/null 2>&1; echo RC=$?; tty', { timeoutMs: 8_000 })
+  check('a pager or report keeps the ordinary pipe unless the call asks',
+    stays.text.includes('not a tty') && stays.text.includes('RC=0') && stays.ms < 3_000,
+    JSON.stringify({ ms: stays.ms, tail: stays.text.replace(/\s+/g, ' ').slice(-32) }))
+  // The keyboard class is bounded, because the configured default is two minutes and the wait can
+  // never be satisfied. The bound is what is asserted — whether the program then hangs or exits is
+  // the distribution's business (a runner without `vim` still shows the deadline was capped) — and a
+  // timeout has to say what it timed out on.
+  const bounded = await call('vim /etc/hostname', {})
+  check('an editor or multiplexer waiting for a keyboard is bounded, not left to the default',
+    bounded.value?.timeoutMs === 8_000
+    && (bounded.value?.timedOut !== true || /keyboard nobody is typing/.test(bounded.rendered)),
+    JSON.stringify({ ms: bounded.ms, deadline: bounded.value?.timeoutMs, timedOut: bounded.value?.timedOut,
+      note: /keyboard nobody is typing/.test(bounded.rendered) }))
   // The `tty: false` veto is asserted offline instead (`tests/wsl-bash-tty.test.ts`): it is a decision,
   // and the only live discriminator would be a program that hangs on a real terminal, which would make
   // the cell's cost the very defect it is measuring.
@@ -480,7 +497,7 @@ try {
     `the control harness failed before comparing: ${String(error?.message ?? error).slice(0, 120)}`)
 }
 
-const EXPECTED_CHECKS = 42
+const EXPECTED_CHECKS = 44
 const passed = results.filter(r => r.pass).length
 console.log(`${passed}/${results.length} checks passed (plane=${plane()}, distro=${distro}, user=${username}, cwd=${sessionCwd})`)
 if (results.length !== EXPECTED_CHECKS) {
