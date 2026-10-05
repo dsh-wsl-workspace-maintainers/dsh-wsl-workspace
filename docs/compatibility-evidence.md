@@ -2691,3 +2691,31 @@ timeout always says what to use instead. Two cells, 49 total now:
 not yet been driven through his desktop, only through the harness (49/49 both planes) and the scripted
 session. Cross-instance isolation, a distribution without `script`, and `Defaults requiretty` remain
 unmeasured.
+
+## The same prompt, his desktop, before and after (2026-10-05 12:14)
+
+He restarted the installed desktop at **12:12:54** (backend PID 9924, read from `Get-Process.StartTime`),
+which is after the 12:08:41 install — the ordering check this time, not an assumption. He then sent the
+identical line into the same WSL session (`session-b7b8f571…`, `wsl-standard`, his own
+`sensenova / deepseek-v4-flash`). Turn 22 is the old bytes, turn 23 the new ones, same arguments:
+
+| field | turn 22 — old bytes, 11:52 | turn 23 — new bytes, 12:14 |
+| --- | --- | --- |
+| the model's call | `{"command":"printf x; vim note.txt","timeoutMs":15000}` | identical, character for character |
+| elapsed | 16 777 ms | 16 889 ms |
+| `ESC[` sequences in the body | **26** | **0** |
+| `[stderr]` section | present — which is the pipe talking | absent — a pseudo-terminal has one stream |
+| `Vim: Warning: Output is not to a terminal` | in the body | gone: vim believed it had a terminal |
+| what the notes said | timeout + a generic restart sentence | timeout + **the non-interactive forms to use instead** + restart/replay + `[1 detached process from the previous shell was stopped]` |
+
+Turn 24, sent seconds later: `sudo true` with `timeoutMs: 30000` → **112 ms**, sudo's own three lines,
+`[exit code: 1]`, and the note that there is nobody to type a password. That is the credential class
+answering inside its budget in the real product, which is what the 10-04 clicks could not show.
+
+**What this did not buy.** The wall clock did not drop, and it was never going to: the model named
+15 000 ms and we now honour what we were told, so the 8 s bound is not applied to this call — the fix
+moved the *content* of the answer, not its length. If the wait itself is the thing to shorten, the
+honest options are a sentence in the tool description telling the model not to set a deadline for an
+editor (copy, not judgement), or overriding a named deadline (we have decided against that twice: it is
+the same shape as ignoring `run_in_background`). One residual: a single `\f` still survives the fold in
+turn 23's body — cosmetic, and no cell claims it is stripped.
