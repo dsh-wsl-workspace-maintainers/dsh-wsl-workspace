@@ -1,92 +1,13 @@
-// Offline tests for the terminal escalation: which commands get a pseudo-terminal, what the wrapper
-// looks like on the wire, and what a pty's bytes have to be folded into before the model reads them.
-// The live half of this (does `sudo` answer, is the size real) is a cell in
-// `scripts/compatibility/bash-session-real.mjs`, because a pty is not a thing one can fake honestly.
+// Offline tests for the terminal mechanics: what the wrapper looks like on the wire, and what a pty's
+// bytes have to be folded into before the model reads them. Which commands get a terminal is no longer
+// decided from a list of names — that reading is tested in `wsl-bash-starve.test.ts`, against the
+// `/proc` lines taken off this distribution. The live half (does `sudo` answer, is the window size
+// real) is a cell in `scripts/compatibility/bash-session-real.mjs`, because a pty is not a thing one
+// can fake honestly.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import {
-  CREDENTIAL_COMMANDS,
-  KEYBOARD_COMMANDS,
-  KEYBOARD_TIMEOUT_MS,
-  TTY_COMMANDS,
-  TTY_OPTIONAL_COMMANDS,
-  decideTty,
-  firstWord,
-  needsTty,
-  normaliseTtyOutput,
-  shouldEscalate,
-  ttyClass,
-  wrapForTty,
-} from '../src/host/wsl-bash-tty.ts'
-
-test('the credential and keyboard classes are escalated, and ordinary commands are left alone', () => {
-  assert.equal(needsTty('sudo true'), true)
-  assert.equal(needsTty('LANG=C sudo reboot'), true, 'a leading assignment must not hide the command')
-  assert.equal(needsTty('env -i vim file'), true)
-  assert.equal(needsTty('ssh host true'), true)
-  assert.equal(needsTty('git status'), false, 'git reaches a terminal only in special subcommands')
-  assert.equal(needsTty('echo hi | sudo -v'), true, 'every top-level segment is read: a compound command runs its terminal-waiting part too')
-  assert.equal(needsTty('cd /tmp && vim f'), true, 'measured cost of reading only the first word: 121 703 ms in a real session')
-  assert.equal(needsTty('printf \'x\\n\'; vim f'), true)
-  assert.equal(needsTty('echo "sudo reboot"'), false, 'a quoted word is not a command position')
-  assert.equal(needsTty(''), false)
-  assert.equal(firstWord('   '), '')
-})
-
-test('the class of a compound command is the strongest one any segment carries', () => {
-  assert.equal(ttyClass('sudo -n true; vim f'), 'keyboard', 'the keyboard part is what the deadline pays for')
-  assert.equal(ttyClass('sudo -n true; man ls'), 'credential')
-  assert.equal(ttyClass('man ls | head -3'), 'optional')
-  assert.equal(ttyClass('git status'), 'none')
-})
-
-test('the pager class is not escalated, because on the pipe it answers better', () => {
-  // Measured on this distribution: `man ls` under `script` opened a pager and waited for a keyboard,
-  // while the same call on the pipe printed the whole page, and `top -bn1 | head` needed the pty only
-  // because it was watching for `q`. `tty: true` still opens the pager for whoever wants it.
-  for (const command of ['man ls', 'less /etc/hostname', 'top', 'htop -b', 'info ls', 'gh --version',
-    'mongod --version']) {
-    assert.equal(needsTty(command), false, `${command} must stay on the pipe`)
-    assert.equal(ttyClass(command), 'optional')
-    assert.equal(shouldEscalate(command, true), true, `${command} is reachable by asking`)
-    assert.equal(shouldEscalate(command, false), false)
-  }
-  // A hyphen is part of a command name. Three whitelist entries carried one, and the scan that stops
-  // at `ssh` / `redis` made them dead letters: escalated by the list, unreachable by the code.
-  assert.equal(ttyClass('redis-cli ping'), 'credential')
-  assert.equal(ttyClass('ssh-keygen -t ed25519'), 'credential')
-  assert.equal(needsTty('ssh-copy-id user@host'), true)
-  assert.equal(ttyClass('-x'), 'none', 'a leading flag is not a command name')
-})
-
-test('the three classes are disjoint and together are the whole old whitelist', () => {
-  const all = [...CREDENTIAL_COMMANDS, ...KEYBOARD_COMMANDS, ...TTY_OPTIONAL_COMMANDS]
-  assert.equal(new Set(all).size, all.length, 'a word in two classes makes the bound ambiguous')
-  assert.equal(all.length, 43, `${all.length} words: ${JSON.stringify(all.filter((word, index) => all.indexOf(word) !== index))}`)
-  assert.equal(TTY_COMMANDS.size, CREDENTIAL_COMMANDS.size + KEYBOARD_COMMANDS.size)
-  for (const word of all) {
-    assert.equal(needsTty(word), !TTY_OPTIONAL_COMMANDS.has(word), `${word} classification disagrees with the sets`)
-  }
-})
-
-test('the keyboard class is capped at 8 seconds whatever the call asked for, and the cap is reported', () => {
-  assert.deepEqual(decideTty('vim notes.md', undefined, undefined, 120_000),
-    { escalated: true, keyboardClass: true, cappedFromMs: 120_000, deadlineMs: KEYBOARD_TIMEOUT_MS },
-    'the default deadline is two minutes on a program that cannot be satisfied')
-  assert.deepEqual(decideTty('vim notes.md', undefined, 30_000, 120_000),
-    { escalated: true, keyboardClass: true, cappedFromMs: 30_000, deadlineMs: KEYBOARD_TIMEOUT_MS },
-    'a named deadline does not buy the wait back: a measured desktop session asked 15000ms of a `vim` and spent 16 889ms learning nothing new')
-  assert.deepEqual(decideTty('vim notes.md', true, 4_000, 120_000),
-    { escalated: true, keyboardClass: true, deadlineMs: 4_000 },
-    'a deadline shorter than the ceiling stands, and nothing is reported as capped when nothing was')
-  assert.equal(decideTty('sudo true', undefined, undefined, 120_000).deadlineMs, 120_000,
-    'the credential class keeps its deadline: it answers in milliseconds once it has a terminal')
-  assert.equal(decideTty('tar -cf /dev/null /usr', undefined, undefined, 120_000).deadlineMs, 120_000,
-    'a long non-interactive command is untouched by the ceiling (measured: tar over /usr, 15 s)')
-  assert.equal(decideTty('man ls', undefined, undefined, 120_000).escalated, false)
-})
-
+import { normaliseTtyOutput, wrapForTty } from '../src/host/wsl-bash-tty.ts'
 
 test('the wrapper travels as one line and carries the stty inside the pty', () => {
   const wrapped = wrapForTty("echo it's $(date) >&2")
@@ -97,6 +18,14 @@ test('the wrapper travels as one line and carries the stty inside the pty', () =
   assert.equal(Buffer.from(inner, 'base64').toString('utf8'),
     "stty rows 24 cols 80 2>/dev/null; echo it's $(date) >&2",
     'stty set outside the pty was measured to leave `stty size` answering 0 0')
+})
+
+test('the wrapper carries the quoting a real command contains, unchanged', () => {
+  // Quotes, a backslash and a `$` must arrive as written: the inner command is decoded from base64
+  // rather than re-spelled through another layer of shell quoting.
+  const command = `printf '%s\\n' "a'b" '$HOME'; grep -e 'x[^\\]]' /etc/hosts`
+  const inner = /printf %s '([^']+)' \| base64 -d/.exec(wrapForTty(command))?.[1] ?? ''
+  assert.equal(Buffer.from(inner, 'base64').toString('utf8'), `stty rows 24 cols 80 2>/dev/null; ${command}`)
 })
 
 test('a pty’s bytes are folded back into plain text', () => {
@@ -117,27 +46,4 @@ test('a pty’s bytes are folded back into plain text', () => {
   assert.equal(normaliseTtyOutput('l\bls\bs\n'), 'ls\n', 'the doubled glyph man really writes')
   assert.equal(normaliseTtyOutput('[_\bO_\bP]'), '[OP]', 'overstrike underline, as measured')
   assert.equal(normaliseTtyOutput('a\b'), '', 'a dangling backspace takes its left neighbour, as a terminal would')
-})
-
-test('a shell wrapper is read one layer deep, and an unreadable one is not guessed at', () => {
-  // Measured: `bash -c 'sudo true'` sat until its deadline and returned `(no output)` plus a session
-  // rebuild, while bare `sudo true` answered in 46 ms — the issue's own symptom one layer in.
-  assert.equal(needsTty("bash -c 'sudo true'"), true)
-  assert.equal(needsTty('sh -c "passwd"'), true)
-  assert.equal(needsTty('bash -l -c "sudo -n true"'), true, 'other flags before -c are skipped')
-  assert.equal(needsTty("bash -c 'echo hi; sudo -v'"), true,
-    'the wrapper’s inner segments are read too — the rule is per segment, not per first word')
-  assert.equal(needsTty('bash -c "echo hi"'), false)
-  assert.equal(needsTty("bash -c 'sudo true"), false, 'an unterminated quote is left alone, not escalated on a guess')
-  assert.equal(needsTty("grep -r 'sudo' /var/log"), false, 'a search is not a wrapper')
-})
-
-test('tty false is a veto, true a force, absent the rule', () => {
-  assert.equal(shouldEscalate('sudo true', undefined), true)
-  assert.equal(shouldEscalate('sudo true', true), true)
-  assert.equal(shouldEscalate('sudo true', false), false,
-    'measured: with only `true` honoured, `man ls` with `tty: false` came back with the pty anyway')
-  assert.equal(shouldEscalate('ls -l', false), false)
-  assert.equal(shouldEscalate('ls -l', undefined), false)
-  assert.equal(shouldEscalate('ls -l', true), true)
 })

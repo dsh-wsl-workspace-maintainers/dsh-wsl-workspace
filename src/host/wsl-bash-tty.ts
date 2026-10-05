@@ -1,229 +1,36 @@
 /**
- * Running a command that wants a real terminal, inside a shell that has none.
+ * Running a command on a real terminal, inside a shell that nobody is typing into.
  *
- * The session protocol gives a command a pipe for stdin and no controlling terminal, which is right
- * for everything a model normally runs. It is wrong for the small class that opens `/dev/tty` — a
- * password prompt, an editor — and the failure there is not an error message: `sudo true` with no
- * terminal was measured to sit there until the call's deadline expired, returning
- * `[timed out after 6000ms]` and nothing else, and costing a session rebuild.
+ * The session gives a command pipes for stdin. That is right for everything a model normally runs,
+ * and wrong for the programs that read the terminal instead — and the failure there is not an error
+ * message. Measured on this machine (2026-10-05, `D:\Temp\issue51-s0\v1b-report.txt`): the session
+ * shell *does* have a controlling terminal (`ps -o tty=` answers `pts/1`) and job control (`$-` is
+ * `himBs`), so a command that reads `/dev/tty` is put in the foreground of a terminal whose input
+ * side nothing can feed. `sudo true` sleeps there as `S+` with `wchan=wait_woken` until the call's
+ * deadline expires, and the session then has to be rebuilt to be usable again.
  *
- * `script -qec '<cmd>' /dev/null` gives the command a fresh pseudo-terminal of its own while the
- * outer pipe stays ours: the records that end the call are written by the frame, outside `script`,
- * so escalation cannot corrupt the protocol. Measured on this machine (2026-10-04): the same
- * `sudo true` returns in 476 ms with sudo's own three lines — `[sudo] password for ruler:`,
- * `sudo: no password was provided`, `sudo: a password is required` — and exit 1.
+ * `script -qec '<cmd>' /dev/null` gives the command a pseudo-terminal of its own while the outer pipe
+ * stays ours: the records that end the call are written by the frame, outside `script`, so escalation
+ * cannot corrupt the protocol. It also changes the outcome, because `script`'s stdin is the frame's
+ * `/dev/null` — a program that reaches for the keyboard is handed **end of file** and answers with its
+ * own complaint. Measured: the same `sudo true` returns in 45–54 ms with sudo's three lines
+ * (`[sudo] password for ruler:`, `sudo: no password was provided`, `sudo: a password is required`) and
+ * exit 1, instead of costing the deadline.
  *
- * What the pty costs is bytes: `script` echoes CR/LF pairs (`\r\r\n`) that the plain path never
- * produces, so an escalated call's output is normalised before the model reads it.
+ * Nothing here decides *which* commands need a terminal: that judgement used to be three lists of
+ * command names and it was wrong twice in one day (`ssh-copy-id` never matched because the scan stopped
+ * at a hyphen; `printf x; vim note.txt` burnt 121 703 ms because only the first word was read). The
+ * decision is made by watching the process — see `wsl-bash-starve` — and `tty: true` remains the door
+ * for a caller who knows it wants a terminal before running anything.
+ *
+ * What a terminal costs is bytes: `script` echoes CR/LF pairs (`\r\r\n`) that the plain path never
+ * produces, and a program that cannot see a capable terminal writes emphasis as overstrike, so an
+ * escalated call's output is normalised before the model reads it. A pseudo-terminal also has no second
+ * channel: stdout and stderr arrive as one stream, which the parity ledger records as a difference from
+ * the plain path rather than something to paper over.
  *
  * @module dsh-wsl-workspace/host/wsl-bash-tty
  */
-
-/**
- * Commands that need a terminal because what they ask for cannot be answered any other way: a
- * password, a passphrase, an interactive authentication step. Escalated automatically, full deadline.
- */
-export const CREDENTIAL_COMMANDS: ReadonlySet<string> = new Set([
-  'sudo', 'su', 'doas', 'ssh', 'scp', 'sftp', 'rsync', 'passwd', 'chpasswd', 'gpg',
-  'ssh-copy-id', 'ssh-keygen', 'mysql', 'mariadb', 'psql', 'sqlplus', 'redis-cli', 'mongosh',
-])
-
-/**
- * Commands that wait for a keyboard and will not produce anything until it arrives. Still escalated
- * — an agent legitimately uses their batch forms (`vim -es -c '…' -c wq`, `tmux new -d 'cmd'`) and a
- * terminal is the only way to find out — but their deadline is bounded to {@link KEYBOARD_TIMEOUT_MS}
- * and a timeout says so in the body, because the default deadline is two minutes.
- */
-export const KEYBOARD_COMMANDS: ReadonlySet<string> = new Set([
-  'vim', 'vi', 'nvim', 'view', 'nano', 'pico', 'emacs', 'ed', 'tmux', 'screen', 'telnet', 'ftp',
-])
-
-/**
- * Commands that reach a terminal only because the first word says so, and each of which has a
- * non-interactive spelling that is what an agent almost always wants: on a pipe `man`, `less` and
- * `top -bn1` print the whole document or a snapshot in milliseconds, while on a terminal they open a
- * pager that waits for keys. Not escalated; `tty: true` still forces one for the rare call that needs
- * the pty itself (measured: auto-escalating `man ls` turned a 50 ms answer into a pager).
- */
-export const TTY_OPTIONAL_COMMANDS: ReadonlySet<string> = new Set([
-  'htop', 'top', 'less', 'more', 'pg', 'man', 'info', 'gh', 'az', 'gcloud', 'aws', 'virsh', 'mongod',
-])
-
-/** What a call is given a terminal for, or `none`. */
-export type TtyClass = 'credential' | 'keyboard' | 'optional' | 'none'
-
-/** The deadline given to the keyboard class when the call does not ask for longer. */
-export const KEYBOARD_TIMEOUT_MS = 8_000
-
-/**
- * The commands escalated automatically: the credential and keyboard classes. The optional class is
- * deliberately absent — it is reachable through `tty: true`, which is what a caller who really wants
- * a pager says.
- */
-export const TTY_COMMANDS: ReadonlySet<string> = new Set([
-  ...CREDENTIAL_COMMANDS,
-  ...KEYBOARD_COMMANDS,
-])
-
-
-/**
- * The command's first word, with leading assignments and an `env` prefix skipped, so
- * `LANG=C sudo reboot` and `env -i vim file` are recognised. (Written as a token loop rather than
- * one alternation because `scripts/verify-lib.mjs` reads the built chunk for unbound calls, and a
- * regex containing `env(` looks like one.)
- *
- * The hyphen is part of the name, not a stop: without it `ssh-copy-id`, `ssh-keygen` and `redis-cli`
- * were unreachable entries of the whitelist — the scan stopped at `ssh` and `redis`, which are in no
- * class at all, so those three commands were never escalated no matter what the list said.
- */
-export function firstWord(command: string): string {
-  let rest = command.trimStart()
-  let afterEnv = false
-  for (;;) {
-    const assignment = /^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/.exec(rest)
-    if (assignment !== null) {
-      rest = rest.slice(assignment[0].length)
-      continue
-    }
-    if (!afterEnv && /^env\s+/.test(rest)) {
-      afterEnv = true
-      rest = rest.replace(/^env\s+/, '')
-      continue
-    }
-    const flag = afterEnv ? /^-\S+\s+/.exec(rest) : null
-    if (flag === null) break
-    rest = rest.slice(flag[0].length)
-  }
-  const match = /^([A-Za-z_][A-Za-z0-9_-]*)/.exec(rest)
-  return match?.[1] ?? ''
-}
-
-/**
- * The command inside a `bash -c` wrapper, one layer, or undefined when there is nothing readable
- * there. `bash -c 'sudo true'` was measured sitting until its deadline expired and returning
- * `(no output)` plus a session rebuild, while bare `sudo true` answers in 46 ms — the original
- * issue's symptom reproduced one layer in, and a model writes the wrapper constantly.
- *
- * The inner text is taken only as far as the next quote character: crude on purpose. An extraction
- * that stops early can only ever under-read the inner command, which falls back to the behaviour
- * before this existed — a wrapper whose contents cannot be read is not escalated on a guess.
- */
-function wrappedCommand(command: string): string | undefined {
-  const match = /^(?:bash|sh|zsh|dash)\s+(?:-\S+\s+)*?-\w*c\s+(['"])([^'"]*)\1/.exec(command.trim())
-  return match?.[2]
-}
-
-/**
- * Which class of terminal this command wants, if any.
- * @param command - the model's command, verbatim.
- * @returns `credential`, `keyboard`, `optional` or `none`, looking through one shell wrapper.
- */
-export function ttyClass(command: string): TtyClass {
-  const classify = (word: string): TtyClass => {
-    if (CREDENTIAL_COMMANDS.has(word)) return 'credential'
-    if (KEYBOARD_COMMANDS.has(word)) return 'keyboard'
-    if (TTY_OPTIONAL_COMMANDS.has(word)) return 'optional'
-    return 'none'
-  }
-  // The strongest class any top-level segment carries: a compound command runs its keyboard-waiting
-  // part whatever came first, and reading only the first word was measured costing the full two
-  // minutes (`printf 'x\n'; vim note.txt` → 121 703 ms of screen redraw in a real session).
-  // The class decides the deadline, so the segment that can never be satisfied outranks the rest: a
-  // keyboard-waiting part next to a credential part is bounded, not given the full two minutes.
-  const RANK: Record<TtyClass, number> = { none: 0, optional: 1, credential: 2, keyboard: 3 }
-  const candidates = [...firstWords(command), ...firstWordsOfWrapper(command)]
-  let best: TtyClass = 'none'
-  for (const word of candidates) {
-    const own = classify(word)
-    if (RANK[own] > RANK[best]) best = own
-  }
-  return best
-}
-
-/** The first word of every top-level segment, so `cd /tmp && vim f` reads `vim` as well as `cd`. */
-function firstWords(command: string): string[] {
-  // Quoted text is blanked first: `echo "sudo reboot"` has no command position inside the quotes, and
-  // reading one would escalate a command that needs no terminal. An escape sequence inside double
-  // quotes is not modelled — crude on purpose, and a shape this cannot read only ever under-reads.
-  const masked = command
-    .replace(/'[^']*'?/g, ' ')
-    .replace(/"(?:[^"\\]|\\.)*"?/g, ' ')
-    .replace(/\$\((?:[^()]|\([^()]*\))*\)/g, ' ')
-  return masked.split(/[;&|\n]+/).map(segment => firstWord(segment))
-}
-
-/** The command text inside a `bash -c` wrapper, read one layer, or nothing when there is none. */
-function firstWordsOfWrapper(command: string): string[] {
-  const inner = wrappedCommand(command)
-  return inner === undefined ? [] : firstWords(inner)
-}
-
-/**
- * Whether this command should be given a terminal without being asked.
- *
- * The credential and keyboard classes; deliberately **not** the optional one, whose members answer
- * better on the pipe (`man ls` measured as a pager on a terminal and as the whole page in
- * milliseconds on a pipe). `tty: true` reaches a terminal for anything.
- * @param command - the model's command, verbatim.
- * @returns true when the command is escalated automatically.
- */
-export function needsTty(command: string): boolean {
-  const classification = ttyClass(command)
-  return classification === 'credential' || classification === 'keyboard'
-}
-
-
-/**
- * The whole escalation decision, in one place so the veto is testable without a distribution.
- * @param command - the model's command, verbatim.
- * @param tty - the call's `tty` argument: true forces a terminal, false refuses one the rule would
- * otherwise give, and absent leaves it to the rule.
- * @returns whether this call runs on a pseudo-terminal.
- */
-export function shouldEscalate(command: string, tty: boolean | undefined): boolean {
-  if (tty === false) return false
-  return tty === true || needsTty(command)
-}
-
-/** What the terminal decision and the deadline came out to, for one call. */
-export interface TtyDecision {
-  /** Whether the command is wrapped in `script`. */
-  escalated: boolean
-  /** Whether the command *is* keyboard-class — the class decides both the ceiling and the hint. */
-  keyboardClass: boolean
-  /** The deadline the call asked for, when the class capped it: a cap is reported, never silent. */
-  cappedFromMs?: number
-  /** The deadline to run the call with. */
-  deadlineMs: number
-}
-
-/**
- * The whole decision, so the bound is testable without a distribution.
- * @param command - the model's command, verbatim.
- * @param tty - the call's `tty` argument, if it named one.
- * @param requestedMs - the call's own `timeoutMs`, if it named one.
- * @param ceilingMs - the deadline the tool would otherwise use, already clamped to the configured
- * maximum.
- * @returns whether to escalate, the class, the deadline to use, and what was asked for if capped.
- *
- * The keyboard class is capped even when the call named a longer deadline. Measured reason: a real
- * desktop session sent `{"command":"printf x; vim note.txt","timeoutMs":15000}` and spent 16 889 ms
- * learning what 8 000 ms teaches in the same words — and an agent that waits 15 seconds for nothing
- * does not conclude "this program cannot be satisfied", it concludes "this environment is slow", which
- * then reshapes how it plans every later call. The cap cannot bite a batch form, because a batch form
- * is not slow: `vim -es -c '%s/x/X/g' -c wq` over 1 000 000 lines answered in 1 s with exit 0 here.
- */
-export function decideTty(command: string, tty: boolean | undefined, requestedMs: number | undefined,
-  ceilingMs: number): TtyDecision {
-  const escalated = shouldEscalate(command, tty)
-  const keyboardClass = escalated && ttyClass(command) === 'keyboard'
-  if (!keyboardClass) return { escalated, keyboardClass, deadlineMs: ceilingMs }
-  const wanted = Math.min(requestedMs ?? ceilingMs, ceilingMs)
-  const deadlineMs = Math.min(wanted, KEYBOARD_TIMEOUT_MS)
-  return wanted > deadlineMs
-    ? { escalated, keyboardClass, cappedFromMs: wanted, deadlineMs }
-    : { escalated, keyboardClass, deadlineMs }
-}
 
 /**
  * Wrap a command so it runs on a pseudo-terminal with a sane window size.

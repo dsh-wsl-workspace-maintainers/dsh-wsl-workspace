@@ -201,29 +201,67 @@ try {
     `${afterCancel.ms}ms`)
   await call(`rm -f ${marker}`)
 
-  // The terminal class. `sudo true` with no terminal was measured sitting until its deadline expired
-  // and returning nothing but `[timed out after 6000ms]`, then costing a session rebuild; through
-  // `script -qec` it answers in under half a second with sudo's own words. That is the difference
-  // between "bounded" and "usable".
-  const password = await call('sudo true', { timeoutMs: 8_000 })
-  // What sudo answers with belongs to the distribution's sudoers: root here and on the WSL1 runner is
-  // NOPASSWD and says nothing (exit 0), an ordinary user is asked for a password. The universal
-  // property is that the escalation ran and sudo's own verdict came back well inside the deadline
-  // instead of consuming it — which is what the same call did before `tty` existed (6.8 s, nothing
-  // but `[timed out after 6000ms]`).
-  check('sudo is escalated and answers inside its budget', password.ms < 4_000
-    && password.value?.timedOut === false
-    && (password.value?.exitCode === 0 || /[Pp]assword/.test(password.rendered)),
-  `${password.ms}ms exit=${password.value?.exitCode} :: ${JSON.stringify(password.rendered.slice(0, 60))}`)
-  // sudo's own words do not tell the caller what it can *do*. The reading behind this is a real Desktop
-  // turn that came back `[sudo] password for ruler: … a password is required [exit code: 1]` and the
-  // model retried. So the note must ride with the complaint — and, on a NOPASSWD distribution where no
-  // complaint is printed, no note may appear either: both halves of the equality are asserted, so a
-  // note fired for a call that never asked is as red as a missing one.
+  // The terminal decision, made by watching the process instead of reading its name.
+  //
+  // First the premise, per distribution. Measured here (WSL2, Ubuntu, 2026-10-05): a piped
+  // `bash --norc -i` still has a controlling terminal — `ps -o tty= -p $$` answers `pts/1` and `$-` is
+  // `himBs` — so a command that reads `/dev/tty` blocks forever rather than failing. A distribution
+  // without that terminal answers `??` and the same read errors at once, which is a different thing to
+  // assert. Writing the local machine's premise as a universal rule is the mistake this file has caught
+  // twice already, so every reactive cell below is conditioned on this reading and says which branch it
+  // took.
+  const cttyProbe = await call('ps -o tty= -p $$; echo FLAGS=$-', { timeoutMs: 8_000 })
+  const cttyName = (cttyProbe.text.trim().split('\n')[0] ?? '').trim()
+  const hasCtty = /^pts\/\d+$/.test(cttyName)
+  check('the controlling-terminal premise is read, not assumed',
+    cttyName === '??' || hasCtty,
+  JSON.stringify({ tty: cttyName, hasCtty, flags: /\bFLAGS=(\S+)/.exec(cttyProbe.text)?.[1] }))
+  //
+  // `sh -c 'read x < /dev/tty'` is the case to test with: `sh` was in no list, the command reaches for
+  // the keyboard anyway, and where there is a terminal to wait on it sits there until its deadline.
+  // Measured before this existed (`D:\Temp\issue51-s0\v1b-report.txt`): 13 089 ms of silence, then a
+  // session rebuild. What it must do now is get stopped, re-run on a pseudo-terminal where the read
+  // meets end-of-file, and say it ran twice — all inside one call.
+  const starved = await call(`sh -c 'read x < /dev/tty; echo GOT=$?'`, { timeoutMs: 20_000 })
+  check('a command waiting for the keyboard is stopped and answered, not left to its deadline',
+    hasCtty
+      ? (starved.value?.timedOut === false && starved.text.includes('GOT=')
+        && /first attempt was stopped/.test(starved.rendered))
+      : (starved.value?.timedOut === false && starved.ms < 8_000),
+  JSON.stringify({ hasCtty, ms: starved.ms, exit: starved.value?.exitCode, tail: starved.text.trim().slice(0, 20) }))
+  // The stopped-and-re-run sentence is the whole point: the second execution can repeat work the first
+  // attempt did before it reached its prompt, and a body that hides that is the defect this file has
+  // already caught once (`echo run >> f` landing twice, 2026-10-04).
+  check('the re-run is announced as a second execution',
+    !hasCtty || (/run once more on a pseudo-terminal/.test(starved.rendered) && /done twice/.test(starved.rendered)),
+  JSON.stringify({ hasCtty, head: starved.rendered.slice(0, 90) }))
+  // A long silent wait that is NOT a keyboard wait must be left completely alone: `sleep 4` produces no
+  // bytes, uses no CPU, sleeps in the terminal's foreground job — and is distinguishable only by where
+  // it is asleep. This is the false-positive sentinel; if the rule ever broadens to "quiet means stuck",
+  // this cell goes red.
+  const sleeping = await call('sleep 4; echo SLEPT_RIGHT', { timeoutMs: 20_000 })
+  check('a command that is merely quiet is not stopped',
+    sleeping.value?.timedOut === false && sleeping.text.includes('SLEPT_RIGHT')
+    && !/first attempt was stopped/.test(sleeping.rendered) && sleeping.ms > 3_500,
+  JSON.stringify({ ms: sleeping.ms, exit: sleeping.value?.exitCode, tail: sleeping.rendered.slice(-40) }))
+  // A privileged wait hides its `/proc` entries (sudo clears its dumpable flag), so it can only be
+  // called unconfirmable and gets the longer window. Root here is NOPASSWD and answers at once, which is
+  // the other half of the assertion: no note may be attached to a call that never waited.
+  const password = await call('sudo true', { timeoutMs: 25_000 })
+  check('a privileged wait comes back inside its budget and never on the deadline',
+    password.value?.timedOut === false && password.ms < 20_000,
+  JSON.stringify({ ms: password.ms, exit: password.value?.exitCode, tail: password.rendered.slice(-46) }))
   const asked = /sudo: (a password is required|no password was provided)/.test(password.rendered)
   const told = /sudo asked for a password/.test(password.rendered)
   check('a password sudo cannot be given is explained, not just reported', asked === told,
     JSON.stringify({ asked, told, tail: password.rendered.slice(-56) }))
+  // The veto: `tty: false` must keep the ordinary pipe even for a command that then sits waiting. The
+  // stop still happens (the shell would otherwise be unusable) but the re-run must not.
+  const vetoed = await call(`sh -c 'read x < /dev/tty; echo GOT=$?'`, { tty: false, timeoutMs: 20_000 })
+  check('tty:false vetoes the re-run and keeps the command on the pipe',
+    !hasCtty || (!/run once more on a pseudo-terminal/.test(vetoed.rendered)
+      && !vetoed.text.includes('GOT=') && /waiting for keyboard input/.test(vetoed.rendered)),
+  JSON.stringify({ hasCtty, ms: vetoed.ms, exit: vetoed.value?.exitCode, text: vetoed.text.trim().slice(0, 20) }))
   const pty = await call('stty size; tty', { timeoutMs: 8_000, tty: true })
   const [sizeLine = '', ttyLine = ''] = pty.text.trim().split('\n')
   check('the escalated pty has a real size and name', sizeLine.trim() === '24 80' && ttyLine.startsWith('/dev/pts/'),
@@ -241,52 +279,37 @@ try {
 
   // Two seams measured on 2026-10-05 by driving this tier directly. `man` on a terminal it cannot
   // colour writes overstrike — a whole page came back as `N\bNA\bAM\bME\bE` for `NAME` — and that
-  // reached the model verbatim; and the decision read only the first word, so `bash -c 'sudo true'`
-  // (a shape models write constantly) was measured sitting to its deadline returning `(no output)`
-  // plus a session rebuild, while bare `sudo true` answered in 46 ms. The fold is asserted on the
-  // exact bytes rather than on `man`, because whether `man` reaches its pager at all belongs to the
-  // distribution, and a cell that depends on it would be a claim about the machine.
+  // reached the model verbatim. The fold is asserted on the exact bytes rather than on `man`, because
+  // whether `man` reaches its pager at all belongs to the distribution, and a cell that depends on it
+  // would be a claim about the machine.
   const overstruck = await call("printf 'N\\bNA\\bAM\\bME\\bE\\n'", { timeoutMs: 8_000, tty: true })
   check('a pty’s overstrike is folded before the model reads it',
     overstruck.text === 'NAME\n',
     JSON.stringify({ raw: overstruck.text, exit: overstruck.value?.exitCode }))
-  const nested = await call("bash -c 'sudo true'", { timeoutMs: 8_000 })
-  check('a terminal-requiring command inside a wrapper is still given one',
-    nested.value?.timedOut !== true && nested.ms < 4_000,
-    `${nested.ms}ms exit=${nested.value?.exitCode} :: ${JSON.stringify(nested.rendered.slice(0, 46))}`)
+  // The reading that killed the old rule's first day: `bash -c 'sudo true'` sat to its deadline because
+  // the decision read the first word. Nothing reads a word any more — the walk finds the process — so a
+  // waiting command inside a wrapper is caught by the same code as one on its own.
+  const nested = await call(`bash -c 'read x < /dev/tty; echo GOT=$?'`, { timeoutMs: 20_000 })
+  check('a waiting command inside a wrapper is caught without reading a single word',
+    nested.value?.timedOut === false && nested.text.includes('GOT=')
+    && /first attempt was stopped/.test(nested.rendered),
+  `${nested.ms}ms exit=${nested.value?.exitCode} :: ${JSON.stringify(nested.text.trim().slice(0, 20))}`)
+  // A deadline the call named does not buy a keyboard wait back — the property the old 8-second cap was
+  // built to hold, now earned by evidence instead of by a name list. 60 seconds asked, ~2 answered.
+  const longAsked = await call(`sh -c 'read x < /dev/tty; echo GOT=$?'`, { timeoutMs: 60_000 })
+  check('a longer deadline does not buy a keyboard wait back',
+    longAsked.ms < 20_000 && longAsked.value?.timedOut === false
+    && /first attempt was stopped/.test(longAsked.rendered),
+  JSON.stringify({ ms: longAsked.ms, asked: longAsked.value?.timeoutMs, exit: longAsked.value?.exitCode }))
   // The pager class answers better on the pipe (`man` prints the whole page; on a terminal it opens a
-  // pager that waits for keys), so it is not escalated — asserted through the program's own eyes rather
-  // than a timing guess, and `tty: true` remains the door for whoever wants the pager.
+  // pager that waits for keys), so nothing about it is escalated any more — asserted through the
+  // program's own eyes rather than a timing guess, and `tty: true` remains the door for the caller who
+  // wants the pager itself.
   const stays = await call('man ls > /dev/null 2>&1; echo RC=$?; tty', { timeoutMs: 8_000 })
   check('a pager or report keeps the ordinary pipe unless the call asks',
-    stays.text.includes('not a tty') && stays.text.includes('RC=0') && stays.ms < 3_000,
-    JSON.stringify({ ms: stays.ms, tail: stays.text.replace(/\s+/g, ' ').slice(-32) }))
-  // The keyboard class is bounded, because the configured default is two minutes and the wait can
-  // never be satisfied. The bound is what is asserted — whether the program then hangs or exits is
-  // the distribution's business (a runner without `vim` still shows the deadline was capped) — and a
-  // timeout has to say what it timed out on.
-  const bounded = await call('vim /etc/hostname', {})
-  check('an editor or multiplexer waiting for a keyboard is bounded, not left to the default',
-    bounded.value?.timeoutMs === 8_000
-    && (bounded.value?.timedOut !== true || /keyboard nobody is typing/.test(bounded.rendered)),
-    JSON.stringify({ ms: bounded.ms, deadline: bounded.value?.timeoutMs, timedOut: bounded.value?.timedOut,
-      note: /keyboard nobody is typing/.test(bounded.rendered) }))
-  // The hint belongs to the class, not to whether this tool applied its own bound. A real session
-  // measured why that matters: the model did not send `vim note.txt`, it sent
-  // `{"command":"printf x; vim note.txt","timeoutMs":15000}` — naming a deadline of its own, which
-  // under the older rule bought it the generic restart sentence instead of the non-interactive form.
-  const namedDeadline = await call('vim /etc/hostname', { timeoutMs: 15_000 })
-  check('a keyboard-class deadline is capped at 8 s and the cap is reported',
-    namedDeadline.value?.timedOut === true && namedDeadline.value?.timeoutMs === 8_000
-    && /capped to 8000ms/.test(namedDeadline.rendered) && /keyboard nobody is typing/.test(namedDeadline.rendered),
-    JSON.stringify({ ms: namedDeadline.ms, deadline: namedDeadline.value?.timeoutMs,
-      cap: /capped to 8000ms/.test(namedDeadline.rendered), hint: /keyboard nobody is typing/.test(namedDeadline.rendered) }))
-  // The cap only ever shortens: a call that asked for less than the ceiling keeps it, and must not be
-  // told a cap it did not hit.
-  const shorter = await call('vim /etc/hostname', { timeoutMs: 4_000 })
-  check('a deadline shorter than the ceiling stands and is not reported as capped',
-    shorter.value?.timeoutMs === 4_000 && !/capped to/.test(shorter.rendered),
-    JSON.stringify({ deadline: shorter.value?.timeoutMs, cap: /capped to/.test(shorter.rendered) }))
+    stays.text.includes('not a tty') && stays.text.includes('RC=0') && stays.ms < 3_000
+    && !/first attempt was stopped/.test(stays.rendered),
+  JSON.stringify({ ms: stays.ms, tail: stays.text.replace(/\s+/g, ' ').slice(-32) }))
   // The loop brake is a sentence, not a refusal: the same failing command twice over says so, and one
   // success clears the count so the ordinary `npm test` after an install is never told to stop. The
   // signature runs in a subshell — a bare `exit 41` would end the session shell itself (measured: it
@@ -312,15 +335,22 @@ try {
   // and the only live discriminator would be a program that hangs on a real terminal, which would make
   // the cell's cost the very defect it is measuring.
 
-  // The bound has to follow the *program that waits*, not the program that happens to come first. A
-  // real session measured the cost of the older rule — `printf '%s\n' X; vim note.txt` was not escalated
-  // at all, sat out the configured two minutes, and handed the model the screen's raw escapes
-  // (`\u001b[24;1H` and friends, because the pipe path never folds them): 121 703 ms for nothing.
-  const compound = await call("printf 'x\\n'; vim /etc/hostname", {})
-  check('a keyboard-waiting program is bounded even when it is not the first segment',
-    compound.value?.timeoutMs === 8_000 && compound.ms < 20_000
-    && (compound.value?.timedOut !== true || /keyboard nobody is typing/.test(compound.rendered)),
-    JSON.stringify({ ms: compound.ms, deadline: compound.value?.timeoutMs, timedOut: compound.value?.timedOut }))
+  // The protection the old 8-second cap existed to give, now carried by the reading instead of by a
+  // name list. A real session measured the cost of the older rule: `printf '%s\n' X; vim note.txt` was
+  // not escalated at all, sat out the configured two minutes, and handed the model the screen's raw
+  // escapes — 121 703 ms for nothing (`D:\Temp` evidence sheet, turn 22). Bytes arriving first must not
+  // blind the watchdog, so this cell writes a line and *then* waits for a keyboard.
+  const compound = await call(`printf 'x\\n'; sh -c 'read y < /dev/tty; echo GOT=$?'`, { timeoutMs: 20_000 })
+  check('a wait after some output is still caught',
+    compound.text.includes('x') && compound.text.includes('GOT=') && compound.ms < 20_000
+    && /first attempt was stopped/.test(compound.rendered),
+  JSON.stringify({ ms: compound.ms, exit: compound.value?.exitCode, text: compound.text.replace(/\s+/g, ' ').trim().slice(0, 24) }))
+  // The premise of the whole layer, checked rather than assumed: the note has to cite the `/proc` field
+  // it read. A probe that silently stopped answering (no `pgrep`, a hardened `/proc` mount) would look
+  // exactly like a command that is not waiting, so a reading with no provenance in it is the red flag.
+  check('the reading names the /proc field it came from',
+    /\/proc\/<pid>\/wchan/.test(vetoed.rendered) && /wait_woken/.test(vetoed.rendered),
+  JSON.stringify(vetoed.rendered.slice(0, 80)))
   // The other half of the same session pass: a live display on a pipe does not wait, it refuses. `top`
   // answered `top: failed tty get` in 687 ms with exit 1 — so it is *not* the deadline case, and the
   // tool's description must not promise the model that a bare `top` prints something.
@@ -561,7 +591,7 @@ try {
     `the control harness failed before comparing: ${String(error?.message ?? error).slice(0, 120)}`)
 }
 
-const EXPECTED_CHECKS = 51
+const EXPECTED_CHECKS = 55
 const passed = results.filter(r => r.pass).length
 console.log(`${passed}/${results.length} checks passed (plane=${plane()}, distro=${distro}, user=${username}, cwd=${sessionCwd})`)
 if (results.length !== EXPECTED_CHECKS) {

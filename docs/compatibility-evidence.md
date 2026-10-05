@@ -2719,3 +2719,123 @@ honest options are a sentence in the tool description telling the model not to s
 editor (copy, not judgement), or overriding a named deadline (we have decided against that twice: it is
 the same shape as ignoring `run_in_background`). One residual: a single `\f` still survives the fold in
 turn 23's body — cosmetic, and no cell claims it is stripped.
+
+## The name lists are deleted: what the distribution actually reports about a waiting command (2026-10-05, fourth round)
+
+Every claim in the three sections above about *which* commands get a pseudo-terminal — the 43 words, the
+credential/keyboard/pager classes, the 8-second ceiling and its cap sentence — is **superseded** by this
+section. They were drafted into an unreleased version, so nothing published ever carried them; the
+measurements stay in the record because they are what justified each rule and each deletion.
+
+The reason for the change is not taste about maintenance. Two of this ticket's own defects came out of
+the lists (a scan that stopped at a hyphen, so `ssh-copy-id`/`ssh-keygen`/`redis-cli` were dead letters;
+a decision that read only the first word, costing **121 703 ms** in a real session), and the property
+they were approximating is directly observable: a command waiting for a keyboard can be *seen*, from
+outside the shell, while the call is in flight.
+
+### The premise, corrected
+
+`src/host/wsl-bash-session.ts` and `src/host/wsl-bash-protocol.ts` both said the session has *no*
+terminal, and that the repaint which broke the host's matcher was readline's `ESC[<n>X`. Neither is what
+the artefacts show:
+
+- `ps -o tty= -p $$` inside the session answers **`pts/1`** and `$-` is **`himBs`**, so the piped
+  interactive shell does have a controlling terminal and job control. What the pipes replace is the
+  terminal *as stdio*: the input side of that pts belongs to WSL, and nothing on this machine can type
+  into it. A program that reads `/dev/tty` therefore **waits** rather than failing.
+- The captured raw stream (`tailbytes.raw.txt`, 1 627 B) contains `ESC[K` x7, `ESC[2J`, cursor
+  positioning `ESC[<n>;nH`, `ESC[m`, `ESC[25l` and literal spaces — and **no `ESC[<n>X` at all**. So what
+  this protocol defends against is the measured shape (bytes between the digits and the newline: proved
+  against the host's own `commandOutput()` — `:0 SP SP` never settles, `:0 SP` never settles, `:0 CRLF`
+  settles), not a named erase recipe.
+
+Both wordings are corrected in the source, in the two READMEs and in the changelog pair.
+
+### What the readings look like (`D:\Temp\issue51-s0\v1c-report.txt`, `v1c-table.txt`)
+
+Sampled through a sibling `wsl.exe` as the same user the session runs as, against the production session,
+with the fields the shipped probe prints (`ps -o pid=,ppid=,pgid=,tpgid=,stat=`, `/proc/<pid>/wchan`,
+`/proc/<pid>/schedstat`, the `fd` table).
+
+| the command is | state | `wchan` | a terminal in its fds | CPU | classified as |
+| --- | --- | --- | --- | --- | --- |
+| `sh -c 'read x < /dev/tty'` | `S+`, `pgid == tpgid` | `wait_woken` | yes — reported as **`/dev/tty`**, not `pts/N` | flat | `terminal` |
+| `sudo true` asking for a password, user plane | `S+` | `0` (unreadable) | unreadable (`links=[]`) | flat | `opaque` |
+| the same, root plane | `S+` | `wait_woken` | yes, `/dev/tty` present; `/proc/<pid>/syscall` first field `0` = `read` | flat | would be `terminal` |
+| `sleep 6` | `S+`, `pgid == tpgid` | `hrtimer_nanosleep` | no | flat | nothing |
+| `getent` / `curl` on a dead host | `S` | `poll_schedule_timeout` | no | flat | nothing |
+| `dd if=/dev/zero bs=1M count=800` piped to `sha256sum` | `Rl+` | empty, i.e. running | writing to a pipe | rising | nothing |
+| `vim` on a pty this tool created | `S+` | `poll_schedule_timeout` | yes | flat | `own-terminal`, and only because the pty is ours |
+
+`sudo` clears its dumpable flag, which is why its `/proc` entries are invisible even to its own owner;
+that is the whole difference between the confirmed and the unconfirmable reading, and it is why the note
+says which of the two it was rather than claiming a terminal read it did not see. Reaching the root plane
+(`wsl -u root`, passwordless on this machine, 827–1207 ms per pass against 200–280 ms on the user plane)
+would turn `opaque` into `terminal` and let `sudo` be caught in 1.2 s instead of 8 s. It is **not** used:
+a diagnostic that needs privilege in order to be quick is a capability the plugin would be asking for to
+save seven seconds, and the distribution's own answer arrives anyway.
+
+### The cadence, priced and then bounded by the price
+
+One probe pass costs **200–280 ms** with the small script and 400–600 ms with the fd and syscall columns
+added; the first cold `wsl.exe` of a session costs 586–1251 ms. Hence the shipped numbers: first look
+after **1.2 s** of silence, then at most every **500 ms**, and the unconfirmable window at **8 s** — the
+ceiling this tool had already committed to for a keyboard wait, reused so the plugin does not quietly
+invent a second one. Nothing about the wait can be decided from `state` alone: `sleep 6` and `sudo` on its
+prompt are both `S+` in the terminal's foreground job, which is exactly the pair the rule has to separate.
+
+### Does stopping it from outside keep the protocol in step? Yes, and better than the deadline
+
+With the frame in flight, `SIGCONT -> SIGTERM -> (0.3 s) -> SIGKILL` to the pids the probe just named:
+
+```
+exit=1  timedOut=false  restarted=undefined  after 3669ms   (the call had a 30 s budget)
+next call:  echo PWD=$PWD; echo ALIVE2=$((6*7))  ->  /home/ruler   ALIVE2=42
+```
+
+The frame still writes its own completion record, so **no rebuild and no replay** — the state the wedged
+command left behind survives, which is strictly more than the deadline path preserves (it rebuilds the
+shell and replays the journal). That is why the reaction is a stop-and-retry rather than a
+report-and-continue.
+
+### End to end, through the real tool (`v5-run.txt`)
+
+| call | result | reading |
+| --- | --- | --- |
+| `sh -c 'read x < /dev/tty; echo GOT=$?'` | **2 342 ms, exit 0**, body `GOT=1`, note says stopped at 1 200 ms and re-run | `terminal` then retry |
+| `bash -c 'read x < /dev/tty; echo GOT=$?'` | 2 205 ms, exit 0, `GOT=1` | caught without reading a single word |
+| `printf 'x\n'` then the same read | 2 299 ms, body `x GOT=1` | bytes arriving first do not blind the probe |
+| same command with `{timeoutMs: 60000}` | **2 233 ms** | a longer deadline does not buy the wait back |
+| same command with `tty: false` | 2 344 ms, **exit 143**, note names the `/proc` field and the doors, **no second attempt** | the veto holds |
+| `sleep 4; echo SLEPT_RIGHT` | 4 195 ms, exit 0, no note | quiet is not stuck |
+| `sudo true` as `ruler`, no `tty` argument at all | **9 529 ms, exit 1**, sudo's own three lines plus the password note | `opaque` at 8 s then retry |
+| `vim -u NONE -i NONE -n note.txt` with `tty: true` | 9 594 ms, **exit 137**, `own-terminal` note | bounded by evidence, not by a name |
+| `tar -cf /dev/null /usr/bin` | 52 ms | untouched |
+| afterwards: `echo ALIVE_$((6*7))` | 27 ms, `ALIVE_42` | the same shell, still alive |
+
+The gate carries all of these as cells (`bash-session-real`, 51 -> **55 checks**), and each reactive cell
+first reads whether *this* distribution has the premise at all (`ps -o tty= -p $$`) and prints which
+branch it took — on a distro where `/dev/tty` cannot be opened, `read x < /dev/tty` fails at once and the
+cell must not claim a wait was caught. Writing this machine's premise as a universal rule is the mistake
+this file has recorded twice already.
+
+### Three device bugs found on the way, each of which would have produced a false green
+
+1. **The probe script did not parse.** Joining statement fragments with `'; '` produced
+   `while … ]; do;`, which bash answers with `syntax error near unexpected token ';'`, exit 2 and **empty
+   stdout**. Inside the session the failure was invisible: no rows looks exactly like "no process is
+   waiting", so the whole layer was inert while every deadline cell still passed. Rewritten as one
+   explicit line; the unit test now asserts that `do;`, `then;` and `else;` cannot appear, and the pass
+   prints a completion sentinel (`DSH_PROBE_DONE`) which the session requires before trusting an empty
+   result.
+2. **Counting only `pts/` links missed `/dev/tty`.** `ls -l /proc/<pid>/fd` reports the redirect as
+   `-> /dev/tty`, not as the pts it resolves to, so the confirmed rule could not fire for the one command
+   built to test it. Now `grep -c -e pts/ -e /dev/tty`, and the test pins the pattern.
+3. **The measurement device anchored the session shell once.** A cell that reached its deadline rebuilt
+   the shell, after which the driver sampled a dead pid and reported "no processes" — which reads like a
+   product finding. Re-anchoring per cell changed `sudo` from "no rows" to "`S+`, opaque, stopped at 8 s".
+   A stale anchor is also why the compound editor cell first looked untouched.
+
+And the honesty item that stays open: `ForegroundOutput` has no `restarted` field (the host's arm does not
+either), so a driver can only see a restart through its note — the cell that reads `value.restarted` gets
+`undefined` even when the body says the shell was rebuilt.

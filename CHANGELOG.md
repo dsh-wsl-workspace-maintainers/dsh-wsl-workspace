@@ -23,9 +23,10 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   host wiped the shell. The world now mounts this plugin's own `bash`: one long-lived
   `bash --norc -i` over **pipes**, completing on a NUL-delimited record carrying a per-command
   nonce, with the login environment sourced silently, history expansion off (which also closes the
-  `!` class of failures for this path), a pseudo-terminal of its own for commands that need one
-  (`sudo`, `ssh`, an editor — `script -qec`, chosen by the command's first word, forced by
-  `tty: true`), and a session rebuild that replays `cd` and exported variables when a call wedges
+  `!` class of failures for this path), a pseudo-terminal of its own for a command caught waiting for
+  input (`script -qec`, decided by reading the process rather than its name — see the bullet on the
+  reading; `tty: true` asks for one up front), and a session rebuild that replays `cd` and exported
+  variables when a call wedges
   *without* executing a merely-slow command a second time.
   Measured on this machine, both build planes: first call ~0.5 s including boot, then 22-34 ms, with
   `cd`/`export`/exit codes/CJK/`!`/`sed -i`/`tar`/`git commit`/`sudo` all verified, while the same
@@ -85,19 +86,43 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   back to the plain pipe, so `false` is a veto now. What is *not* fixed, because it is what a terminal
   is: an escalated call has one stream, so the `[stderr]` section the plain path writes cannot appear
   there (the host's own PTY tier is the same — it is a row in [docs/bash-parity.md](docs/bash-parity.md)
-  with a probe behind it), and a program that needs a keyboard it will never receive (`less`, `vim`,
-  `top`) still costs its deadline plus a rebuild — measured 5.7-6.1 s with a screen dump — because the
-  frame gives a pty `/dev/null` for input rather than letting the program eat the next command's bytes.
+  with a probe behind it), and a program on a terminal that nothing can type into used to cost its
+  deadline plus a rebuild — measured 5.7-6.1 s with a screen dump — because the frame gives a pty
+  `/dev/null` for input rather than letting the program eat the next command's bytes; that case is what
+  the reading below now ends early.
 
-- **A keyboard-class wait is capped at 8 seconds whatever the call asked for, and the cap says so.** The
-  previous rule honoured a named `timeoutMs`; the first desktop turn under it sent
-  `{"command":"printf x; vim note.txt","timeoutMs":15000}` and spent **16 889 ms** on a wait that can never
-  be satisfied. An agent does not read that as "this program needs fingers" — it reads it as "this
-  environment is slow" and reprices every later call. The cap only shortens (a 4 s request stands) and the
-  body carries `[this call asked for 15000ms and was capped to 8000ms: …]`, so the tool is never caught
-  lying about a deadline. Two measurements bound the risk: `vim -es -c '%s/x/X/g' -c wq` over
-  **1 000 000 lines** answers in 1 s with exit 0, so no batch form is touched; `tar -cf /dev/null /usr`
-  takes 15 s and is not this class, so it keeps its deadline.
+- **A command waiting for a keyboard is diagnosed by reading the distribution, not by matching its
+  name — and it gets an answer instead of a deadline.** Nothing in this release ships a list of command
+  names. The path here was: one whitelist of first words → three "classes" (credential / keyboard /
+  pager) with an 8-second ceiling on one of them → all of it deleted in favour of a second look taken
+  from outside the shell while the call is in flight. Each step is kept in the record because each was
+  paid for by a measurement: the whitelist stopped at a hyphen so `ssh-copy-id`/`ssh-keygen`/`redis-cli`
+  could never match it; reading only the first word cost **121 703 ms** in a real session, where the
+  model sent `{"command":"printf x; vim note.txt","timeoutMs":15000}` and got the screen's raw escapes
+  after the two-minute default had run out; honouring a named deadline bought nothing on a wait that can
+  never be satisfied, since an agent reads a 16 889 ms silence as "this environment is slow" and
+  reprices every later call — while `tar -cf /dev/null /usr` legitimately takes 15 s and `vim -es` over
+  **1 000 000 lines** takes 1 s, so any rule that stops a quiet command must be able to tell those apart.
+  What ships reads, per sample (200–280 ms, ~2 Hz, only after 1.2 s of silence): the process state,
+  whether the job owns the terminal's foreground group, `/proc/<pid>/wchan`, whether a terminal is among
+  the process's descriptors, and whether its CPU is advancing (`/proc/<pid>/schedstat`). `sleep`, a
+  network wait and a build are each excluded by a different one of those columns; a program asleep in a
+  terminal read is not. It then stops the wait — `SIGCONT` first, because a stopped process ignores
+  `SIGTERM` — and runs the command once more on a pseudo-terminal inside the same call, where the
+  keyboard read meets end-of-file and the program prints its own complaint. Measured on the real
+  session (`D:\Temp\issue51-s0\v5-run.txt`): `sh -c 'read x < /dev/tty'` — a program called `sh`, in no
+  list that ever existed — stopped at 1 219 ms and answered at 2 278 ms; `sleep 4` was untouched;
+  `sudo` asking for a password, which hides its `/proc` entries by clearing its dumpable flag, is
+  treated as an *unconfirmable* wait on a longer window and came back with sudo's own words at
+  9 529 ms; a 60 000 ms deadline asked of a keyboard wait returned in 2 233 ms. Two things are said out
+  loud rather than done quietly: **the command has now run twice** ("anything it had already done before
+  that prompt has now been done twice"), because an unannounced second execution is the defect this
+  ticket already caught once; and if the `/proc` walk never answers, the body says the check could not
+  run instead of leaving a silent deadline — a premise that has gone away is not allowed to look like a
+  verdict. `tty: true` asks for a terminal up front and `tty: false` vetoes the second attempt; the
+  pager and live-display behaviours that the class lists existed to encode are simply what the pipe does
+  (`man` prints the page, `top: failed tty get` refuses in 687 ms), and the sheet of which symptom
+  belongs to which layer is [docs/tty-triage.md](docs/tty-triage.md).
 
 - **A repeated failure is named, and still executed.** The same command bytes failing twice in the same
   shell adds `[this exact command has failed 2 times in this shell with nothing succeeding in it since: …]`,
@@ -112,53 +137,43 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   can type the password. That is now the first way out, with NOPASSWD / `DSH_WSL_USER=root` second as the
   way to make the agent able to run it alone.
 
-- **The keyboard hint is given by class, not by whether we applied our own bound.** The first live
+- **The keyboard hint is given by the reading, not by whether we applied our own bound.** The first live
   session of this on the installed desktop did not send `vim note.txt`; the model sent
   `{"command":"printf x; vim note.txt","timeoutMs":15000}` — naming its own deadline, which under the
-  older rule bought it a generic sentence instead of the non-interactive form that would have ended the
-  wait. The deadline still belongs to the caller (we do not silently shorten what we were told), but the
-  body now always says what to use instead when the program is one that waits for keys. A second cell
-  makes the timeout wording check itself: it may claim a restart only when the session reported one, and
-  the measurement there is that an escalated `sleep` really does rebuild the session.
+  older rule bought it a generic sentence instead of an explanation of the wait. The body now says what
+  was seen whatever the call asked for. A second cell makes the timeout wording check itself: it may
+  claim a restart only when the session reported one, and the measurement there is that an escalated
+  `sleep` really does rebuild the session.
 
-- **The class is now read from every top-level segment, because a real session cost 121 703 ms for the
-  old rule.** The checklist of ordinary commands was driven through a real dsh 0.2.0-rc.2 session (its
-  own `DSH_HOME`, its own port, a scripted local provider so no inference was bought): 27 rows, read
-  back from the session's own durable log. Bare `vim`, `sudo` and `bash -c 'sudo true'` behaved as
-  designed — 8 s bound with the note, sudo's own verdict in 130 ms with the password note, the pager
-  class answering in 73 ms. But the same pass, with a `printf` in front of the editor, measured the
-  older first-word rule sitting out the **full two-minute default** and handing the model the screen's
-  raw escapes. The rule now takes the strongest class any top-level segment carries (`cd /tmp && vim f`
-  is an editor case), quoted text is not a command position, and a keyboard part outranks a credential
-  part because it is the part that sets the deadline. The pass also caught a false promise in the tool
+- **The ordinary-commands checklist was driven through a real dsh session, and that is what found the
+  121 703 ms.** A real DSH 0.2.0-rc.2 instance (its own `DSH_HOME`, its own port, a scripted local
+  provider so no inference was bought): 27 rows of everyday commands, read back from the session's own
+  durable log rather than from a transcript someone has to relay. Most rows answered as designed —
+  `sudo`'s own verdict with the password note, the pager class in 73 ms, `man`/`less` printing whole
+  documents — and two rows did not: the compound `printf`-then-editor line above, and a cell whose
+  expectation was written for the wrong medium. The pass also caught a false promise in the tool
   description: a live display on a pipe does not print a document, it refuses — `top: failed tty get`,
-  exit 1, 687 ms — so the description now says that and points at `top -bn1`.
+  exit 1, 687 ms — so the description says that and points at `top -bn1`.
 
 - **A failure this tool did not predict now names its own layer.** An escalated call that ends badly
   without matching one of the known shapes (a password, a waiting keyboard) appends
   `[this call ran on a pseudo-terminal (script -qec, one stream): re-run the same command with "tty": false to rule this layer out before looking anywhere else]`,
-  and the decision is logged at debug level as `wsl-bash: pseudo-terminal for class=… deadline=…ms` so
-  a `dsh web`/`headless` log answers it too (the installed desktop keeps its child's stdout in memory
-  only, so there the transcript lines are the readable half). The sheet of which symptom belongs to which layer — including the
-  host's PTY tier's own sentinel, the one issue #51 was filed against — is
+  and every terminal decision is logged at debug level — `wsl-bash: stopped a command waiting for input
+  (terminal at 1219ms) and re-running it on a pseudo-terminal` — so a `dsh web`/`headless` log answers
+  the question too (the installed desktop keeps its child's stdout in memory only, so there the
+  transcript lines are the readable half). The sheet of which symptom belongs to which layer — including
+  the host's PTY tier's own sentinel, the one issue #51 was filed against — is
   [docs/tty-triage.md](docs/tty-triage.md), and every line it names is asserted by a cell in
-  `bash-session-real` (45 cells now, on both planes).
+  `bash-session-real` (55 cells now, on both planes).
 
-- **The terminal is now given by class, which is what an agent's deadline depends on.** The default
-  per-call deadline is two minutes, and a program that waits for a keyboard never receives one, so the
-  automatic rule could spend the whole wait to produce a screen fragment. Three sets replace one list:
-  **credential** commands (`sudo`, `su`, `ssh`/`scp`/`sftp`/`rsync`, `passwd`, `gpg`, database clients,
-  `ssh-keygen`) keep a terminal and the full deadline; **editor and multiplexer** commands (`vim`,
-  `nano`, `emacs`, `ed`, `tmux`, `screen`, `telnet`, `ftp`) keep the terminal but are bounded to 8 s
-  when the call names neither `tty` nor `timeoutMs`, and the body then says what to run instead
-  (`vim -es -c '…' -c wq`, `tmux new -d 'cmd'`); **pagers and full-screen reports** (`man`, `info`,
-  `less`, `more`, `pg`, `top`, `htop`, `gh`, `aws`, `gcloud`, `az`, `virsh`, `mongod`) are not
-  escalated at all — measured, `man ls` was a 743 ms trip into a pager when auto-escalated and a
-  177 ms full page on the pipe, and `vim` now reports `deadline: 8000` where the default would have
-  been 120000. Naming a deadline or a `tty` is the caller taking the wait, so neither is capped for
-  them, and `tty: true` still opens a pager on request. Writing the classes also exposed a dead letter:
-  `firstWord` stopped at a hyphen, so `ssh-copy-id`, `ssh-keygen` and `redis-cli` were in the list but
-  could never match — they are reachable now, and the test says so.
+- **The terminal is given by a reading, not by a list, and the second attempt is announced.** Three sets
+  of command names — credential, keyboard, pager — decided whether a call got a pseudo-terminal, and how
+  long it was allowed to wait. They are gone: they were the maintenance cost of this layer and the source
+  of two of its defects, every distribution could disagree with them, and the thing they were standing in
+  for is directly observable. What replaces them is one function (`src/host/wsl-bash-starve.ts`) that
+  reads the distribution from outside the shell while the call is in flight, and a stop-plus-retry that
+  acts on what it finds. The full shape, the measurements behind each threshold and the doors a caller
+  can use are in the bullet above and in [docs/tty-triage.md](docs/tty-triage.md).
 
 - **A DSH Desktop profile generated no WSL variant at all (issue #47).** The variant
   generator asked the host for two modules at call time — the entry-list dialect and the

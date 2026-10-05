@@ -3,10 +3,13 @@
  *
  * The host's persistent bash tool decides "the command finished" by scraping the terminal for a
  * sentinel line and requiring the exit-code digits to be followed immediately by a newline. That is
- * a byte-exact comparison against a surface the terminal is allowed to repaint, and on WSL the
- * interactive shell's readline paints `ESC[<n>X` (fill cells with spaces) — so the recorded line
- * arrives as `:0␠␠` and the check never fires (issue #51 point 3, measured 2026-10-04: three calls
- * hung 303.8 s, one settled in 4.2 s, and the host's own matcher reproduced 4/4 offline).
+ * a byte-exact comparison against a surface the terminal is allowed to repaint: an interactive Linux
+ * shell redraws its prompt line, the emulator leaves the erased cells as spaces, and the recorded line
+ * arrives as `:0␠␠` so the check never fires (issue #51 point 3, measured 2026-10-04: three calls
+ * hung 303.8 s, one settled in 4.2 s, and the host's own matcher reproduced 4/4 offline). The erase was
+ * first attributed to readline's `ESC[<n>X`; the captured stream on disk holds no `ESC[<n>X` at all —
+ * only `ESC[K`, `ESC[2J`, cursor positioning and literal spaces — so what this protocol defends
+ * against is the measured shape (bytes between the digits and the newline), not a named recipe.
  *
  * This module replaces that arrangement with an event: every command ends with a record written to
  * stdout as NUL-delimited bytes carrying a per-command nonce, and the reader only completes on a
@@ -52,6 +55,9 @@ function encodePayload(command: string): string {
 const STATE_REPORT_BODY = [
   `printf '%s\\n' '#dsh-section exports'; export -p`,
   `printf '%s\\n' '#dsh-section pwd'; printf 'PWD=%s\\n' "$PWD"`,
+  // The shell's own pid: the reader watches for a command that is waiting for a keyboard, and the
+  // only way to find that command from outside is to walk this process's descendants.
+  `printf '%s\\n' '#dsh-section pid'; printf 'PID=%s\\n' "$$"`,
   `printf '%s\\n' '#dsh-section aliases'; alias -p`,
   // `set +o`, not `set -o`: the former prints each option as the command that *sets* it
   // (`set -o allexport` / `set +o ignoreeof`), so the section replays verbatim; the latter prints
@@ -74,7 +80,18 @@ const STATE_REPORT_BODY = [
 export const FUNCTION_SNAPSHOT_CAP_BYTES = 65_536
 
 /** The section headers the state record is allowed to contain, in the order the frame writes them. */
-export const STATE_SECTIONS = ['exports', 'pwd', 'aliases', 'options', 'shopt', 'functions-count', 'functions'] as const
+export const STATE_SECTIONS = ['exports', 'pwd', 'pid', 'aliases', 'options', 'shopt', 'functions-count', 'functions'] as const
+
+/**
+ * The session shell's own pid, as one frame reported it.
+ * @param state - the decoded state record.
+ * @returns the pid, or undefined when the record did not carry one.
+ */
+export function shellPidOf(state: string): number | undefined {
+  const line = (parseState(state).pid ?? []).find(candidate => candidate.startsWith('PID='))
+  const pid = Number(line?.slice(4) ?? '')
+  return Number.isInteger(pid) && pid > 0 ? pid : undefined
+}
 
 /**
  * Build the state-report tail that follows a completion record.

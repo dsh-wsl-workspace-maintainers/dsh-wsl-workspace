@@ -28,7 +28,8 @@ import { bridgeEnv } from '../shared/wsl-env.ts'
 import { SESSION_ARGV } from './wsl-bash-protocol.ts'
 import { WslBashSession, type WslBashRun, type WslBashSessionSpec, type WslBashSpawnHost } from './wsl-bash-session.ts'
 import { startBackgroundJob } from './wsl-jobs.ts'
-import { decideTty, normaliseTtyOutput, ttyClass, wrapForTty } from './wsl-bash-tty.ts'
+import { retryNote, starveNote } from './wsl-bash-starve.ts'
+import { normaliseTtyOutput, wrapForTty } from './wsl-bash-tty.ts'
 
 /** The tool name — the same one the host's tools register, so only one may be mounted. */
 export const TOOL_NAME = 'bash'
@@ -239,24 +240,23 @@ interface BackgroundOutput {
 const attempts = new WeakMap<WslBashSession, Map<string, number>>()
 
 /** Shape a session run into the host's result contract. */
-function toForeground(run: WslBashRun, timeoutMs: number, escalated: boolean, keyboardClass = false,
-  cappedFromMs?: number, repeats = 0): ForegroundOutput {
+function toForeground(run: WslBashRun, timeoutMs: number, escalated: boolean, before: string[] = [],
+  repeats = 0): ForegroundOutput {
   const killed = run.exitCode < 0
-  const notes: string[] = []
-  // A cap the caller did not ask for is stated, not swallowed: an agent that sees `timed out after
-  // 8000ms` on a call it gave 15 000ms to would learn that this tool lies about deadlines.
-  if (cappedFromMs !== undefined) {
-    notes.push(`[this call asked for ${cappedFromMs}ms and was capped to ${timeoutMs}ms: a program that waits for a keyboard is bounded whatever the call asked for, because the wait is the part that can never be satisfied]`)
-  }
+  // Whatever the session did that the model cannot see goes first, because it changes how to read the
+  // body: a command that was stopped and run again answers differently from one that ran once.
+  const notes: string[] = [...before]
+  if (run.starved !== undefined) notes.push(starveNote(run.starved, run.starvedAtMs ?? timeoutMs))
   if (run.timedOut) {
-    // The keyboard hint belongs to the class, not to whether this tool applied its own bound: a call
-    // that named a 15 s deadline of its own still cannot type into a keyboard.
-    if (keyboardClass) {
-      notes.push('[this program waits for a keyboard nobody is typing into: give it a non-interactive form (`top -bn1`, `vim -es -c \'…\' -c wq file`, `tmux new -d \'cmd\'`) or run the command that prints and exits]')
+    // The check that would have caught a keyboard wait did not run here. Said out loud, because the
+    // alternative is a deadline reached with no reason attached — and a reader would conclude the wait
+    // had been examined and found to be normal.
+    if (run.starveProbeBroken === true) {
+      notes.push('[the check for a command waiting on a keyboard could not run in this distribution — its `/proc` walk did not answer — so nothing was stopped early: if this command was waiting for input, pass `tty: true`, or ask a person to run it in the right sidebar\'s terminal tab]')
     }
     // Only say a restart happened when the session says it did — measured, not assumed, by the cell
     // that times out an escalated `sleep`.
-    else if (run.restarted) {
+    if (run.restarted) {
       notes.push('[the shell was restarted to recover; for work that outlives one call pass run_in_background: true, or use bash_background]')
     }
     else {
@@ -287,7 +287,7 @@ function toForeground(run: WslBashRun, timeoutMs: number, escalated: boolean, ke
   // is traced to the pseudo-terminal or ruled out in one call — instead of a person reading a shell
   // transcript wondering whether the shell is what broke.
   if (escalated && (run.exitCode !== 0 || run.timedOut)
-    && !notes.some(note => /password|keyboard/.test(note))) {
+    && !notes.some(note => /password|keyboard|terminal/.test(note))) {
     notes.push('[this call ran on a pseudo-terminal (`script -qec`, one stream): re-run the same command with `tty: false` to rule this layer out before looking anywhere else]')
   }
   // The loop brake, deliberately not a refusal. A command that has now failed twice with the same
@@ -410,7 +410,7 @@ export function apply(ctx: Context, config?: Config): void {
 
   const tool = defineTool({
     name: TOOL_NAME,
-    description: 'Run a bash command inside this WSL distribution. The shell is persistent: `cd`, exported variables, activated virtualenvs, aliases and shell functions survive between calls, so use absolute paths or an explicit `cd` when a call must not depend on where the last one left off. A command that reads from stdin is given /dev/null. A command that cannot be answered any other way (`sudo`, `ssh`, a database client, an editor) is given a pseudo-terminal of its own automatically — decided per segment, so `cd /tmp && vim f` counts as an editor; pagers over text (`man`, `less`, `more`) are not, because on a pipe they print the whole document in milliseconds, so pass `tty: true` when the pager itself is what you want; a live display (`top`, `htop`) refuses to draw without a terminal and exits at once, so ask for `top -bn1` or pass `tty: true`. An editor or multiplexer left waiting for a keyboard is stopped after 8 seconds — that ceiling holds even if the call asks for longer, and the body says so — and names the non-interactive form to use instead. For work that must outlive one call pass `run_in_background: true` — it starts a tracked job (`job_output` to read, `job_kill` to stop) in a separate process, so it does not see this shell\'s `cd` or `export`.',
+    description: 'Run a bash command inside this WSL distribution. The shell is persistent: `cd`, exported variables, activated virtualenvs, aliases and shell functions survive between calls, so use absolute paths or an explicit `cd` when a call must not depend on where the last one left off. A command that reads from stdin is given /dev/null. A command that instead reaches for the keyboard (`sudo`, `ssh`, an editor, a database client asking for a password) is caught by watching the process rather than guessed from its name: when a call goes silent with nothing running, the tool stops it and runs it again on a pseudo-terminal of its own inside the same call, so the body is the program\'s own complaint about having no terminal. A live display (`top`, `htop`) exits on its own without a terminal, so ask for `top -bn1` unless you pass `tty: true`. For work that must outlive one call pass `run_in_background: true` — it starts a tracked job (`job_output` to read, `job_kill` to stop) in a separate process, so it does not see this shell\'s `cd` or `export`. Nothing in this shell can be typed into, so a prompt there is unanswerable by design: the second attempt is where the program gets to say what it wanted, and a person can run the same command in the right sidebar\'s terminal tab, which has a keyboard attached.',
     parameters: {
       command: { type: 'string', required: true, description: 'The bash command to run.' },
       description: {
@@ -422,10 +422,10 @@ export function apply(ctx: Context, config?: Config): void {
         type: 'string',
         description: 'Working directory for this call. Defaults to the session workspace; a relative path resolves against it.',
       },
-      timeoutMs: { type: 'number', description: 'Per-call deadline in milliseconds, for a long build or install. It does not extend a keyboard-class call (editor, `tmux`, `telnet`): those are capped at 8000 because the wait can never be satisfied, and the body says when it capped you.' },
+      timeoutMs: { type: 'number', description: 'Per-call deadline in milliseconds, for a long build or install. A call that is caught waiting for keyboard input is stopped and re-run on a terminal inside the same deadline, so a longer deadline never means a longer silent wait for a prompt.' },
       tty: {
         type: 'boolean',
-        description: 'Run the command on a pseudo-terminal. Applied automatically for the commands that cannot answer any other way — `sudo`, `su`, `ssh`/`scp`/`sftp`/`rsync`, `passwd`, `gpg`, database clients, editors (`vim`, `nano`, `emacs`) — decided for every top-level segment (so `cd /tmp && vim f` and `bash -c \'sudo true\'` both count) and inside a one-layer shell wrapper. Not applied to pagers over text (`man`, `info`, `less`, `more`, `pg`, `gh`, `aws`), which print everything in milliseconds on the pipe, nor to a live display (`top`, `htop`), which refuses to draw without a terminal and exits at once — ask it for a batch form (`top -bn1`) or set this to true. Set true when the pager itself is wanted, false to keep the ordinary pipe for a command the rule would otherwise wrap.',
+        description: 'Run the command on a pseudo-terminal from the start. Set true when a terminal is what the command needs (a pager whose drawing matters, a program that refuses to run without a tty). Set false to keep the ordinary pipe even if the command goes quiet waiting for input — that vetoes the automatic re-run. Left out, the tool decides by watching the process instead of its name.',
       },
       run_in_background: {
         type: 'boolean',
@@ -480,18 +480,18 @@ export function apply(ctx: Context, config?: Config): void {
             exec as unknown as Parameters<typeof startBackgroundJob>[2]),
         }
       }
-      // The terminal is decided here, before the working-directory wrapper, so `script` inherits the
-      // directory the call asked for. `tty: false` is a veto, not a no-op: measured, `man ls` with
-      // `tty: false` came back with the pty's overstrike exactly as the automatic rule produced it,
-      // which left the model no way to ask for the plain pipe.
-      const { escalated, keyboardClass, cappedFromMs, deadlineMs } = decideTty(args.command, args.tty, args.timeoutMs, timeoutMs)
-      if (escalated) {
-        logging?.debug?.(`wsl-bash: pseudo-terminal for class=${ttyClass(args.command)} deadline=${deadlineMs}ms`)
-      }
-      const payload = escalated ? wrapForTty(args.command) : args.command
-      // The session already starts in the workspace; an explicit `workdir` only has to move it.
+      // Whether this call runs on a terminal is decided by what the process *does*, not by what its
+      // name looks like: it goes down the pipe, and if the session's watchdog catches it asleep in a
+      // terminal read, the same call runs it once more on a pseudo-terminal. `tty` is the caller's
+      // override in both directions — `true` asks for the terminal up front, `false` vetoes the retry.
+      const vetoTty = args.tty === false
+      let escalated = args.tty === true
+      // The working directory wraps outside `script`, so the pseudo-terminal inherits the directory the
+      // call asked for.
       const workdir = args.workdir === undefined ? undefined : resolveCwd(args, exec)
-      const command = workdir === undefined ? payload : `cd ${JSON.stringify(workdir)} && { ${payload}\n}`
+      const wrap = (payload: string): string =>
+        (workdir === undefined ? payload : `cd ${JSON.stringify(workdir)} && { ${payload}\n}`)
+      let command = wrap(escalated ? wrapForTty(args.command) : args.command)
 
       let session = sessions.get(ownerKey)
       if (session === undefined) {
@@ -528,13 +528,29 @@ export function apply(ctx: Context, config?: Config): void {
       if (tally === undefined) { tally = new Map<string, number>(); attempts.set(session, tally) }
       const tried = (tally.get(signature) ?? 0) + 1
       tally.set(signature, tried)
-      const run = await session.run(command, deadlineMs, exec.signal)
+      let run = await session.run(command, timeoutMs, exec.signal, escalated)
+      // What the session did that the body cannot show, in the order the model has to read it.
+      const before: string[] = []
+      // The command was caught waiting for a keyboard, so give it what a person at a terminal would: a
+      // terminal of its own, in this same call. Its stdin is still `script`'s end-of-file, so what comes
+      // back is the program's own complaint instead of a deadline — measured with `sudo`, which answered
+      // with its own three lines in 9.4 s of a 25 s call (2026-10-05) after having sat on the pipe for
+      // the whole deadline before. `tty: false` vetoes this, because a caller that only wanted the plain
+      // pipe must be able to insist on it.
+      if (!escalated && !vetoTty && run.starved !== undefined && !run.aborted && !run.restarted) {
+        const first = { kind: run.starved, atMs: run.starvedAtMs ?? 0 }
+        logging?.debug?.(`wsl-bash: stopped a command waiting for input (${first.kind} at ${first.atMs}ms) and re-running it on a pseudo-terminal`)
+        escalated = true
+        before.push(retryNote(first.kind, first.atMs))
+        command = wrap(wrapForTty(args.command))
+        run = await session.run(command, timeoutMs, exec.signal, true)
+      }
       if (run.aborted) throw toolAborted()
       // Any success clears every streak: the note's claim is about a shell where nothing has worked
       // since, and `npm install` succeeding between two failing `npm test` calls is exactly the case
       // where that claim would be false.
       if (run.exitCode === 0 && !run.timedOut) tally.clear()
-      return toForeground(run, deadlineMs, escalated, keyboardClass, cappedFromMs, tried)
+      return toForeground(run, timeoutMs, escalated, before, tried)
     },
   })
 

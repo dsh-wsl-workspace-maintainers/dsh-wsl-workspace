@@ -3,8 +3,10 @@
  *
  * This replaces the arrangement that produced issue #51 point 3: the host's persistent bash tool
  * decides "the command finished" by matching bytes in a terminal the shell is allowed to repaint,
- * and an interactive Linux shell repaints with `ESC[<n>X`, which leaves spaces after the sentinel
- * and hangs the call until its 300 s deadline. Here there is no terminal in the loop at all —
+ * and an interactive Linux shell repaints its prompt line, which leaves spaces after the sentinel
+ * and hangs the call until its 300 s deadline (the erase itself was first attributed to `ESC[<n>X`;
+ * the captured stream holds only `ESC[K`, `ESC[2J` and literal spaces — see `wsl-bash-protocol`).
+ * Here there is no terminal in the loop at all —
  * completion is a NUL-delimited record carrying a per-command nonce, read straight off the child's
  * stdout.
  *
@@ -24,7 +26,8 @@ import { closeSync, mkdtempSync, openSync, writeSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { BOOTSTRAP_COMMAND, dropProtocolEcho, encodeFrame, parseState, readFrame, restoreChunks, stripRecords } from './wsl-bash-protocol.ts'
+import { BOOTSTRAP_COMMAND, dropProtocolEcho, encodeFrame, parseState, readFrame, restoreChunks, shellPidOf, stripRecords } from './wsl-bash-protocol.ts'
+import { FIRST_PROBE_MS, MIN_WAIT_MS, PROBE_DONE_SENTINEL, PROBE_EVERY_MS, parseProbe, probeScript, starveOf, stopScript, type StarveKind, type StarveSample } from './wsl-bash-starve.ts'
 
 /** How often the reader looks for a frame's records, in milliseconds. */
 const POLL_MS = 20
@@ -90,6 +93,20 @@ export interface WslBashRun {
   skipped?: string[] | undefined
   /** Detached processes this session reaped while rebuilding. */
   reaped?: number | undefined
+  /**
+   * Set when the watchdog stopped this command because it was waiting for input no one can give it:
+   * `terminal` when that was seen directly, `opaque` when the process runs with privileges the
+   * session's user cannot read inside. The tool decides what to do about it and says which it was.
+   */
+  starved?: StarveKind | undefined
+  /** How long the call had been silent when the watchdog stopped it. */
+  starvedAtMs?: number | undefined
+  /**
+   * True when the watchdog needed to look and every look failed — the `/proc` walk did not answer on
+   * this distribution. Nothing was stopped, and the caller has to be told the check is missing rather
+   * than left to conclude it ran and found nothing.
+   */
+  starveProbeBroken?: boolean | undefined
 }
 
 /** The seam a session needs: enough of the host context to spawn a child. */
@@ -97,6 +114,29 @@ export interface WslBashSpawnHost {
   subprocess: {
     spawn(spec: unknown): SubprocessHandle
   }
+}
+
+/**
+ * What the watchdog remembers while one frame is in flight, so a rule that needs two looks can have
+ * the first one without the reader carrying state of its own.
+ */
+interface FrameWatch {
+  /** When the frame went out. */
+  startedAt: number
+  /** The byte count the last look saw; a change means the command is talking, not waiting. */
+  lastBytes: number
+  /** Milliseconds-into-the-call when the last look was taken. */
+  lastLookAt: number
+  /** True when this frame's command runs on a pty the session created (see {@link starveOf}). */
+  ownTerminal: boolean
+  /** The previous look, for the "CPU is not advancing" test. */
+  previous?: StarveSample | undefined
+  /** How many looks came back with a completion sentinel, i.e. how many the distribution answered. */
+  looks: number
+  /** How many looks did not answer. All of them, with nothing seen, is the probe being broken here. */
+  failed: number
+  /** Set once, when the command was stopped. */
+  stop?: { kind: StarveKind, atMs: number, pids: number[] } | undefined
 }
 
 /**
@@ -124,6 +164,11 @@ export class WslBashSession {
   private journal = ''
   private functionsBody = ''
   private functionCount: number | undefined
+  /**
+   * The session shell's own pid inside the distribution, read off the last frame's state record. Zero
+   * until the first frame has settled — which is also the only frame that cannot be watched.
+   */
+  private shellPid = 0
   private queue: Promise<unknown> = Promise.resolve()
   private disposed = false
 
@@ -147,16 +192,19 @@ export class WslBashSession {
    * @param command - the model's command, verbatim.
    * @param timeoutMs - this call's deadline.
    * @param signal - the caller's abort signal, if any.
+   * @param ownTerminal - true when this command was wrapped onto a pseudo-terminal that the session
+   *   itself created. The watchdog reads a poll wait on that terminal as unsatisfiable; on an ordinary
+   *   pipe call the same reading would be indistinguishable from a network wait.
    * @returns the outcome, with `restarted` set when the session had to be rebuilt.
    */
-  async run(command: string, timeoutMs: number, signal?: AbortSignal): Promise<WslBashRun> {
+  async run(command: string, timeoutMs: number, signal?: AbortSignal, ownTerminal = false): Promise<WslBashRun> {
     const previous = this.queue
     let release: () => void = () => {}
     this.queue = new Promise<void>(resolve => { release = resolve })
     await previous
     try {
       if (this.disposed) throw new Error('wsl-bash: the session is closed')
-      const first = await this.execute(command, timeoutMs, signal, DEFINITION.test(command))
+      const first = await this.execute(command, timeoutMs, signal, DEFINITION.test(command), ownTerminal)
       if (first.settled) return first.run
       // The frame went out and no record came back. Two different worlds, and the difference that
       // matters is whether the command may have run. A dead child cannot still hold the shell, so
@@ -168,7 +216,7 @@ export class WslBashSession {
       const recovery = await this.rebuild()
       const recovered = { restarted: true, ...recovery }
       if (!childGone || signal?.aborted === true) return { ...first.run, ...recovered }
-      const second = await this.execute(command, timeoutMs, signal, DEFINITION.test(command))
+      const second = await this.execute(command, timeoutMs, signal, DEFINITION.test(command), ownTerminal)
       return { ...second.run, ...recovered }
     } finally {
       release()
@@ -285,10 +333,11 @@ export class WslBashSession {
 
   /**
    * Write one frame and wait for its records.
+   * @param ownTerminal - whether this command runs on a pseudo-terminal the session created.
    * @returns the run, plus whether the shell answered at all.
    */
   private async execute(command: string, timeoutMs: number, signal: AbortSignal | undefined,
-    forceFunctions = false):
+    forceFunctions = false, ownTerminal = false):
     Promise<{ run: WslBashRun; settled: boolean }> {
     const handle = this.handle
     const stdin = handle?.stdin
@@ -307,6 +356,10 @@ export class WslBashSession {
     // count" reaches the frame; `this.functionCount` asks the shell to compare and stay quiet.
     const frame = encodeFrame(command, forceFunctions ? -1 : this.functionCount)
     const armed = deadline(signal, timeoutMs, 'WSL_BASH_TIMEOUT')
+    // The watchdog's memory for this frame: when it last saw a byte, when it last looked, and what
+    // the look found. Only a frame whose shell pid is known can be watched, because the look walks
+    // that pid's descendants.
+    const watch: FrameWatch = { startedAt: Date.now(), lastBytes: this.out.length + this.err.length, lastLookAt: 0, ownTerminal, looks: 0, failed: 0 }
     stdin.write(frame.line)
     for (;;) {
       const found = readFrame(this.out, frame.nonce)
@@ -324,12 +377,13 @@ export class WslBashSession {
         this.errTruncated = false
         this.journal = this.journalWithFunctions(found.state)
         this.functionCount = functionCountOf(found.state) ?? this.functionCount
+        this.shellPid = shellPidOf(found.state) ?? this.shellPid
         armed[Symbol.dispose]()
         return {
           settled: true,
           run: {
             stdout, stderr, exitCode: found.status, timedOut: false, aborted: false, restarted: false,
-            truncated, stderrTruncated: false, ...this.spillPaths(),
+            truncated, stderrTruncated: false, ...this.spillPaths(), ...this.starvedFields(watch),
           },
         }
       }
@@ -351,10 +405,104 @@ export class WslBashSession {
             truncated: this.outTruncated,
             stderrTruncated: this.errTruncated,
             ...this.spillPaths(),
+            ...this.starvedFields(watch),
           },
         }
       }
+      await this.watchFrame(watch)
       await new Promise(resolve => setTimeout(resolve, POLL_MS))
+    }
+  }
+
+  /**
+   * Look once, and stop the command if the look says it is waiting for a keyboard.
+   *
+   * Rate-limited by {@link PROBE_EVERY_MS} and only started after {@link FIRST_PROBE_MS} of silence,
+   * because the look is a second `wsl.exe` and was measured to cost 200–280 ms. A frame that has
+   * written bytes at all is not waited on: the watchdog only ever fires on a call that is silent.
+   * @param watch - this frame's watchdog state.
+   */
+  private async watchFrame(watch: FrameWatch): Promise<void> {
+    if (this.shellPid === 0 || this.spec.reaperArgv.length === 0 || watch.stop !== undefined) return
+    const elapsed = Date.now() - watch.startedAt
+    const bytes = this.out.length + this.err.length
+    if (bytes !== watch.lastBytes) {
+      watch.lastBytes = bytes
+      watch.lastLookAt = elapsed
+      watch.previous = undefined
+      return
+    }
+    if (elapsed < FIRST_PROBE_MS || elapsed - watch.lastLookAt < PROBE_EVERY_MS) return
+    watch.lastLookAt = elapsed
+    const sample = await this.probeStarve(watch, elapsed)
+    if (sample === undefined) return
+    const kind = starveOf(watch.previous, sample, watch.ownTerminal)
+    watch.previous = sample
+    if (kind === undefined) return
+    // Only the reading that has no other meaning acts at the first look; the two that a legitimate long
+    // wait could also produce have to hold the silence for their full window first.
+    if (elapsed < MIN_WAIT_MS[kind]) return
+    watch.stop = { kind, atMs: elapsed, pids: sample.rows.map(row => row.pid) }
+    await this.stopJob(watch.stop.pids)
+  }
+
+  /** The run fields that carry a watchdog stop, or nothing when there was none. */
+  private starvedFields(watch: FrameWatch): Pick<WslBashRun, 'starved' | 'starvedAtMs' | 'starveProbeBroken'> {
+    if (watch.stop !== undefined) return { starved: watch.stop.kind, starvedAtMs: watch.stop.atMs }
+    // Looked and never got an answer: the check is not running here, which is a fact the caller needs.
+    return watch.looks === 0 && watch.failed > 0 ? { starveProbeBroken: true } : {}
+  }
+
+  /**
+   * One pass of the `/proc` walk, run as the session's own user in a process of its own.
+   * @param atMs - how long the call has been in flight.
+   * @returns the rows it read, or undefined when the pass did not answer — a probe that did not answer
+   *   is never read as "nothing is waiting", and the run says so.
+   */
+  private async probeStarve(watch: FrameWatch, atMs: number): Promise<StarveSample | undefined> {
+    const env: Record<string, string> = { ...this.spec.env }
+    delete env.DSH_WSL_SESSION
+    let text = ''
+    try {
+      const handle = this.ctx.subprocess.spawn({
+        argv: [...this.spec.reaperArgv, probeScript(this.shellPid)],
+        cwd: this.spec.cwd,
+        stdio: { stdin: 'ignore', stdout: 'pipe', stderr: 'ignore' },
+        graceMs: this.spec.graceMs,
+        env,
+      })
+      handle.stdout?.on('data', (chunk: Buffer) => { text += chunk.toString('utf8') })
+      await handle.done.catch(() => undefined)
+    } catch {
+      watch.failed += 1
+      return undefined
+    }
+    if (!text.includes(PROBE_DONE_SENTINEL)) {
+      watch.failed += 1
+      return undefined
+    }
+    watch.looks += 1
+    return parseProbe(text, atMs)
+  }
+
+  /**
+   * Stop the processes the probe just named, and nothing else.
+   * @param pids - the descendant ids from the last pass.
+   */
+  private async stopJob(pids: readonly number[]): Promise<void> {
+    const env: Record<string, string> = { ...this.spec.env }
+    delete env.DSH_WSL_SESSION
+    try {
+      const handle = this.ctx.subprocess.spawn({
+        argv: [...this.spec.reaperArgv, stopScript(pids)],
+        cwd: this.spec.cwd,
+        stdio: { stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' },
+        graceMs: this.spec.graceMs,
+        env,
+      })
+      await handle.done.catch(() => undefined)
+    } catch {
+      // Nothing to report: the frame's own deadline still governs.
     }
   }
 
