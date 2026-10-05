@@ -89,6 +89,15 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   `top`) still costs its deadline plus a rebuild — measured 5.7-6.1 s with a screen dump — because the
   frame gives a pty `/dev/null` for input rather than letting the program eat the next command's bytes.
 
+- **A failure this tool did not predict now names its own layer.** An escalated call that ends badly
+  without matching one of the known shapes (a password, a waiting keyboard) appends
+  `[this call ran on a pseudo-terminal (script -qec, one stream): re-run the same command with "tty": false to rule this layer out before looking anywhere else]`,
+  and the decision is logged at debug level as `wsl-bash: pseudo-terminal for class=… deadline=…ms` so
+  a backend log answers it too. The sheet of which symptom belongs to which layer — including the
+  host's PTY tier's own sentinel, the one issue #51 was filed against — is
+  [docs/tty-triage.md](docs/tty-triage.md), and every line it names is asserted by a cell in
+  `bash-session-real` (45 cells now, on both planes).
+
 - **The terminal is now given by class, which is what an agent's deadline depends on.** The default
   per-call deadline is two minutes, and a program that waits for a keyboard never receives one, so the
   automatic rule could spend the whole wait to produce a screen fragment. Three sets replace one list:

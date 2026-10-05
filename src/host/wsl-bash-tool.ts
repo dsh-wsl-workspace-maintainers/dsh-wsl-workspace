@@ -28,7 +28,7 @@ import { bridgeEnv } from '../shared/wsl-env.ts'
 import { SESSION_ARGV } from './wsl-bash-protocol.ts'
 import { WslBashSession, type WslBashRun, type WslBashSessionSpec, type WslBashSpawnHost } from './wsl-bash-session.ts'
 import { startBackgroundJob } from './wsl-jobs.ts'
-import { decideTty, normaliseTtyOutput, wrapForTty } from './wsl-bash-tty.ts'
+import { decideTty, normaliseTtyOutput, ttyClass, wrapForTty } from './wsl-bash-tty.ts'
 
 /** The tool name — the same one the host's tools register, so only one may be mounted. */
 export const TOOL_NAME = 'bash'
@@ -255,6 +255,14 @@ function toForeground(run: WslBashRun, timeoutMs: number, escalated: boolean, ke
   if (escalated && run.exitCode !== 0 && /sudo: (a password is required|no password was provided)/.test(`${run.stdout}\n${run.stderr}`)) {
     notes.push('[sudo asked for a password and this shell has nobody to type it: run the session as a user with NOPASSWD, or as root]')
   }
+  // The attribution line. An escalated call that did not succeed, and is not explained above, says so
+  // itself: one line naming the layer and the comparison that settles it, so a failure nobody predicted
+  // is traced to the pseudo-terminal or ruled out in one call — instead of a person reading a shell
+  // transcript wondering whether the shell is what broke.
+  if (escalated && (run.exitCode !== 0 || run.timedOut)
+    && !notes.some(note => /password|keyboard/.test(note))) {
+    notes.push('[this call ran on a pseudo-terminal (`script -qec`, one stream): re-run the same command with `tty: false` to rule this layer out before looking anywhere else]')
+  }
   return {
     kind: 'foreground',
     exitCode: killed ? null : run.exitCode,
@@ -340,6 +348,10 @@ export function apply(ctx: Context, config?: Config): void {
   const resolved: ResolvedConfig = { ...DEFAULTS, ...config === undefined ? {} : config }
   const tools = ctx.get('tools') as unknown as { register?: (tool: unknown) => (() => void) | void } | undefined
   if (tools?.register === undefined) return
+  // The host's own log is the other half of attribution: a line here is what someone reading the
+  // backend's output (or a crash log) finds without reopening a session. Optional by design — an
+  // older host without the service must not lose the call over a log line.
+  const logging = ctx.get('logger') as { debug?: (message: string, ...fields: unknown[]) => void } | undefined
 
   // `ctx.get` rather than `ctx.subprocess`, even though `inject` names the service: the host's
   // loader passes `exports.default ?? exports` to `ctx.plugin`, so a module-level `inject` never
@@ -438,6 +450,9 @@ export function apply(ctx: Context, config?: Config): void {
       // `tty: false` came back with the pty's overstrike exactly as the automatic rule produced it,
       // which left the model no way to ask for the plain pipe.
       const { escalated, keyboard, deadlineMs } = decideTty(args.command, args.tty, args.timeoutMs, timeoutMs)
+      if (escalated) {
+        logging?.debug?.(`wsl-bash: pseudo-terminal for class=${ttyClass(args.command)} deadline=${deadlineMs}ms`)
+      }
       const payload = escalated ? wrapForTty(args.command) : args.command
       // The session already starts in the workspace; an explicit `workdir` only has to move it.
       const workdir = args.workdir === undefined ? undefined : resolveCwd(args, exec)

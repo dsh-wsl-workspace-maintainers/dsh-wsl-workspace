@@ -35,6 +35,11 @@
 
 - **伪终端这一档有三处接缝，是把它真开出来跑出来的，不是推出来的。** 不会上色的程序拿到终端时用"重打"表示强调，实测 `man` 一整页以 `N\bNA\bAM\bME\bE` 到达模型——人坐在真终端前读到的 `NAME` 在那里是乱码；折叠规则现在按终端自己的做法处理这台发行版**实测出现**的两种形状（`X\bX`、`_\bX`）。升级判定原先只读命令的第一个词，于是 `bash -c 'sudo true'`（模型非常爱写的形状）耗到期限、返回 `(no output)` 外加一次会话重建，而裸 `sudo true` 46 毫秒就答；现在会往里读一层 `bash`/`sh`/`zsh`/`dash` 的 `-c` 包装，读不动内容的包装就**不**升级，而不是猜一个。`tty: false` 原先什么都不做：只认 `true` 时，`man ls` 照样从伪终端回来，模型没有任何办法回到普通管道，现在 `false` 是否决。有两件事**没修**，因为它就是终端的样子：升级后的调用只有一条流，所以普通路径写的 `[stderr]` 段在那里不可能出现（宿主自己的 PTY 档同样——这条已进 `docs/bash-parity.md` 台账并配了探针）；而需要一块永远等不到的键盘的程序（`less`、`vim`、`top`）仍要耗光期限再加一次重建——实测 5.7-6.1 秒并带回一屏画面——因为帧给伪终端的输入是 `/dev/null`，不能让程序去吃下一条命令的字节。
 
+- **一个本工具没预料到的失败现在会自己报是哪一层。** 走了伪终端、又不落在已知形状（要密码、要按键）里就收尾失败的调用，会补一行
+  `[this call ran on a pseudo-terminal (script -qec, one stream): re-run the same command with "tty": false to rule this layer out before looking anywhere else]`，
+  同一个决策还以 debug 级写进宿主日志（`wsl-bash: pseudo-terminal for class=… deadline=…ms`），使后端日志也能回答"这发是不是 pty"。哪种症状属于哪一层的对照表（含宿主 PTY 档自己的哨号——issue #51 最初就是冲着它提的）在
+  [docs/tty-triage.md](docs/tty-triage.md)，那张表点名的每一行都由 `bash-session-real` 的一格钉住（现在 45 格，两档平面都跑）。
+
 - **终端现在按类别给，因为这直接决定 agent 的期限。** 默认每发期限是两分钟，而等按键的程序永远等不到按键，旧的一条规则可能把这整段时间花在"换回一屏画面的碎片"上。一份名单换成三个集合：**凭据类**（`sudo`、`su`、`ssh`/`scp`/`sftp`/`rsync`、`passwd`、`gpg`、数据库客户端、`ssh-keygen`）保留终端与完整期限；**编辑器与复用器类**（`vim`、`nano`、`emacs`、`ed`、`tmux`、`screen`、`telnet`、`ftp`）保留终端，但当这次调用既没写 `tty` 也没写 `timeoutMs` 时上限 8 秒，并且正文说明该改用什么写法（`vim -es -c '…' -c wq`、`tmux new -d 'cmd'`）；**分页器与全屏报表类**（`man`、`info`、`less`、`more`、`pg`、`top`、`htop`、`gh`、`aws`、`gcloud`、`az`、`virsh`、`mongod`）**不再自动升级**——实测 `man ls` 自动升级是 743 毫秒掉进分页器等按键，走管道是 177 毫秒拿到整页；`vim` 现在报 `deadline: 8000`，而默认会是 120000。调用自己写了期限或写了 `tty` 就是它接手了这段等待，两者都不再被压短；想要分页器仍可显式 `tty: true`。分类这件事还顺手照出一个死字母：`firstWord` 遇到连字符就停，所以 `ssh-copy-id`、`ssh-keygen`、`redis-cli` 写在名单里却永远匹配不上——现在能匹配了，测试把这条钉住。
 
 

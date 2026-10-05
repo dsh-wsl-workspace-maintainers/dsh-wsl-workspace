@@ -228,6 +228,16 @@ try {
   const [sizeLine = '', ttyLine = ''] = pty.text.trim().split('\n')
   check('the escalated pty has a real size and name', sizeLine.trim() === '24 80' && ttyLine.startsWith('/dev/pts/'),
     JSON.stringify(pty.text.trim()))
+  // Attribution, which is the point of the whole note channel: when an escalated call fails for a
+  // reason this file has not predicted, the body has to say it went through the pseudo-terminal and
+  // name the one comparison that rules it in or out — otherwise a person reading a transcript has to
+  // relive the session to find out. Both halves are asserted, because a tag printed on success is the
+  // same noise in the other direction.
+  const misbehaved = await call('exit 7', { tty: true, timeoutMs: 8_000 })
+  check('an unforeseen failure of an escalated call names the layer and the check',
+    misbehaved.value?.exitCode === 7 && /pseudo-terminal/.test(misbehaved.rendered)
+    && /tty: false/.test(misbehaved.rendered) && !/pseudo-terminal/.test(pty.rendered),
+  JSON.stringify({ exit: misbehaved.value?.exitCode, tail: misbehaved.rendered.slice(-70) }))
 
   // Two seams measured on 2026-10-05 by driving this tier directly. `man` on a terminal it cannot
   // colour writes overstrike — a whole page came back as `N\bNA\bAM\bME\bE` for `NAME` — and that
@@ -497,7 +507,7 @@ try {
     `the control harness failed before comparing: ${String(error?.message ?? error).slice(0, 120)}`)
 }
 
-const EXPECTED_CHECKS = 44
+const EXPECTED_CHECKS = 45
 const passed = results.filter(r => r.pass).length
 console.log(`${passed}/${results.length} checks passed (plane=${plane()}, distro=${distro}, user=${username}, cwd=${sessionCwd})`)
 if (results.length !== EXPECTED_CHECKS) {
