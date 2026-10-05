@@ -70,18 +70,20 @@ test('the three classes are disjoint and together are the whole old whitelist', 
   }
 })
 
-test('the keyboard bound applies only to a call that named neither deadline nor terminal', () => {
+test('the keyboard class is capped at 8 seconds whatever the call asked for, and the cap is reported', () => {
   assert.deepEqual(decideTty('vim notes.md', undefined, undefined, 120_000),
-    { escalated: true, keyboard: true, keyboardClass: true, deadlineMs: KEYBOARD_TIMEOUT_MS },
+    { escalated: true, keyboardClass: true, cappedFromMs: 120_000, deadlineMs: KEYBOARD_TIMEOUT_MS },
     'the default deadline is two minutes on a program that cannot be satisfied')
-  assert.equal(decideTty('vim notes.md', undefined, 30_000, 30_000).deadlineMs, 30_000,
-    'an explicit timeoutMs is the caller taking the wait; capping it would be overriding what we were told')
-  assert.equal(decideTty('vim notes.md', undefined, 30_000, 30_000).keyboardClass, true,
-    'but the class is still the keyboard one, so the body still says what to use instead — a real session measured the model sending `timeoutMs: 15000` with `vim` in it')
-  assert.equal(decideTty('vim notes.md', true, undefined, 120_000).keyboard, false,
-    'an explicit tty:true is the same kind of intent')
+  assert.deepEqual(decideTty('vim notes.md', undefined, 30_000, 120_000),
+    { escalated: true, keyboardClass: true, cappedFromMs: 30_000, deadlineMs: KEYBOARD_TIMEOUT_MS },
+    'a named deadline does not buy the wait back: a measured desktop session asked 15000ms of a `vim` and spent 16 889ms learning nothing new')
+  assert.deepEqual(decideTty('vim notes.md', true, 4_000, 120_000),
+    { escalated: true, keyboardClass: true, deadlineMs: 4_000 },
+    'a deadline shorter than the ceiling stands, and nothing is reported as capped when nothing was')
   assert.equal(decideTty('sudo true', undefined, undefined, 120_000).deadlineMs, 120_000,
     'the credential class keeps its deadline: it answers in milliseconds once it has a terminal')
+  assert.equal(decideTty('tar -cf /dev/null /usr', undefined, undefined, 120_000).deadlineMs, 120_000,
+    'a long non-interactive command is untouched by the ceiling (measured: tar over /usr, 15 s)')
   assert.equal(decideTty('man ls', undefined, undefined, 120_000).escalated, false)
 })
 

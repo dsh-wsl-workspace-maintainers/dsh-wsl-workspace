@@ -189,13 +189,10 @@ export function shouldEscalate(command: string, tty: boolean | undefined): boole
 export interface TtyDecision {
   /** Whether the command is wrapped in `script`. */
   escalated: boolean
-  /** Whether the keyboard-class bound applies to this call's deadline. */
-  keyboard: boolean
-  /** Whether the command *is* keyboard-class, bound applied or not. The hint about what to use
-   * instead belongs to the class: a call that named its own 15 s deadline still cannot type into a
-   * keyboard, and a model does name one — measured in a real session, where the model sent
-   * `{"command":"printf x; vim note.txt","timeoutMs":15000}`. */
+  /** Whether the command *is* keyboard-class — the class decides both the ceiling and the hint. */
   keyboardClass: boolean
+  /** The deadline the call asked for, when the class capped it: a cap is reported, never silent. */
+  cappedFromMs?: number
   /** The deadline to run the call with. */
   deadlineMs: number
 }
@@ -207,17 +204,25 @@ export interface TtyDecision {
  * @param requestedMs - the call's own `timeoutMs`, if it named one.
  * @param ceilingMs - the deadline the tool would otherwise use, already clamped to the configured
  * maximum.
- * @returns whether to escalate, whether the keyboard bound applies, and the deadline to use.
+ * @returns whether to escalate, the class, the deadline to use, and what was asked for if capped.
+ *
+ * The keyboard class is capped even when the call named a longer deadline. Measured reason: a real
+ * desktop session sent `{"command":"printf x; vim note.txt","timeoutMs":15000}` and spent 16 889 ms
+ * learning what 8 000 ms teaches in the same words — and an agent that waits 15 seconds for nothing
+ * does not conclude "this program cannot be satisfied", it concludes "this environment is slow", which
+ * then reshapes how it plans every later call. The cap cannot bite a batch form, because a batch form
+ * is not slow: `vim -es -c '%s/x/X/g' -c wq` over 1 000 000 lines answered in 1 s with exit 0 here.
  */
 export function decideTty(command: string, tty: boolean | undefined, requestedMs: number | undefined,
   ceilingMs: number): TtyDecision {
   const escalated = shouldEscalate(command, tty)
   const keyboardClass = escalated && ttyClass(command) === 'keyboard'
-  // The bound applies only when the call shows no intent of its own: naming a deadline or a terminal
-  // is the caller taking the wait. Capping an explicit `timeoutMs` would be this tool silently
-  // overriding what it was told — the same shape as ignoring `run_in_background`.
-  const keyboard = keyboardClass && tty === undefined && requestedMs === undefined
-  return { escalated, keyboard, keyboardClass, deadlineMs: keyboard ? Math.min(ceilingMs, KEYBOARD_TIMEOUT_MS) : ceilingMs }
+  if (!keyboardClass) return { escalated, keyboardClass, deadlineMs: ceilingMs }
+  const wanted = Math.min(requestedMs ?? ceilingMs, ceilingMs)
+  const deadlineMs = Math.min(wanted, KEYBOARD_TIMEOUT_MS)
+  return wanted > deadlineMs
+    ? { escalated, keyboardClass, cappedFromMs: wanted, deadlineMs }
+    : { escalated, keyboardClass, deadlineMs }
 }
 
 /**

@@ -231,10 +231,23 @@ interface BackgroundOutput {
   jobId: string
 }
 
+/**
+ * How many times each exact command has been attempted since this shell started, per session. A
+ * `WeakMap` on the session object so a rebuild — which *is* a change in the environment — starts a
+ * clean count, and so nothing outlives the shell it describes.
+ */
+const attempts = new WeakMap<WslBashSession, Map<string, number>>()
+
 /** Shape a session run into the host's result contract. */
-function toForeground(run: WslBashRun, timeoutMs: number, escalated: boolean, keyboardClass = false): ForegroundOutput {
+function toForeground(run: WslBashRun, timeoutMs: number, escalated: boolean, keyboardClass = false,
+  cappedFromMs?: number, repeats = 0): ForegroundOutput {
   const killed = run.exitCode < 0
   const notes: string[] = []
+  // A cap the caller did not ask for is stated, not swallowed: an agent that sees `timed out after
+  // 8000ms` on a call it gave 15 000ms to would learn that this tool lies about deadlines.
+  if (cappedFromMs !== undefined) {
+    notes.push(`[this call asked for ${cappedFromMs}ms and was capped to ${timeoutMs}ms: a program that waits for a keyboard is bounded whatever the call asked for, because the wait is the part that can never be satisfied]`)
+  }
   if (run.timedOut) {
     // The keyboard hint belongs to the class, not to whether this tool applied its own bound: a call
     // that named a 15 s deadline of its own still cannot type into a keyboard.
@@ -263,7 +276,11 @@ function toForeground(run: WslBashRun, timeoutMs: number, escalated: boolean, ke
   // Searched across both streams on purpose: a pseudo-terminal folds the command's stderr into its
   // stdout, so a check on `run.stderr` alone was measured never matching a real `sudo true`.
   if (escalated && run.exitCode !== 0 && /sudo: (a password is required|no password was provided)/.test(`${run.stdout}\n${run.stderr}`)) {
-    notes.push('[sudo asked for a password and this shell has nobody to type it: run the session as a user with NOPASSWD, or as root]')
+    // The first way out is the one a person can take immediately: the product has interactive terminal
+    // tabs in the right sidebar (`dsh-client-ui-sidebar-terminal`), which run the host's own PTY and are
+    // not this shell — a human there can type the password. Making the agent able to run it is the
+    // second option, not the first.
+    notes.push('[sudo asked for a password and this shell has nobody to type it: run this command once in the right sidebar\'s terminal tab, or give the session user NOPASSWD in sudoers (or start the session as root with DSH_WSL_USER) so the agent can run it alone]')
   }
   // The attribution line. An escalated call that did not succeed, and is not explained above, says so
   // itself: one line naming the layer and the comparison that settles it, so a failure nobody predicted
@@ -272,6 +289,14 @@ function toForeground(run: WslBashRun, timeoutMs: number, escalated: boolean, ke
   if (escalated && (run.exitCode !== 0 || run.timedOut)
     && !notes.some(note => /password|keyboard/.test(note))) {
     notes.push('[this call ran on a pseudo-terminal (`script -qec`, one stream): re-run the same command with `tty: false` to rule this layer out before looking anywhere else]')
+  }
+  // The loop brake, deliberately not a refusal. A command that has now failed twice with the same
+  // bytes in the same shell is not going to answer differently on the third try, and the expensive
+  // thing here is the model spending another turn finding that out — but the tool cannot tell "the
+  // environment is stuck" from "the third attempt is the one that fixes it" (`npm test` after an
+  // install is the ordinary case), so it says the repetition out loud and runs the command anyway.
+  if (repeats >= 2 && (run.exitCode !== 0 || run.timedOut)) {
+    notes.push(`[this exact command has failed ${repeats} times in this shell with nothing succeeding in it since: it will answer the same way — change the command (a non-interactive flag, a different tool, an absolute path) or stop and report that it cannot be done here]`)
   }
   return {
     kind: 'foreground',
@@ -385,7 +410,7 @@ export function apply(ctx: Context, config?: Config): void {
 
   const tool = defineTool({
     name: TOOL_NAME,
-    description: 'Run a bash command inside this WSL distribution. The shell is persistent: `cd`, exported variables, activated virtualenvs, aliases and shell functions survive between calls, so use absolute paths or an explicit `cd` when a call must not depend on where the last one left off. A command that reads from stdin is given /dev/null. A command that cannot be answered any other way (`sudo`, `ssh`, a database client, an editor) is given a pseudo-terminal of its own automatically — decided per segment, so `cd /tmp && vim f` counts as an editor; pagers over text (`man`, `less`, `more`) are not, because on a pipe they print the whole document in milliseconds, so pass `tty: true` when the pager itself is what you want; a live display (`top`, `htop`) refuses to draw without a terminal and exits at once, so ask for `top -bn1` or pass `tty: true`. An editor or multiplexer left waiting for a keyboard is stopped after 8 seconds and says so. For work that must outlive one call pass `run_in_background: true` — it starts a tracked job (`job_output` to read, `job_kill` to stop) in a separate process, so it does not see this shell\'s `cd` or `export`.',
+    description: 'Run a bash command inside this WSL distribution. The shell is persistent: `cd`, exported variables, activated virtualenvs, aliases and shell functions survive between calls, so use absolute paths or an explicit `cd` when a call must not depend on where the last one left off. A command that reads from stdin is given /dev/null. A command that cannot be answered any other way (`sudo`, `ssh`, a database client, an editor) is given a pseudo-terminal of its own automatically — decided per segment, so `cd /tmp && vim f` counts as an editor; pagers over text (`man`, `less`, `more`) are not, because on a pipe they print the whole document in milliseconds, so pass `tty: true` when the pager itself is what you want; a live display (`top`, `htop`) refuses to draw without a terminal and exits at once, so ask for `top -bn1` or pass `tty: true`. An editor or multiplexer left waiting for a keyboard is stopped after 8 seconds — that ceiling holds even if the call asks for longer, and the body says so — and names the non-interactive form to use instead. For work that must outlive one call pass `run_in_background: true` — it starts a tracked job (`job_output` to read, `job_kill` to stop) in a separate process, so it does not see this shell\'s `cd` or `export`.',
     parameters: {
       command: { type: 'string', required: true, description: 'The bash command to run.' },
       description: {
@@ -397,7 +422,7 @@ export function apply(ctx: Context, config?: Config): void {
         type: 'string',
         description: 'Working directory for this call. Defaults to the session workspace; a relative path resolves against it.',
       },
-      timeoutMs: { type: 'number', description: 'Per-call deadline in milliseconds. An editor or multiplexer escalated automatically is bounded to 8000 when this call names no deadline and no `tty`, because the rest of the wait is a keyboard nobody types into; set it here (or set `tty`) to own the full deadline.' },
+      timeoutMs: { type: 'number', description: 'Per-call deadline in milliseconds, for a long build or install. It does not extend a keyboard-class call (editor, `tmux`, `telnet`): those are capped at 8000 because the wait can never be satisfied, and the body says when it capped you.' },
       tty: {
         type: 'boolean',
         description: 'Run the command on a pseudo-terminal. Applied automatically for the commands that cannot answer any other way — `sudo`, `su`, `ssh`/`scp`/`sftp`/`rsync`, `passwd`, `gpg`, database clients, editors (`vim`, `nano`, `emacs`) — decided for every top-level segment (so `cd /tmp && vim f` and `bash -c \'sudo true\'` both count) and inside a one-layer shell wrapper. Not applied to pagers over text (`man`, `info`, `less`, `more`, `pg`, `gh`, `aws`), which print everything in milliseconds on the pipe, nor to a live display (`top`, `htop`), which refuses to draw without a terminal and exits at once — ask it for a batch form (`top -bn1`) or set this to true. Set true when the pager itself is wanted, false to keep the ordinary pipe for a command the rule would otherwise wrap.',
@@ -459,7 +484,7 @@ export function apply(ctx: Context, config?: Config): void {
       // directory the call asked for. `tty: false` is a veto, not a no-op: measured, `man ls` with
       // `tty: false` came back with the pty's overstrike exactly as the automatic rule produced it,
       // which left the model no way to ask for the plain pipe.
-      const { escalated, keyboardClass, deadlineMs } = decideTty(args.command, args.tty, args.timeoutMs, timeoutMs)
+      const { escalated, keyboardClass, cappedFromMs, deadlineMs } = decideTty(args.command, args.tty, args.timeoutMs, timeoutMs)
       if (escalated) {
         logging?.debug?.(`wsl-bash: pseudo-terminal for class=${ttyClass(args.command)} deadline=${deadlineMs}ms`)
       }
@@ -498,9 +523,18 @@ export function apply(ctx: Context, config?: Config): void {
           throw error instanceof Error ? error : new Error(String(error))
         })
       }
+      const signature = args.command.replace(/\s+/g, ' ').trim()
+      let tally = attempts.get(session)
+      if (tally === undefined) { tally = new Map<string, number>(); attempts.set(session, tally) }
+      const tried = (tally.get(signature) ?? 0) + 1
+      tally.set(signature, tried)
       const run = await session.run(command, deadlineMs, exec.signal)
       if (run.aborted) throw toolAborted()
-      return toForeground(run, deadlineMs, escalated, keyboardClass)
+      // Any success clears every streak: the note's claim is about a shell where nothing has worked
+      // since, and `npm install` succeeding between two failing `npm test` calls is exactly the case
+      // where that claim would be false.
+      if (run.exitCode === 0 && !run.timedOut) tally.clear()
+      return toForeground(run, deadlineMs, escalated, keyboardClass, cappedFromMs, tried)
     },
   })
 

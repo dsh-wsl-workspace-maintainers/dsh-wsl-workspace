@@ -89,6 +89,29 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   `top`) still costs its deadline plus a rebuild — measured 5.7-6.1 s with a screen dump — because the
   frame gives a pty `/dev/null` for input rather than letting the program eat the next command's bytes.
 
+- **A keyboard-class wait is capped at 8 seconds whatever the call asked for, and the cap says so.** The
+  previous rule honoured a named `timeoutMs`; the first desktop turn under it sent
+  `{"command":"printf x; vim note.txt","timeoutMs":15000}` and spent **16 889 ms** on a wait that can never
+  be satisfied. An agent does not read that as "this program needs fingers" — it reads it as "this
+  environment is slow" and reprices every later call. The cap only shortens (a 4 s request stands) and the
+  body carries `[this call asked for 15000ms and was capped to 8000ms: …]`, so the tool is never caught
+  lying about a deadline. Two measurements bound the risk: `vim -es -c '%s/x/X/g' -c wq` over
+  **1 000 000 lines** answers in 1 s with exit 0, so no batch form is touched; `tar -cf /dev/null /usr`
+  takes 15 s and is not this class, so it keeps its deadline.
+
+- **A repeated failure is named, and still executed.** The same command bytes failing twice in the same
+  shell adds `[this exact command has failed 2 times in this shell with nothing succeeding in it since: …]`,
+  and any success clears every streak — the claim is about a shell where nothing has worked since, so an
+  `npm install` succeeding between two failing `npm test` calls must not be talked about as a stuck loop.
+  Deliberately not a refusal: a tool declining to run
+  what it was asked is the shape this ticket is about, and the ordinary case — `npm test` passing on the
+  third try after an install — is exactly what a refusal would break.
+
+- **`sudo`'s note offers the human first.** The product has interactive terminal tabs in the right sidebar
+  (`dsh-client-ui-sidebar-terminal`; the host's own PTY, which this plugin does not touch) where a person
+  can type the password. That is now the first way out, with NOPASSWD / `DSH_WSL_USER=root` second as the
+  way to make the agent able to run it alone.
+
 - **The keyboard hint is given by class, not by whether we applied our own bound.** The first live
   session of this on the installed desktop did not send `vim note.txt`; the model sent
   `{"command":"printf x; vim note.txt","timeoutMs":15000}` — naming its own deadline, which under the

@@ -275,12 +275,31 @@ try {
   // measured why that matters: the model did not send `vim note.txt`, it sent
   // `{"command":"printf x; vim note.txt","timeoutMs":15000}` — naming a deadline of its own, which
   // under the older rule bought it the generic restart sentence instead of the non-interactive form.
-  const namedDeadline = await call('vim /etc/hostname', { timeoutMs: 4_000 })
-  check('a keyboard-class call that named its own deadline still gets the keyboard hint',
-    namedDeadline.value?.timedOut === true && namedDeadline.value?.timeoutMs === 4_000
-    && /keyboard nobody is typing/.test(namedDeadline.rendered),
+  const namedDeadline = await call('vim /etc/hostname', { timeoutMs: 15_000 })
+  check('a keyboard-class deadline is capped at 8 s and the cap is reported',
+    namedDeadline.value?.timedOut === true && namedDeadline.value?.timeoutMs === 8_000
+    && /capped to 8000ms/.test(namedDeadline.rendered) && /keyboard nobody is typing/.test(namedDeadline.rendered),
     JSON.stringify({ ms: namedDeadline.ms, deadline: namedDeadline.value?.timeoutMs,
-      hint: /keyboard nobody is typing/.test(namedDeadline.rendered) }))
+      cap: /capped to 8000ms/.test(namedDeadline.rendered), hint: /keyboard nobody is typing/.test(namedDeadline.rendered) }))
+  // The cap only ever shortens: a call that asked for less than the ceiling keeps it, and must not be
+  // told a cap it did not hit.
+  const shorter = await call('vim /etc/hostname', { timeoutMs: 4_000 })
+  check('a deadline shorter than the ceiling stands and is not reported as capped',
+    shorter.value?.timeoutMs === 4_000 && !/capped to/.test(shorter.rendered),
+    JSON.stringify({ deadline: shorter.value?.timeoutMs, cap: /capped to/.test(shorter.rendered) }))
+  // The loop brake is a sentence, not a refusal: the same failing command twice over says so, and one
+  // success clears the count so the ordinary `npm test` after an install is never told to stop. The
+  // signature runs in a subshell — a bare `exit 41` would end the session shell itself (measured: it
+  // did, and every later call aborted).
+  const repeatOne = await call("sh -c 'exit 41'", {})
+  const repeatTwo = await call("sh -c 'exit 41'", {})
+  await call('true', {})
+  const repeatThree = await call("sh -c 'exit 41'", {})
+  check('a repeated failure says it is a repeat and a success clears the count',
+    !/has failed/.test(repeatOne.rendered) && /has failed 2 times/.test(repeatTwo.rendered)
+    && !/has failed/.test(repeatThree.rendered),
+    JSON.stringify({ first: /has failed/.test(repeatOne.rendered),
+      second: /has failed 2 times/.test(repeatTwo.rendered), afterSuccess: /has failed/.test(repeatThree.rendered) }))
   // And a timed-out terminal call must not narrate a recovery that did not happen: the two sentences
   // are produced from different facts, so asserting they agree catches the claim without trusting it.
   const ptyTimeout = await call('sleep 5', { tty: true, timeoutMs: 1_000 })
@@ -542,7 +561,7 @@ try {
     `the control harness failed before comparing: ${String(error?.message ?? error).slice(0, 120)}`)
 }
 
-const EXPECTED_CHECKS = 49
+const EXPECTED_CHECKS = 51
 const passed = results.filter(r => r.pass).length
 console.log(`${passed}/${results.length} checks passed (plane=${plane()}, distro=${distro}, user=${username}, cwd=${sessionCwd})`)
 if (results.length !== EXPECTED_CHECKS) {
