@@ -229,6 +229,25 @@ try {
   check('the escalated pty has a real size and name', sizeLine.trim() === '24 80' && ttyLine.startsWith('/dev/pts/'),
     JSON.stringify(pty.text.trim()))
 
+  // Two seams measured on 2026-10-05 by driving this tier directly. `man` on a terminal it cannot
+  // colour writes overstrike — a whole page came back as `N\bNA\bAM\bME\bE` for `NAME` — and that
+  // reached the model verbatim; and the decision read only the first word, so `bash -c 'sudo true'`
+  // (a shape models write constantly) was measured sitting to its deadline returning `(no output)`
+  // plus a session rebuild, while bare `sudo true` answered in 46 ms. The fold is asserted on the
+  // exact bytes rather than on `man`, because whether `man` reaches its pager at all belongs to the
+  // distribution, and a cell that depends on it would be a claim about the machine.
+  const overstruck = await call("printf 'N\\bNA\\bAM\\bME\\bE\\n'", { timeoutMs: 8_000, tty: true })
+  check('a pty’s overstrike is folded before the model reads it',
+    overstruck.text === 'NAME\n',
+    JSON.stringify({ raw: overstruck.text, exit: overstruck.value?.exitCode }))
+  const nested = await call("bash -c 'sudo true'", { timeoutMs: 8_000 })
+  check('a terminal-requiring command inside a wrapper is still given one',
+    nested.value?.timedOut !== true && nested.ms < 4_000,
+    `${nested.ms}ms exit=${nested.value?.exitCode} :: ${JSON.stringify(nested.rendered.slice(0, 46))}`)
+  // The `tty: false` veto is asserted offline instead (`tests/wsl-bash-tty.test.ts`): it is a decision,
+  // and the only live discriminator would be a program that hangs on a real terminal, which would make
+  // the cell's cost the very defect it is measuring.
+
   // ---------------------------------------------------------------- this round's behaviour
   // A relative `workdir` is resolved against the session directory, the way the host's one-shot tool
   // does (`resolveWorkdir`): measured there, `docs` becomes `/home/ruler/docs` and bash's own `cd`
@@ -461,7 +480,7 @@ try {
     `the control harness failed before comparing: ${String(error?.message ?? error).slice(0, 120)}`)
 }
 
-const EXPECTED_CHECKS = 40
+const EXPECTED_CHECKS = 42
 const passed = results.filter(r => r.pass).length
 console.log(`${passed}/${results.length} checks passed (plane=${plane()}, distro=${distro}, user=${username}, cwd=${sessionCwd})`)
 if (results.length !== EXPECTED_CHECKS) {

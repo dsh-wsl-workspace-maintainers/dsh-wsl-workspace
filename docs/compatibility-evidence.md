@@ -2395,6 +2395,58 @@ instances) are not driven by anything — the isolation cells cover agents insid
 `job_list` visibility across agents belongs to the host's jobs registry, which the harness stubs; and
 the `dsh-spill-*` directory the host's retention layer writes is the host's lifecycle, not ours.
 
+## The pseudo-terminal's seams, driven rather than reasoned about (2026-10-05)
+
+Two scratch drivers mounted the registered `bash` through `ctx.plugin` and called it with the shapes a
+model actually writes, each call bounded by its own `timeoutMs` (files under `D:\Temp\wsl-bash-round2`,
+outside the repository; nothing installed, no Desktop instance touched). Readings on this machine
+(WSL2, `Ubuntu`, user `ruler`, whose sudoers is **not** NOPASSWD):
+
+| the call | what came back | what it says |
+| --- | --- | --- |
+| `echo out; echo err >&2`, `tty: true` | `out err ` — **no `[stderr]` section** | a terminal has one stream; separation exists only on the pipe. Mechanism, and the same for the host's PTY tier |
+| `echo out; echo err >&2`, plain | `out [stderr] err ` | the contract the ledger already describes |
+| `man ls` (auto-escalated) | 743 ms, `N\bNA\bAM\bME\bE ls - list …` | emphasis reaches the model as overstrike — unreadable, and the fold never saw it |
+| `man ls \| head -c 120` (plain) | `LS(1) … LS(1)\n\nNAME\n` | clean, because `man` writes overstrike only when it is on a terminal |
+| `bash -c 'sudo true'` | **5289 ms, `timedOut: true`, `(no output)`, plus a session rebuild** | the issue's own symptom one layer in: the decision read the first word, which was `bash` |
+| `sudo true` | 46 ms, `[sudo] password for ruler: … a password is required`, exit 1 | the escalation works; the distribution, not the shell, is what needs a password |
+| `less /etc/hostname` | 6076 ms, `WARNING: terminal is not fully functional Press RETURN to continue`, timeout + rebuild | the frame gives the pty `/dev/null` for input, so a program waiting for a key gets EOF-ish noise and burns its deadline |
+| `vim /etc/hostname` | 5715 ms, `"/etc/hostname" [readonly] 1L, 9B`, timeout | same class; it opened read-only and did not touch the file |
+| `top` | 6124 ms, a screen dump, timeout | same class, and it costs CPU while it waits |
+| `top -bn1 \| head -3` | 222 ms, batch output | batch mode needs no terminal, yet the first-word rule escalated it anyway |
+| `cat`, `tty: true` | 82 ms, `(no output)` | input really is `/dev/null`: a reader sees EOF at once rather than hanging |
+| `sleep 45`, `tty: true`, aborted at 800 ms | `AbortError` at 2922 ms, then `SLEEP=0 SCRIPT=0` | cancelling an escalated call takes the inner program with it — the leak a `setsid` child showed on rebuild is not present here |
+| `sudo true` after the fix | body ends `[sudo asked for a password and this shell has nobody to type it: run the session as a user with NOPASSWD, or as root]` | the added note, gated by a cell that asserts the note and the complaint appear together |
+
+Three of those were defects and are fixed here: the overstrike fold (`N\bN`→`N`, `_\bX`→`X`, the two
+shapes actually measured — a bare `.\b` deletion rule was tried first and ate characters, which the
+unit test now pins), the wrapper read (one layer; an unreadable wrapper is left alone rather than
+escalated on a guess), and `tty: false` as a veto (measured: with only `true` honoured, `man ls`
+`tty: false` came back byte-identical to the escalated call). Two cells went into `bash-session-real`
+for the first two — the fold is asserted on the exact bytes rather than on `man`, because whether `man`
+reaches its pager at all is a property of the distribution, not of this plugin — and the veto is
+asserted offline, since the only live way to see it would be to let a program hang.
+**42/42 on both planes**, and `12/12` on the parity driver's two planes with the single-stream probe
+added (14 probes, the two the one-shot world cannot answer still skipped and named); unit 160 tests /
+0 fail, node 72/72, docs 11/11, typecheck still 209.
+
+Two more rows went into the ledger: `behaviour-escalated-streams` (one stream, mechanism, with a probe
+that shows it) and `behaviour-overstrike` (the fold), and `param-tty` now states all three of its
+values. A duplicated ledger row id was introduced and removed during this pass, found by `grep` rather
+than by the gates — `tests/wsl-bash-parity.test.ts` already asserts ids are unique, and the duplicate
+was cleared before that bucket was run, so the gate never got to say anything about it.
+
+**Left deliberately, and what it would take to change:** the keyboard-waiting class (`less`, `more`,
+`pg`, `man`, `info`, `vim`, `nano`, `emacs`, `top`, `htop`, `tmux`, `screen`) is on the auto-escalation
+list, and every one of them measured above costs its deadline plus a session rebuild because there is
+no input to give. Narrowing the list, or answering that class immediately with a note instead of
+running it, changes what the user sees in a live session, so it is a decision rather than a fix — the
+numbers above are the arithmetic for it. Also unmeasured on purpose or by limits: a distribution
+without `script` (only Ubuntu is installed here, so the fallback is untested and would surface as
+`script: command not found` for a `sudo` call); `sudo`'s behaviour under `Defaults requiretty`;
+wrappers deeper than one layer (`bash -c "bash -c 'sudo x'"`); and whether `script` propagates an
+inner exit code on every util-linux version (it did here: sudo's `1` came back).
+
 ## Cloud frame 37221289492, read step by step, and the cell that turned out to be about the fixture (2026-10-05)
 
 Dispatched on `fix/issue51-shell-execute-seam` at head `21b8ee6`. Job conclusions:

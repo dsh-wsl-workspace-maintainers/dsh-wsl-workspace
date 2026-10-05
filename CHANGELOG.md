@@ -73,6 +73,22 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   alias used on the line that defines it answers 127 here exactly as it does in `bash -ic` on the same
   distribution — measured, and recorded as bash's rule rather than ours.
 
+- **Three seams in the pseudo-terminal tier, found by driving it rather than reasoning about it.** An
+  emphasising program on a terminal it cannot colour writes overstrike, and a measured `man` page came
+  back as `N\bNA\bAM\bME\bE` — unreadable where a person at a real terminal reads `NAME`; the fold now
+  resolves the two shapes this distribution was measured emitting (`X\bX`, `_\bX`) the way a terminal
+  does. The escalation decision read only the command's first word, so `bash -c 'sudo true'` — a shape
+  models write constantly — sat to its deadline returning `(no output)` plus a session rebuild where
+  bare `sudo true` answers in 46 ms; one layer of a `bash`/`sh`/`zsh`/`dash` `-c` wrapper is now read,
+  and a wrapper whose contents cannot be read is left alone rather than escalated on a guess. And
+  `tty: false` did nothing: with only `true` honoured, `man ls` came back through the pty with no way
+  back to the plain pipe, so `false` is a veto now. What is *not* fixed, because it is what a terminal
+  is: an escalated call has one stream, so the `[stderr]` section the plain path writes cannot appear
+  there (the host's own PTY tier is the same — it is a row in [docs/bash-parity.md](docs/bash-parity.md)
+  with a probe behind it), and a program that needs a keyboard it will never receive (`less`, `vim`,
+  `top`) still costs its deadline plus a rebuild — measured 5.7-6.1 s with a screen dump — because the
+  frame gives a pty `/dev/null` for input rather than letting the program eat the next command's bytes.
+
 - **A DSH Desktop profile generated no WSL variant at all (issue #47).** The variant
   generator asked the host for two modules at call time — the entry-list dialect and the
   YAML engine under it — on the assumption that host and plugin share a `node_modules`.

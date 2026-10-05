@@ -63,11 +63,34 @@ export function firstWord(command: string): string {
 
 /**
  * Whether this command should be given a terminal of its own.
- * @param command - the model's command, verbatim.
- * @returns true when its first word is in {@link TTY_COMMANDS}.
+ *
+ * Two shapes are read: the command's own first word, and the first word inside a shell wrapper —
+ * `bash -c 'sudo true'` was measured sitting until its deadline expired and returning
+ * `(no output) [timed out after 4000ms]` plus a session rebuild, while bare `sudo true` answers in
+ * 46 ms. That is the original issue's symptom reproduced one layer in, and a model writes the
+ * wrapper constantly.
+ *
+ * The wrapper is read one layer deep, and the inner text is taken only as far as the next quote
+ * character: crude on purpose. An extraction that stops early can only ever under-read the inner
+ * command's first word, which falls back to the behaviour before this existed — a wrapper whose
+ * contents cannot be read is not escalated, rather than escalated on a guess.
  */
 export function needsTty(command: string): boolean {
-  return TTY_COMMANDS.has(firstWord(command))
+  if (TTY_COMMANDS.has(firstWord(command))) return true
+  const wrapper = /^(?:bash|sh|zsh|dash)\s+(?:-\S+\s+)*?-c\s+(['"])([^'"]*)\1/.exec(command.trim())
+  return wrapper !== null && TTY_COMMANDS.has(firstWord(wrapper[2] ?? ''))
+}
+
+/**
+ * The whole escalation decision, in one place so the veto is testable without a distribution.
+ * @param command - the model's command, verbatim.
+ * @param tty - the call's `tty` argument: true forces a terminal, false refuses one the rule would
+ * otherwise give, and absent leaves it to the rule.
+ * @returns whether this call runs on a pseudo-terminal.
+ */
+export function shouldEscalate(command: string, tty: boolean | undefined): boolean {
+  if (tty === false) return false
+  return tty === true || needsTty(command)
 }
 
 /**
@@ -87,18 +110,25 @@ export function wrapForTty(command: string): string {
 }
 
 /**
- * Fold a pty's line endings and control sequences back into plain text.
+ * Fold a pty's line endings, overstrike and control sequences back into plain text.
  *
  * Only escalated output goes through this. `script` writes `\r\n` for newlines and, because the
  * inner shell also rewrites its own prompt line, sometimes `\r\r\n`; a bare `\r` left in the body
  * makes the host's front-end render the tail of a line over its head.
  *
+ * Overstrike is folded the way a terminal resolves it. Measured on this distribution, `man` writes
+ * every emphasised glyph as itself twice with a backspace between — `N\bNA\bAM\bME\bE` for `NAME` —
+ * which the model reads as garbage where a person at a real terminal reads `NAME`. Only those two
+ * shapes are folded (doubled glyph, and the `_\b` an underline marker leaves); a backspace that is
+ * none of those is left alone rather than eating a character that has not been overwritten.
+ *
  * @param text - stdout or stderr as the pty produced it.
- * @returns the same text with CR removed and CSI/OSC sequences dropped.
+ * @returns the same text with CR removed, overstrike resolved and CSI/OSC sequences dropped.
  */
 export function normaliseTtyOutput(text: string): string {
   return text
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
     .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
+    .replace(/.\x08/g, '')
     .replace(/\r/g, '')
 }

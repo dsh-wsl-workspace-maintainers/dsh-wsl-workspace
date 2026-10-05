@@ -5,7 +5,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { TTY_COMMANDS, firstWord, needsTty, normaliseTtyOutput, wrapForTty } from '../src/host/wsl-bash-tty.ts'
+import { TTY_COMMANDS, firstWord, needsTty, normaliseTtyOutput, shouldEscalate, wrapForTty } from '../src/host/wsl-bash-tty.ts'
 
 test('the interactive class is recognised, and ordinary commands are left alone', () => {
   assert.equal(needsTty('sudo true'), true)
@@ -46,4 +46,37 @@ test('a pty’s bytes are folded back into plain text', () => {
   assert.equal(normaliseTtyOutput('\x1b]0;title\x07prompt\n'), 'prompt\n', 'OSC including the window title')
   assert.equal(normaliseTtyOutput('oops: no such file\n'), 'oops: no such file\n',
     'positive control: ordinary stderr is untouched')
+  // Both shapes below are the bytes `man ls` actually produced on this distribution's pty, captured
+  // verbatim: bold is a glyph doubled around a backspace (`N\bNA\bAM\bME\bE` for `NAME`) and the
+  // underline marker is `_\b` before the glyph (`[_\bO_\bP_\bT_\bI_\bO_\bN]` for `[OPTION]`). The rule
+  // is what a terminal does — the character before a backspace is overwritten — so both fold, and a
+  // dangling backspace with nothing after it eats its own left neighbour, which is also what a
+  // terminal would show. That edge is pinned here rather than left to a reader guessing.
+  assert.equal(normaliseTtyOutput('N\bNA\bAM\bME\bE\n'), 'NAME\n', 'overstrike bold, as measured')
+  assert.equal(normaliseTtyOutput('l\bls\bs\n'), 'ls\n', 'the doubled glyph man really writes')
+  assert.equal(normaliseTtyOutput('[_\bO_\bP]'), '[OP]', 'overstrike underline, as measured')
+  assert.equal(normaliseTtyOutput('a\b'), '', 'a dangling backspace takes its left neighbour, as a terminal would')
+})
+
+test('a shell wrapper is read one layer deep, and an unreadable one is not guessed at', () => {
+  // Measured: `bash -c 'sudo true'` sat until its deadline and returned `(no output)` plus a session
+  // rebuild, while bare `sudo true` answered in 46 ms — the issue's own symptom one layer in.
+  assert.equal(needsTty("bash -c 'sudo true'"), true)
+  assert.equal(needsTty('sh -c "passwd"'), true)
+  assert.equal(needsTty('bash -l -c "sudo -n true"'), true, 'other flags before -c are skipped')
+  assert.equal(needsTty("bash -c 'echo hi; sudo -v'"), false,
+    'only the inner command’s first word decides — a wrapper that mentions sudo later is not a terminal case')
+  assert.equal(needsTty('bash -c "echo hi"'), false)
+  assert.equal(needsTty("bash -c 'sudo true"), false, 'an unterminated quote is left alone, not escalated on a guess')
+  assert.equal(needsTty("grep -r 'sudo' /var/log"), false, 'a search is not a wrapper')
+})
+
+test('tty false is a veto, true a force, absent the rule', () => {
+  assert.equal(shouldEscalate('sudo true', undefined), true)
+  assert.equal(shouldEscalate('sudo true', true), true)
+  assert.equal(shouldEscalate('sudo true', false), false,
+    'measured: with only `true` honoured, `man ls` with `tty: false` came back with the pty anyway')
+  assert.equal(shouldEscalate('ls -l', false), false)
+  assert.equal(shouldEscalate('ls -l', undefined), false)
+  assert.equal(shouldEscalate('ls -l', true), true)
 })

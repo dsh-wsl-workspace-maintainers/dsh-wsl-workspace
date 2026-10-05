@@ -52,6 +52,10 @@ const probes = [
   { name: 'large output spills', row: 'behaviour-spill-shape', normalize: 'numbers', args: { command: 'seq 1 200000', timeoutMs: 60_000 } },
   { name: 'prompt is empty', args: { command: 'printf "PS1=[%s]\\n" "$PS1"' } },
   { name: 'no controlling terminal', args: { command: 'tty; stty size 2>&1' } },
+  // The host's schema does not forbid extra properties, so this reaches its tool with `tty` ignored —
+  // which is the point: one call, two worlds, and the escalated one has no second channel to put
+  // `err` in. The row licenses the difference; if the two ever answer identically, the row is wrong.
+  { name: 'an escalated call has one stream', row: 'behaviour-escalated-streams', args: { command: 'echo MERGE_$(( 3 * 3 )); echo err >&2', tty: true } },
   { name: 'interactive flags', row: 'behaviour-interactive-flags', args: { command: 'echo flags=$-' } },
   // Measured against the distribution's own `bash -ic` on 2026-10-05: an alias used on the line that
   // defines it is not yet an alias there either, so the *failure* is bash's rule and not a difference

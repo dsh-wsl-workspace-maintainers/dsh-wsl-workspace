@@ -376,7 +376,7 @@ export function apply(ctx: Context, config?: Config): void {
       timeoutMs: { type: 'number', description: 'Per-call deadline in milliseconds.' },
       tty: {
         type: 'boolean',
-        description: 'Run the command on a pseudo-terminal. Applied automatically for `sudo`, `ssh`, editors and similar; set it for a program that fails with a terminal-related error.',
+        description: 'Run the command on a pseudo-terminal. Applied automatically for `sudo`, `ssh`, editors and similar — including inside a `bash -c` wrapper; set it to true for anything else that fails with a terminal-related error, or to false to keep the ordinary pipe for a command that would otherwise be given one.',
       },
       run_in_background: {
         type: 'boolean',
@@ -432,8 +432,10 @@ export function apply(ctx: Context, config?: Config): void {
         }
       }
       // The terminal is decided here, before the working-directory wrapper, so `script` inherits the
-      // directory the call asked for.
-      const escalated = args.tty === true || needsTty(args.command)
+      // directory the call asked for. `tty: false` is a veto, not a no-op: measured, `man ls` with
+      // `tty: false` came back with the pty's overstrike exactly as the automatic rule produced it,
+      // which left the model no way to ask for the plain pipe.
+      const escalated = args.tty !== false && (args.tty === true || needsTty(args.command))
       const payload = escalated ? wrapForTty(args.command) : args.command
       // The session already starts in the workspace; an explicit `workdir` only has to move it.
       const workdir = args.workdir === undefined ? undefined : resolveCwd(args, exec)
