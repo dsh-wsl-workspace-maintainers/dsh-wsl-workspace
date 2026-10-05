@@ -2347,6 +2347,54 @@ in a one-shot call. 2 probes are **not covered** — the host's background and p
 registry the in-process harness does not mount, and saying so is the point of the row rather than
 silently dropping it.
 
+## The nine clicks, read from the product's own transcript (2026-10-05, Desktop 0.2.x)
+
+He ran them in a real Desktop session in this WSL workspace (`~/.dsh/sessions/--wsl.localhost-Ubuntu-home-ruler--/session-b7b8f571-…`,
+`session.v4.jsonl.zstd`, 623 events, transcript written 2026-10-05 08:02 local). Read out of the file
+rather than retold: 51 `tool/call` / `tool/result` pairs — `bash` 25, `bash_background` 9, `job_output`
+10, `read` 6, `glob` 1. The newest nine `bash` results are the nine prompts; the earlier ones in the
+same file are the *previous* round's traffic and are excluded below (they show two defects already
+fixed, including three calls answered by the host's persistent tier with
+`Your command timed out after 300 seconds`).
+
+| prompt | what the product returned | reading |
+| --- | --- | --- |
+| `echo PROBE_$((21*2)); pwd; whoami` | `PROBE_42 /home/ruler ruler` | answers, and **0 of the 9 newest bodies carry a frame signature** — the leak check's own signature list run against the product's transcript |
+| `cd /tmp && export DSH51=kept_$((6*7))` then `pwd; echo READ_BACK=$DSH51` | `/tmp READ_BACK=kept_42` | directory and export cross the call boundary |
+| `seq 1 200000` | 49 931 bytes kept, `[output truncated; full output: …\dsh-subprocess-…-stdout.log]`, then the host's own `(Omitted 470266 bytes. Full formatted result stored at: D:\Temp\dsh-spill-…)` | spill works and the two layers stack without fighting; the model is pointed at a file twice, once by us and once by the host's retention layer |
+| `echo run >> /tmp/x51; sleep 6` then `wc -l /tmp/x51` | `1 /tmp/x51` | **exactly-once holds inside the product** — the timeout-replay defect's fix confirmed at the tier it was found in |
+| `alias m51='echo ALIAS_OK_7'; m51` | `[stderr] Command 'm51' not found, did you mean: … [exit code: 127]` | **not our defect, and not a difference from bash**: measured the same day on this distribution, `bash -ic "alias m51p=echo; m51p HI"` also answers `m51p: command not found`, while feeding the two as separate lines to `bash -i` answers `HI`. Aliases resolve when bash *parses* a line, so an alias is usable on the following call and never on the one that defines it — which is what the session tier gives (the row above, and `bash-session-real`'s replay cell). The sentence differs from the one-shot path only in who prints it, now `behaviour-command-not-found` |
+| `sudo true` | `[sudo] password for ruler: sudo: no password was provided / sudo: a password is required [exit code: 1]` | the escalation reached sudo (a prompt was delivered and answered inside the deadline, not the old burn-6 s-then-timeout), and this distribution's `ruler` is **not** NOPASSWD — so "sudo 用不了" is sudoers, not the shell. What we could fix is the silence about it: the body now says so (`…this shell has nobody to type it: run the session as a user with NOPASSWD, or as root`), gated by a cell that asserts the note rides the complaint and does not appear where no complaint is printed |
+| `stty size; tty` | `not a tty` + `stty: 'standard input': Inappropriate ioctl for device`, exit 1 | the declared `behaviour-no-tty` difference, in the product |
+| the one `glob` in the file | `Error: glob search failed inside the distribution (exit 1): find: '/tmp/systemd-private-…': Permission denied` | **the host's own classification, mirrored**: `dsh-tool-fs-search/lib/index.js` has `classifyRunFailure(…) → new SearchError(… "SEARCH_FAILED")` for a non-zero exit with stderr, so a directory containing an unreadable subdirectory fails the search in both worlds. Recorded, not fixed here — changing it would move us off the host's contract that `tests/wsl-search.test.ts` holds |
+
+## Isolation between agents, and the leak the first cell found (2026-10-05)
+
+`bash-session-real` grew six cells for the boundaries nobody had driven: a second agent arriving
+through the same registered tool, two calls in one flight, a rebuild's reaper aimed at another
+agent's processes, that other agent's shell after a rebuild, and one agent's scope ending while the
+other keeps working.
+
+Four passed on the first run and one **failed with a number that names the defect**:
+`{"bDisposers":0,"beforeAgentEnd":6,"afterAgentEnd":6}` — the tool registered a disposer on the
+*plugin* scope only, so every agent that ever called `bash` left its shell alive (two `wsl.exe`,
+≈9 MB of Windows working set each) until the whole world was disposed. The fix is the registration
+the agent scope was asking for (`exec.agent.ctx.effect`, cordis's own scope hook: the function it
+returns runs when that agent ends). After it, on both planes:
+`{"bDisposers":1,"beforeAgentEnd":6,"afterAgentEnd":4,"a":"A_AFTER_B_25"}` — one agent's scope ending
+takes exactly its two `wsl.exe`, the other agent still answers, and the plugin's own dispose still
+takes what is left (`4 → 2`). State isolation was never the problem: a second agent saw
+`/home/ruler ISO=[]` while the first kept `/tmp ISO=from_A_42`, a concurrent pair settled
+`{"one":"ONE_4","two":"TWO_8"}`, and a rebuild left the other session's detached child alone
+(`beforeForeignReap:1, afterForeignReap:1`). 39 checks ran green on `src` and `lib` before the sudo
+note cell was added, 40 after; the parity driver went to 11 probes with `alias used on the line that
+defines it: differs, as behaviour-command-not-found`.
+
+**Not covered by this pass, named:** two *Desktop windows* (two separate host processes, two plugin
+instances) are not driven by anything — the isolation cells cover agents inside one mounted world;
+`job_list` visibility across agents belongs to the host's jobs registry, which the harness stubs; and
+the `dsh-spill-*` directory the host's retention layer writes is the host's lifecycle, not ours.
+
 ## Cloud frame 37221289492, read step by step, and the cell that turned out to be about the fixture (2026-10-05)
 
 Dispatched on `fix/issue51-shell-execute-seam` at head `21b8ee6`. Job conclusions:

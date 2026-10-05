@@ -60,6 +60,19 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   session across two `wsl.exe` processes, 3.4 MB inside the distribution, `vmmem` unchanged, no runtime
   files until a stream overflows.
 
+- **An agent's shell now ends with the agent.** The session `bash` registered its cleanup on the
+  plugin's scope only, so every agent that had ever called `bash` left a shell behind — two `wsl.exe`
+  and about 9 MB of Windows working set — until the whole world was disposed. The cell that found it
+  drives a second agent through the same registered tool and asks what happens when one of them stops.
+  The other isolation boundaries it now pins were already true and had never been tested: a second
+  agent does not inherit the first one's directory, exports or aliases; two calls issued at once each
+  settle with their own answer; and a rebuild's process sweep stops only the processes carrying its
+  own session token, so one agent's wedged shell cannot reap another's work. `sudo` also says what it
+  needs: where the distribution asks for a password, the reply now adds that this shell has nobody to
+  type it and names the two ways out, instead of leaving sudo's own line for the model to retry. And an
+  alias used on the line that defines it answers 127 here exactly as it does in `bash -ic` on the same
+  distribution — measured, and recorded as bash's rule rather than ours.
+
 - **A DSH Desktop profile generated no WSL variant at all (issue #47).** The variant
   generator asked the host for two modules at call time — the entry-list dialect and the
   YAML engine under it — on the assumption that host and plugin share a `node_modules`.

@@ -246,6 +246,13 @@ function toForeground(run: WslBashRun, timeoutMs: number, escalated: boolean): F
   if (run.reaped !== undefined && run.reaped > 0) {
     notes.push(`[${run.reaped} detached process${run.reaped === 1 ? '' : 'es'} from the previous shell ${run.reaped === 1 ? 'was' : 'were'} stopped]`)
   }
+  // `sudo` reaches its password prompt now (the call is given a pseudo-terminal), but there is nobody
+  // on the other end to type into it, and sudo's own words do not say what the caller can do about it.
+  // Searched across both streams on purpose: a pseudo-terminal folds the command's stderr into its
+  // stdout, so a check on `run.stderr` alone was measured never matching a real `sudo true`.
+  if (escalated && run.exitCode !== 0 && /sudo: (a password is required|no password was provided)/.test(`${run.stdout}\n${run.stderr}`)) {
+    notes.push('[sudo asked for a password and this shell has nobody to type it: run the session as a user with NOPASSWD, or as root]')
+  }
   return {
     kind: 'foreground',
     exitCode: killed ? null : run.exitCode,
@@ -440,6 +447,23 @@ export function apply(ctx: Context, config?: Config): void {
         }
         session = new WslBashSession(spawnHost(), spec)
         sessions.set(ownerKey, session)
+        // The shell belongs to the agent that made it, not to the plugin. Without a registration on
+        // the agent's own scope, every agent that ever called `bash` leaves a shell — two `wsl.exe` and
+        // about 9 MB of Windows working set — alive until the whole world is disposed, which a user
+        // with several sessions can see as memory that never comes back. `effect` is cordis's scope
+        // hook: the disposer it returns runs when that agent's scope ends.
+        const created = session
+        const scope = (exec.agent as {
+          ctx?: { effect?: (setup: () => (() => void) | void) => unknown }
+        } | undefined)?.ctx
+        const register = scope?.effect
+        if (typeof register === 'function') {
+          register(() => () => {
+            if (sessions.get(ownerKey) !== created) return
+            sessions.delete(ownerKey)
+            void created.dispose()
+          })
+        }
         await session.start().catch((error: unknown) => {
           sessions.delete(ownerKey)
           throw error instanceof Error ? error : new Error(String(error))

@@ -53,6 +53,12 @@ const probes = [
   { name: 'prompt is empty', args: { command: 'printf "PS1=[%s]\\n" "$PS1"' } },
   { name: 'no controlling terminal', args: { command: 'tty; stty size 2>&1' } },
   { name: 'interactive flags', row: 'behaviour-interactive-flags', args: { command: 'echo flags=$-' } },
+  // Measured against the distribution's own `bash -ic` on 2026-10-05: an alias used on the line that
+  // defines it is not yet an alias there either, so the *failure* is bash's rule and not a difference
+  // between these two worlds. What differs is who reports it — the interactive shell sources the
+  // distribution's command-not-found handler, the one-shot shell does not — and a model that reads a
+  // suggestion sentence should be able to tell which world it is in.
+  { name: 'alias used on the line that defines it', row: 'behaviour-command-not-found', args: { command: 'alias dshparity=echo; dshparity HI_5' } },
   { name: 'state persists', row: 'behaviour-state-persistence', args: { command: 'echo READ_BACK=${PARITY_VAR:-unset}' } },
   { name: 'background arm shape', sessionOnly: true, args: { command: 'echo BG', run_in_background: true } },
   { name: 'timeout is reported', sessionOnly: true, args: { command: 'sleep 5', timeoutMs: 1_500 } },

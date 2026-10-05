@@ -79,24 +79,55 @@ if (tool === undefined) {
   process.exit(1)
 }
 
-const owner = {
-  id: 'agent-bash-session',
-  session: { id: 'session-bash-session', cwd: sessionCwd, header: { cwd: sessionCwd, id: 'session-bash-session' } },
-  ctx: { on: () => () => {}, effect: (fn) => { try { fn?.() } catch { /* the driver has no lifecycle to keep */ } return () => {} } },
+// A second owner is built the same way on purpose: the isolation cells below are only meaningful if
+// both agents arrive through the same channel with the same shape. `effect` follows cordis's own
+// contract — the function is *setup*, run when it is registered, and whatever it returns is the
+// disposer the scope runs when that agent ends — so the disposers are captured here and fired by the
+// cell that asks what happens when one agent stops.
+const disposers = new Map()
+function makeOwner(id) {
+  const collected = []
+  disposers.set(id, collected)
+  return {
+    id,
+    session: { id: `${id}-session`, cwd: sessionCwd, header: { cwd: sessionCwd, id: `${id}-session` } },
+    ctx: {
+      on: () => () => {},
+      effect: (setup) => {
+        const disposer = setup?.()
+        if (typeof disposer === 'function') collected.push(disposer)
+        return () => {}
+      },
+    },
+  }
 }
+const owner = makeOwner('agent-bash-session')
 const exec = { signal: AbortSignal.timeout(180_000), agent: owner }
 
 const renderedBodies = []
 
 /** One tool call, timed, with the text the model would read. */
-async function call(command, options = {}) {
+async function call(command, options = {}, execution = exec) {
   const started = Date.now()
   const args = { command, description: 'compatibility driver: session bash', ...options }
-  const value = await tool.execute(args, exec)
+  const value = await tool.execute(args, execution)
   const parts = tool?.output?.render?.(args, value) ?? []
   const rendered = parts.map(part => String(part?.text ?? '')).join('')
   renderedBodies.push(rendered)
   return { ms: Date.now() - started, value, text: String(value?.stdout?.text ?? ''), rendered }
+}
+
+/** How many processes in the distribution have this exact command line.
+ *
+ * `[ ]` in each pattern so a probe can never match its own command line, and the count is labelled
+ * because `pgrep -c` prints `0` *and* exits 1 — a `|| echo 0` would turn that into `0\n0`. A probe
+ * that did not answer is `NaN`, never 0: a silent census must not read as "reaped".
+ */
+function probeCount(pattern) {
+  const out = String(spawnSync('wsl.exe', ['-d', distro, '-u', username, '-e', 'bash', '-c',
+    `echo COUNT=$(pgrep -c -f '${pattern}')`], { encoding: 'utf8', timeout: 30_000 }).stdout ?? '')
+  const match = /COUNT=(\d+)/.exec(out)
+  return match === null ? NaN : Number(match[1])
 }
 
 try {
@@ -184,6 +215,15 @@ try {
     && password.value?.timedOut === false
     && (password.value?.exitCode === 0 || /[Pp]assword/.test(password.rendered)),
   `${password.ms}ms exit=${password.value?.exitCode} :: ${JSON.stringify(password.rendered.slice(0, 60))}`)
+  // sudo's own words do not tell the caller what it can *do*. The reading behind this is a real Desktop
+  // turn that came back `[sudo] password for ruler: … a password is required [exit code: 1]` and the
+  // model retried. So the note must ride with the complaint — and, on a NOPASSWD distribution where no
+  // complaint is printed, no note may appear either: both halves of the equality are asserted, so a
+  // note fired for a call that never asked is as red as a missing one.
+  const asked = /sudo: (a password is required|no password was provided)/.test(password.rendered)
+  const told = /sudo asked for a password/.test(password.rendered)
+  check('a password sudo cannot be given is explained, not just reported', asked === told,
+    JSON.stringify({ asked, told, tail: password.rendered.slice(-56) }))
   const pty = await call('stty size; tty', { timeoutMs: 8_000, tty: true })
   const [sizeLine = '', ttyLine = ''] = pty.text.trim().split('\n')
   check('the escalated pty has a real size and name', sizeLine.trim() === '24 80' && ttyLine.startsWith('/dev/pts/'),
@@ -250,14 +290,6 @@ try {
   //    while the WSL1 runner left it alive. It is now a `sleep` whose launcher the driver holds open,
   //    so its lifetime belongs to the driver and its survival is a real mis-kill guard: were the
   //    reaper ever to degrade into `pkill -f sleep`, this process dies and the cell goes red.
-  const probeCount = pattern => {
-    const out = String(spawnSync('wsl.exe', ['-d', distro, '-u', username, '-e', 'bash', '-c',
-      `echo COUNT=$(pgrep -c -f '${pattern}')`], { encoding: 'utf8', timeout: 30_000 }).stdout ?? '')
-    const match = /COUNT=(\d+)/.exec(out)
-    // NaN rather than 0 when the probe did not answer: a silent census must not read as "reaped".
-    return match === null ? NaN : Number(match[1])
-  }
-  // `[ ]` in each pattern so a probe can never match its own command line.
   const control = spawn('wsl.exe', ['-d', distro, '-u', username, '-e', 'bash', '-c',
     'exec sleep 41'], { stdio: 'ignore' })
   await call('setsid sleep 35 & disown; echo DETACHED=$!')
@@ -279,6 +311,47 @@ try {
   check('the session shell stays inside its memory bound', Number(rssKb) > 0 && Number(rssKb) < 20_480,
     `rss=${rssKb} kB (bound 20480, measured floor 3372)`)
 
+  // Isolation boundaries. Everything above is one agent in one session; the product runs several
+  // agents, and a shell that shares state between them is not a convenience but a leak — one agent's
+  // `cd`, exports, aliases and processes becoming another's. The shells are keyed by the agent's id in
+  // `wsl-bash-tool.ts`, so these cells drive a second agent through the same registered tool.
+  const ownerB = makeOwner('agent-bash-session-b')
+  const execB = { signal: AbortSignal.timeout(180_000), agent: ownerB }
+  await call('cd /tmp && export DSHISO=from_A_$(( 6 * 7 ))')
+  const foreign = await call('pwd; echo ISO=[$DSHISO]', {}, execB)
+  check('a second agent does not inherit the first one’s directory or exports',
+    !foreign.text.includes('from_A_42') && !foreign.text.startsWith('/tmp'),
+  JSON.stringify(foreign.text.trim().slice(0, 60)))
+  const ownBack = await call('pwd; echo ISO=$DSHISO')
+  check('the first agent still has its own state afterwards', ownBack.text.includes('/tmp')
+    && ownBack.text.includes('ISO=from_A_42'), JSON.stringify(ownBack.text.trim().slice(0, 60)))
+
+  // Two calls at once on one shell: the frame protocol is one command in flight, so a concurrent pair
+  // must serialise, not interleave. If the two answers ever share a body, the reader would be reading
+  // another command's output — the shape that made the sentinel protocol in the first place.
+  const [one, two] = await Promise.all([
+    call('echo ONE_$(( 2 + 2 ))'),
+    call('echo TWO_$(( 4 + 4 ))'),
+  ])
+  check('two calls in one flight settle serially, each with its own answer',
+    one.text.includes('ONE_4') && !one.text.includes('TWO_') && two.text.includes('TWO_8')
+    && !two.text.includes('ONE_'),
+  JSON.stringify({ one: one.text.trim().slice(0, 24), two: two.text.trim().slice(0, 24) }))
+
+  // The reaper matches this session's token in `/proc/*/environ`, so a rebuild must be able to stop
+  // its own detached children without touching another agent's. Duration 37 belongs to agent B;
+  // agent A's rebuild below is the only thing allowed to run.
+  await call('setsid sleep 37 & disown; echo B_DETACHED=$!', {}, execB)
+  const beforeForeignReap = probeCount('sleep[ ]37')
+  const aRebuild = await call('sleep 4', { timeoutMs: 1_500 })
+  const afterForeignReap = probeCount('sleep[ ]37')
+  check('a rebuild reaps only the session that owns the token',
+    beforeForeignReap >= 1 && afterForeignReap >= 1 && /detached process|the shell was restarted/.test(aRebuild.rendered),
+  JSON.stringify({ beforeForeignReap, afterForeignReap, note: aRebuild.rendered.slice(-58) }))
+  const bAlive = await call('echo B_STILL_$(( 3 * 9 ))', {}, execB)
+  check('the other agent’s shell answered through its own rebuild', bAlive.text.includes('B_STILL_27'),
+    JSON.stringify(bAlive.text.trim().slice(0, 40)))
+
   // `run_in_background` must not be an argument that is quietly ignored — the repository has already
   // been bitten once by a `bash` that accepted it and ran in the foreground. The reply shape is the
   // host's (`started background job <id>`), and the hand-off carries the job kind and `onExpiry: none`
@@ -299,6 +372,22 @@ try {
   // that outlives its plugin fiber is a leak the user cannot see or cancel.
   const wslCount = () => (String(spawnSync('tasklist.exe', ['/FI', 'IMAGENAME eq wsl.exe', '/NH'],
     { encoding: 'utf8' }).stdout ?? '').match(/wsl\.exe/gi) ?? []).length
+
+  // One agent ending must take exactly its own shell with it. The tool registers a disposer on the
+  // agent's scope (`exec.agent.ctx.effect`) when it creates a session, and the driver's owner fake
+  // collects those disposers the way cordis does, so this fires agent B's own scope teardown: B's shell
+  // goes, A's keeps answering. If the tool registered nothing, `collected` is empty and this is red —
+  // an agent-scoped shell that outlives its agent is two `wsl.exe` and ~9 MB nobody can cancel.
+  const beforeAgentEnd = wslCount()
+  const bDisposers = disposers.get('agent-bash-session-b') ?? []
+  for (const dispose of bDisposers) dispose()
+  await new Promise(resolve => setTimeout(resolve, 2_000))
+  const afterAgentEnd = wslCount()
+  const aAfterBEnd = await call('echo A_AFTER_B_$(( 5 * 5 ))')
+  check('one agent ending takes only its own shell down',
+    bDisposers.length > 0 && afterAgentEnd <= beforeAgentEnd - 1 && aAfterBEnd.text.includes('A_AFTER_B_25'),
+  JSON.stringify({ bDisposers: bDisposers.length, beforeAgentEnd, afterAgentEnd, a: aAfterBEnd.text.trim().slice(0, 24) }))
+
   const beforeDispose = wslCount()
   sessionFiber.dispose?.()
   await new Promise(resolve => setTimeout(resolve, 2_000))
@@ -372,7 +461,7 @@ try {
     `the control harness failed before comparing: ${String(error?.message ?? error).slice(0, 120)}`)
 }
 
-const EXPECTED_CHECKS = 33
+const EXPECTED_CHECKS = 40
 const passed = results.filter(r => r.pass).length
 console.log(`${passed}/${results.length} checks passed (plane=${plane()}, distro=${distro}, user=${username}, cwd=${sessionCwd})`)
 if (results.length !== EXPECTED_CHECKS) {
