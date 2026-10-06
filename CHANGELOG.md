@@ -28,7 +28,9 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   reading; `tty: true` asks for one up front), and a session rebuild that replays `cd` and exported
   variables when a call wedges
   *without* executing a merely-slow command a second time.
-  Measured on this machine, both build planes: first call ~0.5 s including boot, then 22-34 ms, with
+  Measured on this machine, both build planes: first call ~0.5 s including boot, then a **median of 8 ms**
+  (measured 2026-10-06, once the answer stopped waiting for the state record — the same command through
+  one `wsl.exe` per call is 222-236 ms, and a person typing into an open terminal sees 16 ms), with
   `cd`/`export`/exit codes/CJK/`!`/`sed -i`/`tar`/`git commit`/`sudo` all verified, while the same
   command through the PTY tier still times out — that control is the last cell of the new
   `bash-session-real` gate, so the replaced behaviour cannot silently come back. Verified end to end

@@ -26,7 +26,7 @@ import { closeSync, mkdtempSync, openSync, writeSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { BOOTSTRAP_COMMAND, dropProtocolEcho, encodeFrame, parseState, readFrame, restoreChunks, shellPidOf, stripRecords } from './wsl-bash-protocol.ts'
+import { BOOTSTRAP_COMMAND, dropProtocolEcho, encodeFrame, parseState, readCompletion, readStateRecord, restoreChunks, shellPidOf, stripRecords } from './wsl-bash-protocol.ts'
 import { FIRST_PROBE_MS, LOOKS_BEFORE_SLOWING, MIN_WAIT_MS, PROBE_DONE_SENTINEL, PROBE_EVERY_MS, PROBE_SLOW_MS, confirmsTerminalRead, parseProbe, probeScript, starveOf, stopScript, type StarveKind, type StarveSample } from './wsl-bash-starve.ts'
 
 /** How often the reader looks for a frame's records, in milliseconds. */
@@ -149,6 +149,10 @@ interface FrameWatch {
   viaRoot: boolean
   /** Set once, when the command was stopped. */
   stop?: { kind: StarveKind, atMs: number, pids: number[] } | undefined
+  /** Set when the frame leaves the reader's hands, so a late probe verdict cannot act on it. */
+  settled?: boolean | undefined
+  /** True while a look is in flight, so one frame never queues probes behind each other. */
+  probing?: boolean | undefined
 }
 
 /**
@@ -169,6 +173,8 @@ export class WslBashSession {
   private outSeen = 0
   private outWritten = 0
   private err = Buffer.alloc(0)
+  /** True once the frame in flight has written its stderr-end marker (a NUL byte) on fd 2. */
+  private errEnded = false
   private errTruncated = false
   private errSpill: { path: string, fd: number } | undefined
   private errSeen = 0
@@ -176,6 +182,15 @@ export class WslBashSession {
   private journal = ''
   private functionsBody = ''
   private functionCount: number | undefined
+  /** Readers parked in {@link waitForOutput}, resolved the moment stdout moves. */
+  private readers: Array<() => void> = []
+  /**
+   * The frame that settled but whose state record has not been consumed yet, if any. The record is the
+   * *first* thing in `out` while this is set — the buffer is consumed up to the completion record, and
+   * the shell writes the state record immediately after it — so it is read from offset 0 and, until it
+   * arrives, `stripRecords` already keeps it out of anything a later window would show.
+   */
+  private pendingState: string | undefined
   /**
    * The session shell's own pid inside the distribution, read off the last frame's state record. Zero
    * until the first frame has settled — which is also the only frame that cannot be watched.
@@ -203,6 +218,10 @@ export class WslBashSession {
       await this.kill()
       throw new Error('wsl-bash: the persistent shell did not finish its bootstrap within its deadline')
     }
+    // The state record carries the shell's pid, which the watchdog needs before it can look at anything:
+    // it is written after the frame that reported it, so this is where a startup waits for it — a few
+    // tens of milliseconds once, instead of every call carrying the wait (see `drainState`).
+    await this.settleTail()
   }
 
   /**
@@ -259,6 +278,10 @@ export class WslBashSession {
     this.errSeen = 0
     this.errWritten = 0
     this.exited = false
+    // A new child means the previous frame's tail is gone with the old one; anything still parked in
+    // `readers` belongs to that dead reader and must not be resolved by this child's first bytes.
+    this.pendingState = undefined
+    this.readers = []
     const handle = this.ctx.subprocess.spawn({
       argv: [...this.spec.argv],
       cwd: this.spec.cwd,
@@ -270,6 +293,8 @@ export class WslBashSession {
     handle.stdout?.on('data', (chunk: Buffer) => {
       this.out = Buffer.concat([this.out, chunk])
       this.outSeen += chunk.length
+      // The reader is waiting on this, not on a clock: see `waitForOutput`.
+      this.wakeReaders()
       const cap = this.spec.maxOutputBytes * 2
       if (this.out.length > cap) {
         // The record we are waiting for is at the END of the stream, so the head is what goes — and
@@ -282,8 +307,15 @@ export class WslBashSession {
       }
     })
     handle.stderr?.on('data', (chunk: Buffer) => {
-      this.err = Buffer.concat([this.err, chunk])
-      this.errSeen += chunk.length
+      // The frame's own stderr-end marker: everything the command wrote to fd 2 was written before it.
+      // The byte itself is protocol, so it is dropped before anything the model could read it from —
+      // and `errSeen` counts what is kept, because the spill bookkeeping measures against the buffer.
+      const hasMarker = chunk.indexOf(0) >= 0
+      if (hasMarker) this.errEnded = true
+      const kept = hasMarker ? Buffer.from(chunk.filter(byte => byte !== 0)) : chunk
+      this.err = Buffer.concat([this.err, kept])
+      this.errSeen += kept.length
+      this.wakeReaders()
       const cap = this.spec.maxOutputBytes * 2
       if (this.err.length > cap) {
         // Drop from the start up to the next line boundary: a frame's echo must never reach the
@@ -362,6 +394,14 @@ export class WslBashSession {
     if (handle === undefined || stdin === undefined) {
       throw new Error('wsl-bash: the session has no stdin to write to')
     }
+    // Whatever has arrived of the previous frame's state record is collected here — opportunistically,
+    // and never waited for: that wait is for a journal only a *future* rebuild will read, so `rebuild`
+    // is where it belongs (a call that waited here paid ~25 ms for nothing).
+    if (process.env.DSH_WSL_TRACE === '1') console.error(`[trace] start shellPid=${this.shellPid} pending=${String(this.pendingState !== undefined)} out=${this.out.length}`)
+    this.drainState()
+    if (process.env.DSH_WSL_TRACE === '1') console.error(`[trace] drained shellPid=${this.shellPid} pending=${String(this.pendingState !== undefined)} out=${this.out.length}`)
+    // This frame's stderr-end marker has not been seen yet; the settle path waits for it.
+    this.errEnded = false
     // A spill file belongs to one command. Left open across commands, the second call's answer would
     // carry the first call's `full output` path — measured in `bash-parity-real`, where every probe
     // after a 200 000-line one reported a spill.
@@ -380,27 +420,34 @@ export class WslBashSession {
     const watch: FrameWatch = { startedAt: Date.now(), lastBytes: this.out.length + this.err.length, lastLookAt: 0, ownTerminal, looks: 0, failed: 0, witnessed: false, viaRoot: false }
     stdin.write(frame.line)
     for (;;) {
-      const found = readFrame(this.out, frame.nonce)
-      if (found !== undefined) {
+      const done = readCompletion(this.out, frame.nonce)
+      if (done !== undefined) {
         // The spill file also gets the bytes that never left memory, so the path the model is given
         // really is the complete stream.
         this.spillWindow('stderr', this.err, this.err.length)
-        this.spillWindow('stdout', this.out, found.recordStart)
-        const stdout = stripRecords(this.out.subarray(0, found.recordStart)).toString('utf8')
+        this.spillWindow('stdout', this.out, done.recordStart)
+        const stdout = stripRecords(this.out.subarray(0, done.recordStart)).toString('utf8')
+        // stderr travels on its own pipe, so the completion record on stdout can arrive first: the wait
+        // has to happen *before* the window is taken, or it waits for nothing (measured on the src plane:
+        // `echo oops >&2` came back `(no output)` and those bytes landed in the next call's window).
+        await this.settleStderr()
         const stderr = this.takeStderr(frame.payload)
         const truncated = this.outTruncated
-        // Consume this window so the next command reads from a fresh buffer.
-        this.out = this.out.subarray(found.nextOffset)
+        this.out = this.out.subarray(done.nextOffset)
         this.outTruncated = false
         this.errTruncated = false
-        this.journal = this.journalWithFunctions(found.state)
-        this.functionCount = functionCountOf(found.state) ?? this.functionCount
-        this.shellPid = shellPidOf(found.state) ?? this.shellPid
+        // The state record (5 564 bytes and ~25 ms of the shell's own work, measured) is written after
+        // this one and is only needed by a *future* rebuild, so the call settles now and the state is
+        // collected between calls. It sits at the front of the remaining buffer until it arrives, where
+        // `stripRecords` already keeps it out of anything a later window shows.
+        this.pendingState = frame.nonce
+        this.drainState()
+        watch.settled = true
         armed[Symbol.dispose]()
         return {
           settled: true,
           run: {
-            stdout, stderr, exitCode: found.status, timedOut: false, aborted: false, restarted: false,
+            stdout, stderr, exitCode: done.status, timedOut: false, aborted: false, restarted: false,
             truncated, stderrTruncated: false, ...this.spillPaths(), ...this.starvedFields(watch),
           },
         }
@@ -411,6 +458,7 @@ export class WslBashSession {
         const timedOut = timeoutOf(armed.signal, 'WSL_BASH_TIMEOUT') !== undefined
         this.spillWindow('stderr', this.err, this.err.length)
         this.spillWindow('stdout', this.out, this.out.length)
+        watch.settled = true
         return {
           settled: false,
           run: {
@@ -427,8 +475,84 @@ export class WslBashSession {
           },
         }
       }
-      await this.watchFrame(watch)
-      await new Promise(resolve => setTimeout(resolve, POLL_MS))
+      // The look is not awaited: a probe costs 200–280 ms and would otherwise hold this reader still
+      // while a record is already on the wire (measured: a silent `sleep 3` answered 0.27 s late that
+      // way). It is fired and its verdict applied when it lands.
+      this.watchFrame(watch)
+      await this.waitForOutput(POLL_MS)
+    }
+  }
+
+  /** Resolve every reader waiting on output, so a record is noticed the moment it arrives. */
+  private wakeReaders(): void {
+    const waiting = this.readers
+    this.readers = []
+    for (const resolve of waiting) resolve()
+  }
+
+  /**
+   * Wait for stdout to move, or for the poll interval to pass.
+   *
+   * The reader used to sleep a fixed 20 ms between checks, which put up to that much latency on every
+   * call on top of whatever the shell needed. Waking on arrival removes it; the timer stays as the
+   * safety net for the cases where nothing more will arrive (a timeout, a probe verdict, a death).
+   * @param ms - the longest to wait without any output.
+   */
+  private waitForOutput(ms: number): Promise<void> {
+    return new Promise<void>(resolve => {
+      const done = (): void => { clearTimeout(timer); resolve() }
+      const timer = setTimeout(() => {
+        this.readers = this.readers.filter(reader => reader !== done)
+        resolve()
+      }, ms)
+      this.readers.push(done)
+    })
+  }
+
+  /**
+   * Wait for the frame's stderr-end marker before a settled call reports its answer.
+   *
+   * stdout carries the completion record and stderr carries half the answer, on two pipes with no order
+   * between them, so "the command is over" and "its stderr has arrived" are not the same instant. The
+   * frame writes one NUL byte on stderr after everything else, so this waits for an event, not for a
+   * guess about how long a pipe takes; without it a cell measured `(no output)` where a command wrote
+   * `oops` to fd 2, with those bytes landing in the *next* call's window.
+   */
+  private async settleStderr(): Promise<void> {
+    const until = Date.now() + 100
+    while (!this.errEnded && Date.now() < until) await this.waitForOutput(2)
+  }
+
+  /**
+   * Consume the state record of the frame that just settled, when it has arrived.
+   *
+   * Called right after settling and again before the next frame goes out, so the journal is up to date
+   * without any call paying for it.
+   */
+  private drainState(): void {
+    const nonce = this.pendingState
+    if (nonce === undefined || this.out.length === 0) return
+    const state = readStateRecord(this.out, nonce, 0)
+    if (state === undefined) return
+    this.journal = this.journalWithFunctions(state.state)
+    this.functionCount = functionCountOf(state.state) ?? this.functionCount
+    this.shellPid = shellPidOf(state.state) ?? this.shellPid
+    this.out = this.out.subarray(state.nextOffset)
+    this.pendingState = undefined
+  }
+
+  /**
+   * Wait for a previous frame's state record before the next one is written.
+   *
+   * Bounded: a state record that never arrives means the shell died between the two, which the next
+   * frame's own timeout reports. The journal simply keeps what it had.
+   */
+  private async settleTail(): Promise<void> {
+    if (this.pendingState === undefined) return
+    const until = Date.now() + 1_000
+    while (this.pendingState !== undefined && Date.now() < until) {
+      await this.waitForOutput(20)
+      this.drainState()
     }
   }
 
@@ -438,10 +562,15 @@ export class WslBashSession {
    * Rate-limited by {@link PROBE_EVERY_MS} and only started after {@link FIRST_PROBE_MS} of silence,
    * because the look is a second `wsl.exe` and was measured to cost 200–280 ms. A frame that has
    * written bytes at all is not waited on: the watchdog only ever fires on a call that is silent.
+   *
+   * The look itself is **not awaited**: it is fired here and its verdict is applied by
+   * {@link applyLook} whenever it lands, so the reader keeps consuming output while a probe runs. That
+   * is worth about 0.25 s on a silent command (measured: `sleep 3` used to answer 0.27 s late).
    * @param watch - this frame's watchdog state.
    */
-  private async watchFrame(watch: FrameWatch): Promise<void> {
-    if (this.shellPid === 0 || this.spec.reaperArgv.length === 0 || watch.stop !== undefined) return
+  private watchFrame(watch: FrameWatch): void {
+    if (this.shellPid === 0 || this.spec.reaperArgv.length === 0) return
+    if (watch.stop !== undefined || watch.settled === true || watch.probing === true) return
     const elapsed = Date.now() - watch.startedAt
     const bytes = this.out.length + this.err.length
     if (bytes !== watch.lastBytes) {
@@ -456,8 +585,22 @@ export class WslBashSession {
     const cadence = watch.looks < LOOKS_BEFORE_SLOWING ? PROBE_EVERY_MS : PROBE_SLOW_MS
     if (elapsed - watch.lastLookAt < cadence) return
     watch.lastLookAt = elapsed
-    const sample = await this.probeStarve(watch, elapsed)
-    if (sample === undefined) return
+    watch.probing = true
+    void this.probeStarve(watch, elapsed)
+      .then(sample => this.applyLook(watch, sample, elapsed))
+      .catch(() => undefined)
+      .finally(() => { watch.probing = false })
+  }
+
+  /**
+   * Apply one look's verdict: classify it, let the root plane settle a privileged wait, and stop the
+   * command when the reading and its window agree.
+   * @param watch - this frame's watchdog state.
+   * @param sample - the rows the pass read, or undefined when the pass did not answer.
+   * @param elapsed - how long the call had been in flight when the look was taken.
+   */
+  private async applyLook(watch: FrameWatch, sample: StarveSample | undefined, elapsed: number): Promise<void> {
+    if (sample === undefined || watch.settled === true || watch.stop !== undefined) return
     let kind = starveOf(watch.previous, sample, watch.ownTerminal)
     watch.previous = sample
     if (kind === undefined) return
@@ -609,6 +752,10 @@ export class WslBashSession {
    * @returns what the replay could not restore, and how many detached processes were reaped.
    */
   private async rebuild(): Promise<{ skipped?: string[] | undefined, reaped?: number | undefined }> {
+    // The last frame's state record may still be on the wire; this is the moment it is worth waiting
+    // for, because the replay below is built out of it. A rebuild already costs a shell boot, so a few
+    // tens of milliseconds here cannot be seen — and no ordinary call pays it any more.
+    await this.settleTail()
     const restore = restoreChunks(this.journal)
     await this.kill()
     this.closeSpills()
@@ -619,6 +766,7 @@ export class WslBashSession {
     for (const [index, chunk] of restore.chunks.entries()) {
       await this.execute(chunk, this.spec.bootTimeoutMs, undefined, index === restore.chunks.length - 1)
     }
+    await this.settleTail()
     return {
       skipped: restore.skipped.length > 0 ? restore.skipped : undefined,
       reaped: reaped > 0 ? reaped : undefined,

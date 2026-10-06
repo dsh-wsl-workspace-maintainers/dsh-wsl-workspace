@@ -134,6 +134,15 @@ export function encodeFrame(command: string, functionCount?: number): CommandFra
   const line = `eval "$(printf %s '${payload}' | base64 -d)" </dev/null; `
     + `__dsh_status=$?; `
     + `printf '\\0${RECORD_TAG}\\0%s\\0%s\\0' '${nonce}' "$__dsh_status"; `
+    // One NUL byte on stderr, written after the command and after the completion record: stdout carries
+    // the record while stderr carries half the answer, on two pipes with no order between them, so a
+    // reader that settles on stdout can beat the command's own stderr and report a body with the stderr
+    // still in flight (measured: `echo oops >&2` came back `(no output)` and those bytes landed in the
+    // *next* call's window). This byte is ordered after that stderr by the writing process itself, which
+    // makes "the command's stderr has all been written" an event instead of a guess about pipe timing.
+    // It goes before the state report because the state report costs ~25 ms and would delay it for no
+    // reason. (Written first as `… # TAG; printf …`, where bash treated it as part of the comment.)
+    + `printf '\\0' >&2; `
     + `printf '\\0${STATE_TAG}\\0%s\\0%s\\0' '${nonce}' `
     // The trailing comment is not decoration. The shell's line editor writes the echo of a frame as
     // its **last ~78 bytes** (measured: `\r` then 79 bytes starting mid-nonce, terminated by a
@@ -202,6 +211,61 @@ function readRecord(buffer: Buffer, tag: string, nonce: string, from: number): {
   return { value: buffer.subarray(at + head.length, end).toString('utf8'), start: at, next: end + 1 }
 }
 
+/** The exit code a frame reported, and where its own output ended. */
+export interface CompletionResult {
+  /** The exit code the shell reported. */
+  status: number
+  /** Byte offset where the completion record began, i.e. the end of the command's own output. */
+  recordStart: number
+  /** Byte offset just past the completion record, i.e. where the state record begins. */
+  nextOffset: number
+}
+
+/**
+ * Read only the completion record: exit code and where the command's own output ended.
+ *
+ * The state record is written by the same frame but *after* this one (the shell computes it second), and
+ * it costs 5 564 bytes and ~25 ms of the distribution's own work on this machine — measured. Nothing in
+ * a call's answer needs it: it exists so a *future* rebuild can replay the shell's state. Splitting the
+ * two lets a call settle the moment its exit code is on the wire and leaves the state to be collected
+ * between calls.
+ * @param buffer - everything the session has written to stdout since it started.
+ * @param nonce - the nonce of the frame in flight.
+ * @param fromOffset - where the previous command's window ended.
+ * @returns the status and the offsets, or undefined while the completion record is incomplete.
+ */
+export function readCompletion(buffer: Buffer, nonce: string, fromOffset = 0): CompletionResult | undefined {
+  const completion = readRecord(buffer, RECORD_TAG, nonce, fromOffset)
+  if (completion === undefined) return undefined
+  if (!/^\d+$/.test(completion.value)) return undefined
+  return { status: Number(completion.value), recordStart: completion.start, nextOffset: completion.next }
+}
+
+/** The shell's state as one frame reported it, and where the next command's output begins. */
+export interface StateResult {
+  /** The decoded `#dsh-section` report. */
+  state: string
+  /** Byte offset just past the state record. */
+  nextOffset: number
+}
+
+/**
+ * Read the state record that follows a completion record.
+ * @param buffer - everything the session has written to stdout since it started.
+ * @param nonce - the nonce of the frame that wrote it.
+ * @param fromOffset - the completion record's `nextOffset`.
+ * @returns the decoded state and where to resume, or undefined while it is incomplete.
+ */
+export function readStateRecord(buffer: Buffer, nonce: string, fromOffset: number): StateResult | undefined {
+  const state = readRecord(buffer, STATE_TAG, nonce, fromOffset)
+  if (state === undefined) return undefined
+  try {
+    return { state: Buffer.from(state.value, 'base64').toString('utf8'), nextOffset: state.next }
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * Read the completion and state records a frame writes, in that order.
  * @param buffer - everything the session has written to stdout since it started.
@@ -210,18 +274,11 @@ function readRecord(buffer: Buffer, tag: string, nonce: string, from: number): {
  * @returns the exit code, the shell's state, and where to resume; undefined while still running.
  */
 export function readFrame(buffer: Buffer, nonce: string, fromOffset = 0): FrameResult | undefined {
-  const completion = readRecord(buffer, RECORD_TAG, nonce, fromOffset)
+  const completion = readCompletion(buffer, nonce, fromOffset)
   if (completion === undefined) return undefined
-  if (!/^\d+$/.test(completion.value)) return undefined
-  const state = readRecord(buffer, STATE_TAG, nonce, completion.next)
+  const state = readStateRecord(buffer, nonce, completion.nextOffset)
   if (state === undefined) return undefined
-  let decoded = ''
-  try {
-    decoded = Buffer.from(state.value, 'base64').toString('utf8')
-  } catch {
-    return undefined
-  }
-  return { status: Number(completion.value), state: decoded, recordStart: completion.start, nextOffset: state.next }
+  return { status: completion.status, state: state.state, recordStart: completion.recordStart, nextOffset: state.nextOffset }
 }
 
 /**

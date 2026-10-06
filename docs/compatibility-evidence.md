@@ -2882,3 +2882,60 @@ nothing else; and one failed attempt is remembered for the session, so a distrib
 root account pays for that discovery once and afterwards falls back to the unconfirmable reading and its
 1.5 s window. The note says which of the two happened — a certainty this tool cannot support is exactly
 what the note channel exists to prevent.
+
+### Round six: the answer stops waiting for the state record (2026-10-06)
+
+Per-call cost against the two baselines, same command, five samples each, warm on all sides
+(`D:Tempissue51-s0speed-report.txt`, `terminal-report.txt`):
+
+| shape | median | what the number is made of |
+| --- | --- | --- |
+| one `wsl.exe … bash -c` per command | **222-236 ms** | the Windows process plus the WSL session, not the command |
+| this tier before this round | **33 ms** | 20 ms poll interval + a 5 564-byte / ~25 ms state record awaited in every call |
+| this tier now | **8 ms** | one frame round trip, woken on arrival, with the state record collected between calls |
+| a person typing into an already-open terminal | **16 ms** | bash fork+exec plus the pty round trip |
+
+Three changes, each measured before it was written:
+
+1. **The state record leaves the critical path.** Every frame ends with an exit-code record and then a
+   `#dsh-section` report of `export -p`, `PWD`, the pid, `alias -p`, `set +o`, `shopt -p` and the
+   function count — **5 564 bytes and 25 ms of the shell's own work**, measured by running the same
+   `{ … } | base64 -w0` under `date +%s%N`. Nothing a call answers needs it: it exists so a *future*
+   rebuild can replay the shell. `readCompletion` now settles a call on the exit-code record alone and
+   the state is drained between calls — and, when it matters, in `rebuild()` before the replay is built.
+2. **The reader wakes on output instead of on a clock.** A fixed 20 ms sleep sat between every look at
+   the buffer; `waitForOutput` resolves the moment stdout or stderr moves, with the timer only as the
+   safety net for a deadline, a probe verdict or a death.
+3. **The watchdog no longer blocks the reader.** A probe costs 200-280 ms, and awaiting it inside the
+   read loop delayed every silent command by that much (measured: `sleep 3` answered 0.27 s late). It is
+   fired and its verdict applied when it lands, guarded by `watch.settled`.
+
+**Three defects surfaced, all by the gate, all of them invisible to the offline suite.** Each is worth
+recording because each looked like something else:
+
+- **stderr arrived one call late.** stdout carries the exit-code record and stderr carries half the
+  answer, on two pipes with no ordering between them; settling on the record beat the command's own
+  `echo oops >&2`, so the body read `(no output)` and the bytes landed in the *next* call's window. A
+  timer-based grace was written first and failed too (it cannot tell "no stderr yet" from "stderr long
+  over"). The fix is an event: the frame writes one NUL byte on stderr after the command and after the
+  record, so "everything the command wrote on fd 2 has been written" is ordered by the writing process
+  itself. The byte is dropped before the model could see it.
+- **The first version of the marker did not run at all**: it was written after the frame's trailing
+  `# __DSH_WSL_BASH_REC` comment, where bash treats it as comment text — found by tracing the frame and
+  reading `stderr-end seen=false` on every call (the 100 ms budget was being spent every time).
+- **The pid and the journal arrived one call late.** Nothing was wrong with the drain itself, but the
+  watchdog needs the shell pid from the state record to look at anything, and it now lived in the
+  *next* call's future. Measured through a raw session (`{shellPid:0, pending:true, out:0}` after the
+  first call) and fixed where a wait is invisible: `start()` settles the bootstrap's tail before any
+  user call, and `rebuild()` settles the replay's tail before the new shell takes work.
+
+A fourth hazard was written and never shipped: the first cut consumed the previous window only when the
+state record arrived, and a 200 000-line spill trims the buffer from the front — after a trim, the
+record's offsets no longer meant anything, the drain never landed, and the next call's stdout window
+began with the previous command's output (`stdout="25740
+125741
+…"` in a repro). Consuming the
+window at settle and keeping the pending record at the head of the buffer removes the whole class: past
+that point, offsets are only ever taken against a buffer that starts where the last consumption ended.
+
+The gate carries all of it: 55 cells on two planes as two users, after this round as before it.
