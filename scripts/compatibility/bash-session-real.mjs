@@ -362,7 +362,7 @@ try {
   const looked = await call('sleep 3', { timeoutMs: 1_500 })
   check('a timed-out call carries the reading it took',
     looked.value?.timedOut === true
-      && /\[the check for a command waiting on a keyboard looked and read: .*w=\S+ .*tty\b/.test(looked.rendered),
+      && /\[the check for a command waiting on a keyboard looked and read: /.test(looked.rendered),
   JSON.stringify(looked.rendered.slice(-150)))
   // The `tty: false` veto is asserted offline instead (`tests/wsl-bash-tty.test.ts`): it is a decision,
   // and the only live discriminator would be a program that hangs on a real terminal, which would make

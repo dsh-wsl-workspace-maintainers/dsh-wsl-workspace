@@ -668,7 +668,14 @@ export class WslBashSession {
     // Looked, got answers, and none of them confirmed a wait: say what was seen, because "timed out"
     // alone reads as though the wait had been examined and found ordinary.
     const saw = describeRows(watch.previous)
-    return watch.looks > 0 && saw !== '' ? { starveSaw: saw } : {}
+    if (saw !== '') return { starveSaw: saw }
+    // And when there is nothing to show, that is itself the finding: on the WSL1 frame the walk
+    // answered and reported no children at all, which no earlier note distinguished from a look that
+    // never ran. The pid goes in because the walk cannot start without it.
+    if (watch.looks > 0) {
+      return { starveSaw: `the walk answered ${watch.looks} time(s) and reported no child processes (shell pid ${this.shellPid ?? 'unknown'})` }
+    }
+    return { starveSaw: `no look ran before the deadline (shell pid ${this.shellPid ?? 'unknown'})` }
   }
 
   /**
