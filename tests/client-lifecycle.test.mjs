@@ -128,6 +128,13 @@ function fixture({ legacy = false, late = false, startService = legacy ? 'legacy
     },
     console,
     document: { getElementById: () => ({}), querySelector: () => ({}) },
+    // Every route call is bounded by an AbortController, so the sandbox needs
+    // the browser globals that budget is built from. The timers are the host
+    // ones: a budget that never fires is not what is under test here, and a
+    // fake clock would have to be wound by hand on every case.
+    AbortController,
+    setTimeout,
+    clearTimeout,
     // The plugin's host API calls: the workspace record read and the variant
     // outcome have shapes under test, and every other route answers an empty
     // list. `status` is present because the client reads it: a non-2xx body
@@ -368,17 +375,14 @@ test('the dialog names the failed variant and the host\'s own reason', async () 
   // the host's reason text must appear verbatim. "No healthy wsl preset" names
   // neither, and a reworded reason is not the reason.
   //
-  // The roster is the shape this failure produces on its own: the only mode
-  // variant this deployment has is the one the generator could not publish, and
-  // the roster already carries it as `broken`. That is why the pre-#52 client
-  // answered the flat "no healthy wsl preset" sentence here — and why the fix
-  // has to read the host's outcome for the WHY.
+  // The roster is the shape this failure actually produces: a variant that
+  // could not be GENERATED never reaches the roster, so the roster carries no
+  // `wsl-*` entry at all and the host's outcome is the only evidence there is.
+  // That is why the pre-#52 client answered the flat "no healthy wsl preset"
+  // sentence here — the reason existed, on the host's stdout, unreadable.
   const f = fixture({
     legacy: false,
-    roster: [
-      { id: 'standard', isDefault: true },
-      { id: 'wsl-code', broken: 'preset file is not readable' },
-    ],
+    roster: [{ id: 'standard', isDefault: true }],
     variantStatus: partialOutcome(),
   });
   await flush();
@@ -443,7 +447,13 @@ test('an outcome older than one already read is not shown', async () => {
   // `generation` increments per host effect apply and per dispose, so a SMALLER
   // value is a read that lost its race with a re-apply. Reporting it would
   // describe a failure from a boot that is already over.
-  const f = fixture({ legacy: false, variantStatus: partialOutcome(9) });
+  // The roster holds no `wsl-*` entry, so the outcome is the only evidence —
+  // which is what makes the generation counter the deciding fact here.
+  const f = fixture({
+    legacy: false,
+    roster: [{ id: 'standard', isDefault: true }],
+    variantStatus: partialOutcome(9),
+  });
   await flush();
   const first = await f.dialog.checkPreset();
   assert.ok(first.includes('wsl-code'), `the fresh outcome is reported, got: ${first}`);

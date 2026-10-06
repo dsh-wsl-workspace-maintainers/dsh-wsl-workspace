@@ -23,7 +23,7 @@
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
-import { check as checkApi, describe as describeApi, listDir as listDirApi, listDistros as listDistrosApi, listWorkspaceRecords as listWorkspaceRecordsApi, registerWindows as registerWindowsApi, setWorkspaceUser as setWorkspaceUserApi, type WslWorkspaceRecord } from './api.ts'
+import { check as checkApi, describe as describeApi, listDir as listDirApi, listDistros as listDistrosApi, listWorkspaceRecords as listWorkspaceRecordsApi, registerWindows as registerWindowsApi, setWorkspaceUser as setWorkspaceUserApi, variantStatus as variantStatusApi, type WslVariantOutcome, type WslWorkspaceRecord } from './api.ts'
 import { AddWslWorkspace, type AddWslWorkspaceInjected } from './AddWslWorkspace.tsx'
 import { ensureStyles } from './styles.ts'
 import { zh, en } from './locales.ts'
@@ -215,9 +215,65 @@ export function apply(ctx: ClientContext): void {
   // only be opened through that distribution's UNC share (issue #49).
   let driveDistros = new Map<string, string>()
 
+  // Why each `wsl-*` variant the roster carries is broken, kept beside the
+  // healthy ids instead of being filtered away with them: the roster's own
+  // `broken` string is evidence, and discarding it is what left issue #52 with
+  // one flat sentence to show.
+  let brokenVariants = new Map<string, string>()
+
+  // The highest `generation` this page has already read from the host. The
+  // counter rises once per host effect apply and once per dispose, so a SMALLER
+  // value is a read that lost its race with a re-apply and describes a boot
+  // that is already over.
+  let seenGeneration: number | undefined
+
+  /**
+   * Compose the message for a generation that published only some of its
+   * variants, out of the host's own failure records.
+   *
+   * The detail lines are assembled HERE rather than through `t()`: the bound
+   * translate function comes from `@deepseek-ai/dsh-client-locale`, whose
+   * interpolation support this repository cannot verify, so `t()` supplies
+   * only a prefix and the client supplies the evidence. A rewording of the
+   * host's `reason` would also defeat the purpose — the reason is the thing
+   * the user cannot see anywhere else.
+   * @param failed - the host's per-variant failures, already capped host-side.
+   * @param truncated - how many failures the host's own cap dropped.
+   * @returns one message naming every failed variant and its cause.
+   */
+  const brokenMessage = (failed: { id: string; reason: string }[], truncated: number): string => {
+    const lines = [t('error.presetBroken')]
+    for (const failure of failed) {
+      lines.push(`${t('error.presetBrokenOne')}${failure.id}：${failure.reason}`)
+    }
+    // The count is appended here rather than interpolated: `t()` cannot be
+    // trusted with parameters, and a line that silently under-reports how many
+    // variants are broken is the failure mode `truncated` exists to prevent.
+    if (truncated > 0) lines.push(`${t('error.presetBrokenMore')}${truncated}`)
+    return lines.join('\n')
+  }
+
   const injected = (): AddWslWorkspaceInjected => ({
     t,
     checkPreset: async (): Promise<string | undefined> => {
+      // The host's own account of this boot's generation, read FIRST so the
+      // generation counter advances even when the roster settles the question.
+      // A host without the case rejects — that IS the "old host" signal, and
+      // the roster path below then carries the whole decision as it always did.
+      let outcome: WslVariantOutcome | undefined
+      try {
+        outcome = await variantStatusApi()
+      } catch {
+        outcome = undefined
+      }
+      if (outcome !== undefined) {
+        if (seenGeneration !== undefined && outcome.generation < seenGeneration) {
+          // A read from a boot that has already been replaced: say nothing
+          // rather than describe a failure that no longer applies.
+          return undefined
+        }
+        seenGeneration = outcome.generation
+      }
       let roster
       try {
         roster = await listAgentPresets()
@@ -225,10 +281,35 @@ export function apply(ctx: ClientContext): void {
         return error instanceof Error ? error.message : String(error)
       }
       if (!roster.ok) return roster.error
-      const healthy = roster.presets.find((entry: { id: string; broken?: string }) =>
-        entry.id.startsWith('wsl-') && entry.broken === undefined)
-      if (healthy === undefined) return t('error.presetMissing')
-      return undefined
+      const variants = roster.presets.filter((entry: { id: string }) => entry.id.startsWith('wsl-'))
+      // One healthy variant settles it: the plugin is deployed and working,
+      // and a broken sibling is not something to interrupt the dialog for.
+      const healthy = variants.find((entry: { id: string; broken?: string }) => entry.broken === undefined)
+      if (healthy !== undefined) return undefined
+      if (variants.length === 0 && (outcome === undefined || outcome.failed.length === 0)) {
+        // Nothing published yet, and the host has attributed no failure to
+        // anyone. The open flow calls this while the profile is still booting,
+        // so this is the normal state of a starting host — reporting it as a
+        // missing plugin sends the user to install software they already have.
+        return t('error.presetPending')
+      }
+      // A failure the roster itself reports outranks the host's generation
+      // record: it is the state of what is published right now.
+      const rosterFailures = brokenVariants.size > 0
+        ? [...brokenVariants].map(([id, reason]) => ({ id, reason }))
+        : variants
+          .filter((entry: { broken?: string }) => entry.broken !== undefined)
+          .map((entry: { id: string; broken?: string }) => ({ id: entry.id, reason: entry.broken as string }))
+      if (rosterFailures.length > 0) return brokenMessage(rosterFailures, 0)
+      if (outcome !== undefined && (outcome.state === 'partial' || outcome.state === 'failed')) {
+        // A boot-level failure has no per-variant attribution, so its own cause
+        // is the only thing there is to show.
+        const failed = outcome.failed.length > 0
+          ? outcome.failed
+          : outcome.error !== undefined ? [{ id: 'wsl-*', reason: outcome.error }] : []
+        if (failed.length > 0) return brokenMessage(failed, outcome.truncated)
+      }
+      return t('error.presetMissing')
     },
     listDistros: () => listDistrosApi(),
     // Advisory data for the help panel: a host that cannot answer reports an
@@ -303,6 +384,14 @@ export function apply(ctx: ClientContext): void {
           .filter((entry: { id: string; broken?: string }) =>
             entry.broken === undefined && entry.id.startsWith('wsl-'))
           .map((entry: { id: string }) => entry.id))
+        // The broken ones are kept beside the healthy ones rather than dropped
+        // with them: binding has no use for a broken id, but the dialog does —
+        // this string is the only roster-side record of why a variant is
+        // unusable, and discarding it is what left issue #52 with one sentence.
+        brokenVariants = new Map(result.presets
+          .filter((entry: { id: string; broken?: string }) =>
+            entry.broken !== undefined && entry.id.startsWith('wsl-'))
+          .map((entry: { id: string; broken?: string }) => [entry.id, entry.broken as string]))
         defaultPreset = result.presets.find(
           (entry: { id: string; isDefault?: boolean }) => entry.isDefault === true,
         )?.id
