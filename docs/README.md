@@ -9,7 +9,7 @@ replaced it.
 | Path | Language | What it is | Status |
 |---|---|---|---|
 | [design.zh.md](./design.zh.md) | zh | Design decisions and round-by-round history (M1 → fifth round) | Background; two claims it makes were reversed later — see its header |
-| [CHECK-CATALOG.md](./CHECK-CATALOG.md) | en | The single inventory of every test, gate and manual pass: command, prerequisites, CI home, and what still needs a human | Active — added by #41, and it lists this index's own gate in bucket A |
+| [CHECK-CATALOG.md](./CHECK-CATALOG.md) | en | The single inventory of every test, gate and manual pass: command, prerequisites, CI home, and what still needs a human. §E2 additionally names the two debts this repository keeps **red on purpose** and the ledger entries that own them, so a red met in CI output can be read as a decision rather than a surprise | Active — added by #41, and it lists this index's own gate in bucket A |
 | [compatibility-evidence.md](./compatibility-evidence.md) | en | Per-release verification evidence, appended run by run | Active |
 | [tty-triage.md](./tty-triage.md) | en | Triage sheet for `bash` calls: which symptom belongs to the pipe, to the pseudo-terminal, or to the host's PTY tier, with the one re-run that settles each | Active — every line it names is asserted by a cell in `scripts/compatibility/bash-session-real.mjs` |
 | [bash-parity.md](./bash-parity.md) | en | The ledger of every difference between this plugin's session `bash` and the host's own `bash` tool, each row naming whose behaviour it is and what the user sees | Active — read by `tests/wsl-bash-parity.test.ts` and `scripts/compatibility/bash-parity-real.mjs`, which fail when a difference is undeclared or a declared one disappears |

@@ -344,6 +344,76 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   channel is shaped around), the same on a real pseudo-terminal (`read x; echo GOT=$x`), and the
   refusal's own sentence.
 
+- **A variant that failed to generate now says so, and says why (issue #52).** The generation
+  count line in the boot log was the whole of the user-visible story, and **DSH Desktop does not
+  persist stdout** — so a variant that failed reached the person as one flat sentence with no
+  name and no cause, because the cause only ever went to the host's `console.error`. Generation is
+  now a **module-level bounded fact** the host serves: a `variantStatus` case answers
+  `{ state, produced, sources, failed[], truncated, generation, at }` (`state` is
+  `pending | ok | partial | failed`, `at` is epoch **milliseconds** like every other time field in
+  this repository), carrying at most **16** failure records, each `reason` cut at **300 code
+  points** so a truncated multi-byte character cannot reach the dialog, and `truncated` naming
+  what the cap dropped rather than being a boolean. A **boot-level** failure carries its cause in
+  `error` with an empty `failed[]`; a **per-variant** failure carries it in `failed[].reason`;
+  the two never appear together. Four write paths, all of them named in
+  [CHECK-CATALOG.md](docs/CHECK-CATALOG.md): after the source loop, on a rejected
+  `agentPresets.list()` (recorded and **rethrown unchanged**, so a read failure still reads as a
+  read failure), in the effect's last-resort catch **only when the outcome's generation is not this
+  apply's**, and in the disposer — which returns to `pending` with an **incremented** generation
+  rather than to nothing, so a stale outcome can never be read as the current one. The failure
+  container became a `Map<string, VariantFailure>` rather than a `Set`, which keeps `.size` and
+  `.has` identical so the boot-log literals are untouched byte for byte.
+- **The dialog reads that outcome in four layers, and "plugin not installed" is now the last
+  answer rather than the first.** A reason in a sentence that names nothing is worthless, so the
+  order is: (1) a **stale generation says nothing** — the client's remembered generation outranks
+  a fresh-looking payload; (2) **one healthy `wsl-*` variant settles it** — a partial generation is
+  a working plugin, not a broken one; (3) **an empty roster is a generation still running**, not a
+  missing plugin; (4) **a failure the roster itself reports outranks the host's generation record**,
+  because the roster is closer to the truth. Only after all four does the dialog say the preset is
+  missing. Two structural decisions: the detail lines are assembled **client-side** rather than
+  through `t()`, because the wording would otherwise depend on a locale package this repository
+  cannot verify; and a reason is shown **as the host wrote it** rather than reworded, which is the
+  entire point of carrying it. Eight new locale keys, **symmetric in zh and en**.
+  A host without the `variantStatus` case answers `unknown method`, and the client then reaches
+  exactly the verdicts it reached before the outcome existed — the new case is an improvement, never
+  a new requirement.
+
+- **Six gates were asking a question that could be answered wrongly (issue #44).** (1) *`plane()`
+  had a default.* `lib/` is committed and ships, so a src-only green gate was evidence about the
+  sources while the claim on the table was about the bytes a user gets; the default is **deleted**,
+  not merely discouraged, and it comes back only when `wsl-skills` has a `lib/` entry **and** the
+  lib plane has been green twice in a row on a runner. (2) *`npm run test:wsl` ran three of the
+  seven drivers.* It now runs all seven through `scripts/run-wsl-real.mjs`, which treats each
+  driver as a **cell** rather than a step: a driver that throws before its first assertion (the
+  lib-plane `skills-real` case is the standing example) can no longer abort the run and leave every
+  driver after it unreported — a shape that reads exactly like a short but green set. (3) *Two
+  `{ok:true}` false greens in the PTY tier* now carry an explicit `probed` flag instead of
+  claiming a verification that did not happen, and the permanent-session tier keeps its
+  deliberate "unreadable ≠ broken" reading. (4) *The client checks `response.ok` and has a
+  timeout*, so a dead host is a message rather than a hang. (5) *The refresh timer refreshes the
+  roster and the workspace list together*, so a newly attached drive workspace can bind without a
+  restart. (6) *`scripts/repro-e2e.mjs` is referenced by something* — `npm run test:repro` exists
+  and `ci.yml`'s own `repro-e2e` job runs it — and the account name it needs is **required with no
+  default**, because the old default was a maintainer's own account name, which on a runner
+  addressed a tree that does not exist and failed for a reason that had nothing to do with skill
+  discovery. New in this release: `scripts/compatibility/plane-matrix.mjs`, a
+  **2 planes × 2 users × 6 drivers** grid where `not run` is a first-class verdict beside pass/fail,
+  each cell gets its own fixture root, and `--ci-as-root-only` prints — unconditionally, as the
+  report's last line — that the second user column did not run and 2 of the 4 plane/user cells are
+  therefore unmeasured.
+- **Two debts this repository keeps red on purpose are now written down with their owners.** The
+  deliberate-red ledger (`tests/deliberate-reds.mjs`) is the machine-readable record; the prose
+  around it is in [CHECK-CATALOG.md](docs/CHECK-CATALOG.md) §E2, because a reader who meets one of
+  these reds in CI output needs to know it is a decision and which one. (1) `wsl-search.ts`
+  decodes a UTF-16LE stream as UTF-8 and then cuts it by code unit, which is **four** declared reds
+  (`detail-nul-laced`, `detail-budget`, `invalid-pattern-never-fires`,
+  `reason-dropped-with-stream`) plus a fifth (`nul-sniff-false-positive`) that constrains the same
+  repair from the other end. (2) `src/index.ts` folds a read it never performed into
+  `{exists:false}` for *any* throw, which is `fold-unreadable-path`. **Repairing either one
+  requires editing the ledger in the same commit**: `run-seams` fails with `LEDGER MISSING` the
+  moment a declared red goes green without the declaration moving with it, because a ledger that
+  drifts from the product is a proof nobody maintains. The ledger's ten entries are unchanged.
+
 ## 0.7.5 — 2026-09-30
 
 - **The persistent shell works on DSH Desktop again (issue #40).** The Desktop

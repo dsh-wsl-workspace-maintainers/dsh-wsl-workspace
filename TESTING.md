@@ -118,13 +118,38 @@ plane it is measuring:
 
 | Caller | How it names the plane |
 | --- | --- |
-| `npm run test:wsl` | `scripts/run-wsl-real.mjs --plane src` |
+| `npm run test:wsl` | `scripts/run-wsl-real.mjs --plane src --drivers fs-real,skills-real,search-real,relay-real,tool-bash-real,bash-session-real,bash-parity-real` — all seven named explicitly, after the four offline steps (`smoke.ts`, `exec-shape.mjs`, `shell-extra.mjs`, `make-smoke-built.mjs` + `smoke-built.ts`) that share the script name |
 | `scripts/compatibility/Run-Checks.ps1` (maintainer sweep) | names it itself: honours `$env:DSH_WSL_TEST_PLANE` when it is `src`/`lib`, picks `src` and prints a line saying so when unset, and **exits non-zero** on any other value rather than downgrading — so the sweep is runnable as-is and a typo cannot be swept silently |
 | `ci.yml#wsl-gate` | `run_one` lines carry `DSH_WSL_TEST_PLANE=src`, `run_lib` lines `=lib` |
 
 A `--plane` flag counts as naming rather than as a fallback default: it is written where a reader can
 see it, which is what lets `npm run test:wsl` behave identically in PowerShell, cmd and Git Bash
 without each needing a POSIX env prefix.
+
+### The two runners are not the same runner (`test:wsl` ≠ the matrix)
+
+Both launch the same drivers with a named plane, and it is worth being exact about which of them
+does what, because the difference is invisible until a UNC path is mangled:
+
+| | `scripts/run-wsl-real.mjs` (`npm run test:wsl`) | `scripts/compatibility/plane-matrix.mjs` |
+|---|---|---|
+| Dimensions | one plane, one machine, one user | 2 planes × 2 users |
+| Drivers | **all seven** (`relay-real` included) | **six** — `relay-real` is not in its `DRIVERS` |
+| Child env | `{...process.env, DSH_WSL_TEST_PLANE: plane}` and **nothing else** | adds `WSL_COMPAT_DISTRO`, `WSL_COMPAT_USER`, a per-cell `WSL_COMPAT_ROOT`, and `MSYS_NO_PATHCONV: '1'` |
+| Fixture roots | whatever the caller's `WSL_COMPAT_ROOT` says — **the same root for every driver** | `/tmp/dsh-matrix-<plane>-<user>-<driver>`, one per cell |
+
+So `MSYS_NO_PATHCONV=1` and the per-driver root are properties of the **matrix**, not of
+`test:wsl`. Under Git Bash, `npm run test:wsl` needs the flag exported by the caller
+(`MSYS_NO_PATHCONV=1 npm run test:wsl`); PowerShell and cmd need nothing, because the mangling
+is done by the MSYS runtime's argument rewriting and neither of them goes through it. Seven
+drivers sharing one root is also why `test:wsl` is a **sequential** runner rather than a
+parallel one — `ci.yml:186-188` established that these drivers create their tree instead of
+cleaning it, so two of them on one root is a race rather than a rerun.
+
+`relay-real`'s absence from the matrix is a scope decision, not an oversight to be corrected
+here: the relay needs a UNC directory that exists **inside a running instance** (see its row in
+[CHECK-CATALOG.md](docs/CHECK-CATALOG.md)), which a matrix cell that varies `$HOME` and fixture
+root per cell does not establish. It is run by `test:wsl` and by the compat sweep instead.
 
 ### The 2×2 plane/user matrix
 
