@@ -4,9 +4,21 @@
 // Before this existed every `scripts/compatibility/*-real.mjs` driver imported `../../src/*.ts`
 // under `--experimental-strip-types`, so a green `wsl-gate` meant "the source works under WSL"
 // and said nothing about `lib/` — the bytes that ship. The switch is here to make that
-// difference explicit and checkable rather than to flip it silently: the default stays `src`
-// tonight, `lib` runs as an additional pass, and only a runner frame that is green on both
-// planes twice can justify changing the default (docs/CHECK-CATALOG.md, issue #44 §1).
+// difference explicit and checkable rather than to flip it silently: there is **no default**,
+// because a gate that measures `src/` while nobody said so is the exact false green this
+// module exists to remove. `lib/` is committed and ships — a clone installs it with no build —
+// so "the gate was green" and "the bytes that ship are good" are two different claims and only
+// the second one is the one a user gets (docs/CHECK-CATALOG.md, issue #44 §1).
+//
+// Turning the requirement back off — restoring `src` as an unset-env default — takes **both** of
+// these, and neither alone is enough:
+//   (a) `wsl-skills` has a `lib/` entry. It has none today: LOCATIONS below carries
+//       `skills: { src: 'src/host/wsl-skills.ts', lib: null }`, so the lib plane throws rather
+//       than falling back. Until a driver can load the provider as published, a default would
+//       silently exempt the one module that has no shipped entry.
+//   (b) the lib plane has been green twice in a row on a runner. One green is a reading, not a
+//       trend; ci.yml#wsl-gate runs the lib pass beside the src pass, so the evidence is a
+//       frame history rather than something a code change can assert about itself.
 //
 // The rule that keeps this honest: a module that has no `lib/` entry throws. It never falls
 // back to `src/`, because a silent fallback is the exact false green being repaired. Reaching
@@ -21,9 +33,29 @@ import { join } from 'node:path'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
-/** The plane in effect. `src` remains the default until the lib plane is proven on a runner. */
+/**
+ * The plane in effect, named or nothing. Kept as the single public entry (`specifierFor`, `load`
+ * and `resolvePath` all reach the plane only through here) so the requirement cannot be bypassed
+ * by a second reader — and so `scripts/verify-plane-log.mjs`'s textual match on this file's name
+ * keeps naming something that exists.
+ */
 export function plane() {
-  const value = process.env.DSH_WSL_TEST_PLANE ?? 'src'
+  return requiredPlane()
+}
+
+/**
+ * Read `DSH_WSL_TEST_PLANE` or refuse. An unset variable is an error, not a hint: `lib/` is the
+ * committed, shipped bundle, so a plane nobody chose cannot be inferred from "the driver started".
+ */
+function requiredPlane() {
+  const value = process.env.DSH_WSL_TEST_PLANE
+  if (value === undefined || value === '') {
+    throw new Error('plane: DSH_WSL_TEST_PLANE is not set. Name the plane you are testing: '
+      + '"src" for the sources under --experimental-strip-types, or "lib" for the committed '
+      + 'bundle that ships. There is no default on purpose — a silent default measured src/ while '
+      + 'the claim on the table was about lib/, which is issue #44 §1. Set it in the environment: '
+      + 'DSH_WSL_TEST_PLANE=lib node --experimental-strip-types scripts/compatibility/fs-real.mjs')
+  }
   if (value !== 'src' && value !== 'lib') {
     throw new Error(`plane: DSH_WSL_TEST_PLANE must be "src" or "lib", got ${JSON.stringify(value)}`)
   }

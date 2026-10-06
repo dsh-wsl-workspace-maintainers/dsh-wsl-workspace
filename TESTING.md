@@ -71,6 +71,60 @@ node --experimental-strip-types tests/smoke.ts
 
 This exercises the filesystem round-trip (resolve/write/read/edit/stat/version/listDir/contains/fileUrl), bash execution inside WSL (cwd translation, WSLENV pass-through, stdin, background jobs), Linux-workdir resolution through the session distro fact, `/mnt/<drive>` dual access, and the no-config default-distro fallback.
 
+## The plane a compatibility driver tested (issue #44 §1)
+
+Every `scripts/compatibility/*-real.mjs` driver resolves its subject module through
+`scripts/compatibility/plane.mjs`, which reads `DSH_WSL_TEST_PLANE`. **There is no default.** An
+unset variable is an error, not `src`:
+
+```powershell
+DSH_WSL_TEST_PLANE=src node --experimental-strip-types scripts/compatibility/fs-real.mjs
+DSH_WSL_TEST_PLANE=lib node --experimental-strip-types scripts/compatibility/fs-real.mjs
+```
+
+The reason is that `lib/` is **committed and shipped** — a clone installs it with no build step —
+so a green gate that silently measured `src/` was evidence about the sources while the claim on the
+table was about the bytes a user gets. Naming the plane costs one environment variable and makes the
+claim true; a default costs nothing and makes it false.
+
+Seven drivers go strict at once, with no change to any of them: `bash-parity-real`,
+`bash-session-real`, `fs-real`, `relay-real`, `search-real`, `skills-real` and `tool-bash-real`. They
+all reach the plane through `load()` / `resolvePath()`, and tightening it inside `plane()` is what
+tightens them.
+
+**Two connected consequences, recorded rather than discovered later:**
+
+- **`skills-real` cannot run on the lib plane at all.** `plane.mjs`'s `LOCATIONS` carries
+  `skills: { src: 'src/host/wsl-skills.ts', lib: null }`, because `tsdown.config.ts` declares no entry
+  for the provider — the class is file-local to `lib/index.js:1122`. `specifierFor('skills')` under
+  `DSH_WSL_TEST_PLANE=lib` therefore **throws**, and it never falls back to `src/`: a silent fallback
+  is the exact false green being repaired. Adding the entry changes what users install, so it is a
+  maintainer decision, not a side effect. Any lib-plane pass over the driver set must name those
+  cells *not run* — never count them as passes.
+- **A driver that throws must not take the rest of the set with it.** Running the drivers as a bare
+  sequential loop is what makes this a real hazard: the lib-plane `skills-real` throw above would
+  abort the run and every driver after it would go unreported, which reads exactly like a short but
+  green matrix. `scripts/run-wsl-real.mjs` therefore isolates each driver's exit and keeps a `FAIL`
+  accumulator, and `scripts/compatibility/plane-matrix.mjs` carries a `not run` class beside
+  pass/fail so an unrunnable cell is reported as unrunnable.
+
+The default comes back only when **both** of these hold, and they are recorded in `plane.mjs`'s own
+header comment: (a) `wsl-skills` has a `lib/` entry, and (b) the lib plane has been green twice in a
+row on a runner. One green is a reading, not a trend, and (a) alone would silently exempt the one
+module that has no shipped entry.
+
+**Callers that must now name a plane.** Three entry points launch these drivers, and each says which
+plane it is measuring:
+
+| Caller | How it names the plane |
+| --- | --- |
+| `scripts/compatibility/Run-Checks.ps1` (maintainer sweep) | **not yet updated** — set `$env:DSH_WSL_TEST_PLANE = 'src'` before calling it, or its 19 `Run-Node` checks will each fail on the unset plane. Recorded here rather than silently patched, since the sweep is a maintainer-machine tool |
+| `ci.yml#wsl-gate` | `run_one` lines carry `DSH_WSL_TEST_PLANE=src`, `run_lib` lines `=lib` |
+
+A `--plane` flag counts as naming rather than as a fallback default: it is written where a reader can
+see it, which is what lets `npm run test:wsl` behave identically in PowerShell, cmd and Git Bash
+without each needing a POSIX env prefix.
+
 ## Post-build lib verification
 
 `scripts/verify-lib.mjs` parses every `lib/*.js` entry and fails the build when a bare call to a Node builtin export has no matching `node:*` import. This catches the class of bug where a symbol is used but never imported (for example `statSync` in 0.2.3, which made the Add-WSL-Workspace dialog report every path as non-existent at runtime):
@@ -108,6 +162,7 @@ The WSL skill provider publishes `.dsh/skills` / `.agents/skills` from nested pr
    ```
 
    The target defaults to `\\wsl.localhost\<distro>\home\<user>\repro-ws-root`; override the distro/user with `WSL_COMPAT_DISTRO` / `WSL_COMPAT_USER` and the tree location with `WSL_REPRO_ROOT` (no path editing needed).
+
    Two Git Bash traps, both hit on the maintainer machine while re-establishing this run: a bare
    `wsl.exe -d <distro> -- bash /tmp/repro-setup.sh` has its `/tmp/…` argument rewritten to the
    Windows temp directory (run it through `bash -c "…"` instead, as above), and

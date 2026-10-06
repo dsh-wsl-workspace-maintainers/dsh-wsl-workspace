@@ -173,18 +173,20 @@ jobs:
           run_one shell-extra node tests/shell-extra.mjs
           run_one make-smoke-built node scripts/make-smoke-built.mjs
           run_one smoke-built node --experimental-strip-types tests/smoke-built.ts
-          run_one fs-real node --experimental-strip-types scripts/compatibility/fs-real.mjs
-          run_one skills-real node --experimental-strip-types scripts/compatibility/skills-real.mjs
-          run_one search-real node --experimental-strip-types scripts/compatibility/search-real.mjs
-          run_one relay-real node --experimental-strip-types scripts/compatibility/relay-real.mjs
-          run_one tool-bash-real node --experimental-strip-types scripts/compatibility/tool-bash-real.mjs
-          run_one bash-session-real node --experimental-strip-types scripts/compatibility/bash-session-real.mjs
-          MSYS_NO_PATHCONV=1 WSL_COMPAT_ROOT=/tmp/dsh-wsl-parity node --experimental-strip-types scripts/compatibility/bash-parity-real.mjs > logs/bash-parity-real.log 2>&1 || { echo "rc=$?"; tail -8 logs/bash-parity-real.log || true; FAIL=1; }
-          # The same gates against the shipped bundle. The default plane stays `src` until
-          # this pass has been green twice (issue #44 §1); a run is only credited to a plane
-          # if its log carries the matching `plane-module:` line, checked below. Each pass
-          # gets its own fixture root because these drivers create rather than clean their
-          # tree — two passes over one /tmp/dsh-wsl-compat is a race, not a rerun.
+          # Every plane consumer names its plane. `plane.mjs` has no default (issue #44 §1): the
+          # src lines are spelled out rather than left to an unset variable, so a green line is a
+          # claim about src/ and not about whichever plane the driver happened to assume.
+          run_one fs-real env DSH_WSL_TEST_PLANE=src node --experimental-strip-types scripts/compatibility/fs-real.mjs
+          run_one skills-real env DSH_WSL_TEST_PLANE=src node --experimental-strip-types scripts/compatibility/skills-real.mjs
+          run_one search-real env DSH_WSL_TEST_PLANE=src node --experimental-strip-types scripts/compatibility/search-real.mjs
+          run_one relay-real env DSH_WSL_TEST_PLANE=src node --experimental-strip-types scripts/compatibility/relay-real.mjs
+          run_one tool-bash-real env DSH_WSL_TEST_PLANE=src node --experimental-strip-types scripts/compatibility/tool-bash-real.mjs
+          run_one bash-session-real env DSH_WSL_TEST_PLANE=src node --experimental-strip-types scripts/compatibility/bash-session-real.mjs
+          MSYS_NO_PATHCONV=1 DSH_WSL_TEST_PLANE=src WSL_COMPAT_ROOT=/tmp/dsh-wsl-parity node --experimental-strip-types scripts/compatibility/bash-parity-real.mjs > logs/bash-parity-real.log 2>&1 || { echo "rc=$?"; tail -8 logs/bash-parity-real.log || true; FAIL=1; }
+          # The same gates against the shipped bundle, which is the half that was previously only
+          # ever an additional pass over an assumed `src` default. Each pass gets its own fixture
+          # root because these drivers create rather than clean their tree — two passes over one
+          # /tmp/dsh-wsl-compat is a race, not a rerun.
           # `|| { tail; FAIL=1; }` rather than `|| echo rc=$?`: a lib-plane failure that
           # leaves no reason in the step log is a red nobody can attribute.
           run_lib() {
