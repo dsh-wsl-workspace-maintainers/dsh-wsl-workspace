@@ -285,6 +285,20 @@ jobs:
           # is a maintainer decision, not a night-run side effect. Those two cells (one per user
           # in the plane/user matrix) are reported *not run*, never as passes.
           exit $FAIL
+      - name: the 2x2 plane/user matrix runs from a script, not a scratch directory (anti-rot)
+        run: |
+          # `scripts/compatibility/plane-matrix.mjs` exists so the matrix cannot rot the way
+          # `scripts/repro-e2e.mjs` did — by having nothing reference it. This step is the reference:
+          # root-only and one driver, about 30 s, and it exercises the orchestrator end to end
+          # (per-cell fixture roots, the floor check, the three-question report) without a second
+          # job or a second distribution. It runs LAST among the gates so an earlier red cannot
+          # skip it, which is the same reasoning as the seam ledger in runtime-tests.
+          # The report's final line declares that the ruler column did not run, so a green here
+          # says out loud that it covered one column of a 2x2 and not the whole grid.
+          RC=0
+          node scripts/compatibility/plane-matrix.mjs --ci-as-root-only --drivers fs-real || RC=$?
+          echo "plane-matrix (root column only) rc=$RC"
+          exit $RC
       - name: every gate must say which plane it loaded
         if: always()
         run: |

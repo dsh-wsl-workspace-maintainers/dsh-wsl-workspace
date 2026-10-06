@@ -118,12 +118,75 @@ plane it is measuring:
 
 | Caller | How it names the plane |
 | --- | --- |
+| `npm run test:wsl` | `scripts/run-wsl-real.mjs --plane src` |
 | `scripts/compatibility/Run-Checks.ps1` (maintainer sweep) | **not yet updated** — set `$env:DSH_WSL_TEST_PLANE = 'src'` before calling it, or its 19 `Run-Node` checks will each fail on the unset plane. Recorded here rather than silently patched, since the sweep is a maintainer-machine tool |
 | `ci.yml#wsl-gate` | `run_one` lines carry `DSH_WSL_TEST_PLANE=src`, `run_lib` lines `=lib` |
 
 A `--plane` flag counts as naming rather than as a fallback default: it is written where a reader can
 see it, which is what lets `npm run test:wsl` behave identically in PowerShell, cmd and Git Bash
 without each needing a POSIX env prefix.
+
+### The 2×2 plane/user matrix
+
+`scripts/compatibility/plane-matrix.mjs` runs the two plane rows against the two user columns —
+**2 planes × 2 users × 6 drivers = 24 cells**, each with its own fixture root:
+
+```powershell
+node scripts/compatibility/plane-matrix.mjs                              # the full 24
+node scripts/compatibility/plane-matrix.mjs --ci-as-root-only --drivers fs-real   # what CI runs
+```
+
+The two dimensions answer different questions. **Plane** decides *which bytes* are under test
+(`src/` the sources vs `lib/` the committed bundle that ships). **User** decides *whose* WSL the
+answer came from: `root` and `ruler` have different `$HOME`, a different `~/.dsh`, and a different
+answer to "may this session sudo". A gate that only ever runs as root is measuring one column of a
+2×2 while calling it a grid.
+
+Per-cell fixture roots are not tidiness. `ci.yml:186-188` already recorded that these drivers
+*create* their tree rather than clean it, so two cells sharing `/tmp/dsh-wsl-compat` is a race
+rather than a rerun — and a race is how a real defect becomes a flake and a flake becomes a
+dismissal.
+
+`MSYS_NO_PATHCONV=1` is set in the `spawnSync` **env object**, not as a command-line prefix. The
+prefix form works at `ci.yml:182` only because that line is typed into GitHub's `bash`, and the MSYS
+runtime rewrites the arguments of the process that shell is about to start. With `spawnSync` there
+is no shell and no command line for the rewriter to inspect, so the prefix would be silently
+ineffective; in the env object the child inherits the flag itself, which no shell in the chain can
+take away. The trap it prevents is real either way — without it the Windows runner rewrites
+`/tmp/dsh-matrix-…` into `C:\tmp\dsh-matrix-…` and the driver assembles
+`\\wsl.localhost\Ubuntu-24.04C:\tmp\…` (ci.yml:203-207, frame 36736537229, errno -4094).
+
+The report answers three questions in a fixed order — did every requested cell run, were they green,
+what did not run and why — and the third is a **first-class class**, not a footnote. `skills-real` on
+the lib plane is always reported `not run` with the reason (`plane.mjs` has no `lib/` entry for it),
+never as a pass and never as silence.
+
+Each driver is held to a floor read off its own code, so a green exit with a short run cannot read
+as a pass:
+
+| Driver | Floor | Read from |
+| --- | --- | --- |
+| `bash-session-real` | 71 checks | `bash-session-real.mjs:807` (`EXPECTED_CHECKS = 71`) |
+| `tool-bash-real` | 10 checks | `tool-bash-real.mjs:195` (`EXPECTED_CHECKS = 10`) |
+| `bash-parity-real` | 12 checks | 14 probes (`bash-parity-real.mjs:46-69`) minus the 2 `sessionOnly` ones (`:67-68`) that are skipped at `:169-171`. Its own guard is only `results.length === 0` (`:204`), which a driver skipping *more* probes would satisfy |
+| `fs-real` | 2 `PASS ` lines | `fs-real.mjs:105-106` |
+| `search-real` | 2 `PASS ` lines | `search-real.mjs:296-297` |
+| `skills-real` | 3 `PASS ` lines | `skills-real.mjs:104-106` |
+
+**`--ci-as-root-only` and the ruler declaration.** The GitHub runner has exactly one user, so CI
+runs the root column alone. The report's **last line then prints, unconditionally**, that the ruler
+leg did not run and 2 of the 4 plane/user cells are therefore unmeasured — a green matrix states its
+own coverage instead of implying a completeness it does not have. **The exit code is not red for the
+missing column**: a runner cannot create a second user as a gate step, and reddening that would mean
+the column is never measured at all. The declaration is the enforcement.
+
+**Why this is a script and not a scratch directory.** The `D:/Temp/issue51-matrix/` exploration that
+produced these conclusions was 68 one-shot files with no orchestrator; its `wire-ci.mjs` was a
+four-anchor text patcher whose effect is already in `ci.yml`. What was worth keeping is the answers
+— which drivers, which dimensions, which traps — and those are in the script's comments. The
+anti-rot measure is the `wsl-gate` step that runs `--ci-as-root-only --drivers fs-real` (~30 s): a
+matrix nothing references rots exactly the way `scripts/repro-e2e.mjs` did, which is the question
+issue #44 §7 asked.
 
 ## Post-build lib verification
 
