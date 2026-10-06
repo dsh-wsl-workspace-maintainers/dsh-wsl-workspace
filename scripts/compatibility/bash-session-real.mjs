@@ -18,8 +18,9 @@
 import { Context } from '@deepseek-ai/cordis'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import { spawn, spawnSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
-import { resolve as resolvePath } from 'node:path'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve as resolvePath } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { load, plane } from './plane.mjs'
@@ -554,6 +555,148 @@ try {
   check('every call returned', false, String(error?.message ?? error).slice(0, 200))
 }
 
+// ── the keyboard door: the agent typing into a real terminal ─────────────────
+//
+// Issue #51's contract is that everything a person can run is reachable by the agent. The pipe
+// shell above answers most of it; this is the class a pipe cannot answer — a program waiting on the
+// keyboard — driven through the tool the world mounts (`wsl_terminal`), on the host's own PTY
+// registry and backend, pointed at this installation's relay, against the same distribution. No
+// stand-in terminal anywhere in the chain.
+//
+// Two of the cells need their premises stated. The user cell works because the host builds a PTY
+// child's environment itself and scrubs every `DSH_*` variable out of it, so the relay cannot be
+// told by environment which user the workspace runs as — it reads the workspace store the dialog
+// writes, keyed by its own cwd. `USERPROFILE` is what `os.homedir()` reads on Windows AND it
+// survives that scrubbing, so the driver points it at a scratch home for the length of this
+// section: that is how the store path is exercised without touching the real store. The residue
+// cell counts `bash -i` in the distribution — the shape the relay's `exec bash -i` leaves behind —
+// rather than trusting the tool's own "closed".
+let doorRegistered = false
+try {
+  const terminalService = await import(at(`${DEPS}/dsh-terminal/lib/index.js`))
+  const terminalBash = await import(at(`${DEPS}/dsh-terminal-bash/lib/index.js`))
+  const doorModule = await load('wsl-terminal-tool')
+  const doorCtx = new Context()
+  await doorCtx.plugin(LocalSubprocessRuntime)
+  for (const module of [shellEnvPlugin, toolsPlugin, systemPromptPlugin, terminalService]) {
+    await doorCtx.plugin(hostModule(module))
+  }
+  const doorCwd = `\\\\wsl.localhost\\${distro}\\tmp`
+  const doorOwner = {
+    ...owner,
+    id: 'agent-keyboard-door',
+    session: { id: 'session-keyboard-door', cwd: doorCwd, header: { cwd: doorCwd, id: 'session-keyboard-door' } },
+  }
+  doorCtx.provide?.('agents', { get: (id) => (id === doorOwner.id ? doorOwner : undefined) })
+  doorCtx.provide?.('sandboxPolicy', { resolve: () => ({ mode: 'danger-full-access', workspaceRoot: doorCwd }) })
+  const { resolveRelayNode } = await import(pathToFileURL(`${repoRoot}/src/shared/relay-node.ts`).href)
+  const relay = await resolveRelayNode()
+  await terminalBash.apply(doorCtx, new terminalBash.Config({
+    backendType: 'wsl', shellDialect: 'bash', shellPath: relay?.path ?? process.execPath,
+    shellArgs: [`${repoRoot}/lib/wsl-relay.js`], idleSilenceMs: 1_200,
+  }))
+  await doorCtx.plugin(doorModule.default ?? doorModule, { quietMs: 1_200 })
+  const door = doorCtx.tools.get('wsl_terminal')
+  doorRegistered = door !== undefined
+  check('the door tool registers on the host terminal stack', doorRegistered === true,
+    `ctx.tools.get('wsl_terminal') -> ${typeof door}`)
+
+  /** One door action, timed, with the text the model would read. */
+  const doorCall = async (action, args = {}) => {
+    const started = Date.now()
+    const value = await door.execute({ action, ...args }, { signal: AbortSignal.timeout(90_000), agent: doorOwner })
+    const ms = Date.now() - started
+    if (action === 'send') doorSends.push({ what: args.text === '' ? '(enter)' : String(args.text).slice(0, 24), ms })
+    return { ms, text: String(value?.text ?? '') }
+  }
+  /** Every send this section made, so the latency claim below is over real samples, not one. */
+  const doorSends = []
+  /** Interactive `bash -i` processes in the distribution: the shape the relay leaves behind. */
+  const doorShells = () => probeCount('bash[ ]-i')
+  const defaultUser = String(spawnSync('wsl.exe', ['-d', distro, '-e', 'whoami'],
+    { encoding: 'utf8', timeout: 30_000 }).stdout ?? '').trim()
+
+  const fakeHome = mkdtempSync(join(tmpdir(), 'dsh-door-home-'))
+  mkdirSync(join(fakeHome, '.dsh'), { recursive: true })
+  writeFileSync(join(fakeHome, '.dsh', 'wsl-workspaces.json'),
+    `${JSON.stringify({ [doorCwd]: { username } }, null, 2)}\n`, 'utf8')
+  const previousProfile = process.env.USERPROFILE
+  process.env.USERPROFILE = fakeHome
+  const shellsBeforeDoor = doorShells()
+  try {
+    const opened = await doorCall('open')
+    const id = /terminal (pty-\d+) is open/.exec(opened.text)?.[1]
+    const shellsAfterOpen = doorShells()
+    check('the door opens a real shell inside the distribution',
+      id !== undefined && shellsAfterOpen === shellsBeforeDoor + 1,
+      `id=${id ?? 'none'} in ${opened.ms}ms, bash -i ${shellsBeforeDoor} → ${shellsAfterOpen} :: ${opened.text.replace(/\s+/g, ' ').slice(0, 80)}`)
+
+    const echo = await doorCall('send', { session: id, text: 'echo DOOR_$(( 6 * 7 ))' })
+    check('a command typed into the door answers',
+      echo.text.includes('DOOR_42'),
+      `${echo.ms}ms, settled ${/back at the prompt/.test(echo.text) ? 'at the recognised prompt' : 'on the quiet window (the host did not recognise the prompt tail on this send)'} :: ${echo.text.replace(/\s+/g, ' ').slice(0, 80)}`)
+
+    // The crux, and the reason this door exists at all: a program asleep on the keyboard, then the
+    // keystrokes arriving. A pipe cannot do this; the one-shot pseudo-terminal the `bash` tool
+    // escalates to cannot either, because there is nobody on the other end to type into it.
+    const waiting = await doorCall('send', { session: id, text: `sh -c 'read x < /dev/tty; echo GOT=$x'` })
+    const keystroke = await doorCall('send', { session: id, text: 'hello-from-the-door' })
+    check('a keystroke reaches a program blocked on the terminal',
+      /GOT=hello-from-the-door/.test(`${waiting.text}\n${keystroke.text}`),
+      `${waiting.ms}ms + ${keystroke.ms}ms :: ${`${waiting.text} | ${keystroke.text}`.replace(/\s+/g, ' ').slice(0, 110)}`)
+
+    const typed = await doorCall('send', { session: id, text: 'echo TYPED_NOT_RUN', submit: false })
+    const enter = await doorCall('send', { session: id, text: '', submit: true })
+    check('submit:false types without running, and the next Enter runs it',
+      !/TYPED_NOT_RUN[\s\S]*\n[\s\S]*TYPED_NOT_RUN/.test(typed.text) && /TYPED_NOT_RUN/.test(enter.text),
+      `${typed.ms}ms then ${enter.ms}ms :: ${`${typed.text} | ${enter.text}`.replace(/\s+/g, ' ').slice(0, 110)}`)
+
+    const who = await doorCall('send', { session: id, text: 'whoami' })
+    check('the door runs as the user the workspace names, not the distribution default',
+      new RegExp(`(^|[^\\w])${username}([^\\w]|$)`).test(who.text),
+      `asked for ${username}, distribution default is ${defaultUser}${username === defaultUser ? ' (this run cannot discriminate the two)' : ' (this run discriminates)'} :: ${who.text.replace(/\s+/g, ' ').slice(0, 60)}`)
+
+    const page = await doorCall('read', { session: id, offset: 0, count: 5 })
+    check('read pages the retained screen and reports where the page sits',
+      /lines 0\.\.\d+ of \d+ retained/.test(page.text) && /dsh>/.test(page.text),
+      `${page.ms}ms :: ${page.text.replace(/\s+/g, ' ').slice(0, 90)}`)
+
+    const interrupted = await doorCall('send', { session: id, text: 'sleep 30' })
+    const signal = await doorCall('signal', { session: id, signal: 'SIGINT' })
+    const afterSignal = await doorCall('send', { session: id, text: 'echo AFTER_SIGINT_$(( 2 * 2 ))' })
+    check('SIGINT is delivered to the foreground process and the shell survives it',
+      /SIGINT delivered/.test(signal.text) && afterSignal.text.includes('AFTER_SIGINT_4'),
+      `${interrupted.ms}ms + ${signal.ms}ms + ${afterSignal.ms}ms :: ${`${signal.text} | ${afterSignal.text}`.replace(/\s+/g, ' ').slice(0, 100)}`)
+
+    // Every send above settled on the backend's own quiet window at worst, never on its 30 s
+    // deadline. The measured ceiling of that window is idleSilenceMs (1.2 s) plus handoffGraceMs
+    // (0.5 s) ≈ 1.9 s, so the bound below is margin for a slow first line, not a number tuned to
+    // this run — and the sample list is printed, so a reader can see the spread instead of trusting
+    // one reading.
+    const slowest = doorSends.reduce((worst, send) => send.ms > worst.ms ? send : worst, { what: 'none', ms: 0 })
+    check('no door send waits for the backend deadline',
+      doorSends.length >= 6 && slowest.ms < 5_000,
+      `${doorSends.length} sends, slowest ${slowest.ms}ms (${slowest.what}); all: ${doorSends.map(send => send.ms).join(', ')}ms`)
+
+    const closed = await doorCall('close', { session: id })
+    await new Promise(resolve => setTimeout(resolve, 1_500))
+    const listed = await doorCall('list')
+    const shellsAfterClose = doorShells()
+    check('close takes the terminal and its shell down',
+      /closed/.test(closed.text) && /no terminal is open/.test(listed.text) && shellsAfterClose <= shellsBeforeDoor,
+      `${closed.ms}ms, list=${JSON.stringify(listed.text.trim().slice(0, 40))}, bash -i ${shellsBeforeDoor} → ${shellsAfterClose}`)
+  } finally {
+    if (previousProfile === undefined) delete process.env.USERPROFILE
+    else process.env.USERPROFILE = previousProfile
+    rmSync(fakeHome, { recursive: true, force: true })
+    for (const session of doorCtx.terminals?.list?.(doorOwner) ?? []) {
+      await doorCtx.terminals.kill(doorOwner, session.sessionId, 'driver teardown').catch(() => {})
+    }
+  }
+} catch (error) {
+  check('the keyboard door ran', false, `the door harness failed before comparing: ${String(error?.message ?? error).slice(0, 160)}`)
+}
+
 // The control: the same command through the tier this replaces. It asserts only that the control
 // RAN, and prints which outcome happened. An earlier revision required it to hang, which promoted
 // one machine's pseudo-console behaviour to a universal rule and was disproved by the WSL1 runner
@@ -603,7 +746,7 @@ try {
     `the control harness failed before comparing: ${String(error?.message ?? error).slice(0, 120)}`)
 }
 
-const EXPECTED_CHECKS = 56
+const EXPECTED_CHECKS = 66
 const passed = results.filter(r => r.pass).length
 console.log(`${passed}/${results.length} checks passed (plane=${plane()}, distro=${distro}, user=${username}, cwd=${sessionCwd})`)
 if (results.length !== EXPECTED_CHECKS) {

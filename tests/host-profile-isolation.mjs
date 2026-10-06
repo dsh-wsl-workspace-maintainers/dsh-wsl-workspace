@@ -36,6 +36,23 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const depsModules = join(repoRoot, 'ci', 'deps', 'node_modules')
 const conflictModules = join(repoRoot, 'ci', 'deps-conflict', 'node_modules')
 
+/**
+ * The one boot line a healthy arm may still write, on win32.
+ *
+ * The plugin probes its session shell at boot where it can. An arm's fake context exposes no
+ * `subprocess`, so there is no seam to probe with, and the plugin says exactly that
+ * (`persistent shell: session probe skipped, no subprocess service to probe with; mounted
+ * unverified`) — a diagnostic, not a failure. On Linux the whole win32 probe branch is skipped,
+ * so this line never appears there, and the two outcome cells below were written as if a healthy
+ * frame were silent. Measured 2026-10-06 on Windows 10 with the tree at `60354d5` (before the
+ * keyboard-door work): this is the only line the healthy control arm writes, so A0c and A6b were
+ * red on the one platform this plugin exists for while green in CI.
+ */
+const BOOT_DIAGNOSTIC = /^dsh-wsl-workspace: persistent shell: session probe skipped/
+
+/** The captured lines that are failures — everything except that boot diagnostic. */
+const failuresIn = (captured) => captured.filter(line => !BOOT_DIAGNOSTIC.test(line))
+
 // ── fixture documents: the entry-list dialect the Host publishes ────────────
 // Row-for-row in the shape tests/host-declare.mjs uses, because what the arms
 // compare is the transform's output.
@@ -450,7 +467,7 @@ for (const spec of ARMS) {
   if (spec.n === 4) {
     check(ids === ARM4_IDS, `A6 one unreadable source does not remove the other variants (registered: ${ids || 'none'})`)
     check(outcome.staleGone, 'A7 …and it does not skip the stale-directory sweep that lives after the loop')
-    check(outcome.captured.length === 1, `A6b the failing source is reported once, not once per later source (captured: ${outcome.captured.length} line(s))`)
+    check(failuresIn(outcome.captured).length === 1, `A6b the failing source is reported once, not once per later source (captured: ${failuresIn(outcome.captured).length} failure line(s) of ${outcome.captured.length})`)
   } else if (spec.n === 5) {
     const joined = outcome.captured.join(' | ')
     check(outcome.registered.length === 0, `arm 5: a hostile own copy registers nothing (registered: ${outcome.registered.length})`)
@@ -502,7 +519,7 @@ for (const spec of ARMS) {
     check(fileRows.length > 0 && unimportable.length === 0,
       `A5 every file: provider row the declarations name imports from inside the arm (${fileRows.length} row(s)${unimportable.length ? `; failed: ${unimportable.join(' | ')}` : ''})`)
     check(outcome.staleGone, 'A0 the control arm sweeps the stale directory')
-    check(outcome.captured.length === 0, `A0c the control arm says nothing on a healthy frame (lines: ${outcome.captured.length})`)
+    check(failuresIn(outcome.captured).length === 0, `A0c the control arm says nothing on a healthy frame (failure lines: ${failuresIn(outcome.captured).length}, diagnostics: ${outcome.captured.length - failuresIn(outcome.captured).length})`)
   }
 
   // A red has to carry its own reason: what the product wrote is the measurement, and

@@ -306,6 +306,30 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   and the reference click driven end-to-end in a real browser on 0.1.5-rc.1, 0.1.5-rc.2,
   0.1.7-rc.1, 0.1.7-rc.2 and 0.2.0-rc.2, plus four configurations on the real DSH Desktop
   (drive-spelling and UNC workspaces × `/mnt/<drive>` and in-distribution paths).
+- **The agent can now type into a terminal of its own** (`wsl_terminal`, issue #51's last gap). A
+  pipe cannot be typed into, so every program that asks a question — `sudo` wanting a password,
+  `ssh` a first-connection fingerprint, a REPL, an editor, a TUI — was diagnosed, stopped and
+  re-run on a one-shot pseudo-terminal only so the model could read the complaint, and a person had
+  to take over; the ticket's contract is that *everything a person can run is reachable by the
+  agent*, so the unanswered class gets a door. The tool is the model-facing shape over the host's
+  own PTY registry and `dsh-terminal-bash` backend pointed at this plugin's relay — no new terminal
+  machinery, the same stack behind the right sidebar's terminal tab — with `open`/`send`/`read`/
+  `signal`/`close`/`list`, mounted beside the pipe `bash` (which stays the default: it carries every
+  byte, a terminal screen is a 160-column rendering with bounded scrollback). Two facts it took
+  reading host code to get right: the shell runs as the **workspace's configured user** because the
+  host builds a PTY child's environment itself and drops every `DSH_*` variable, so the relay reads
+  the workspace store back (the same fix the session `bash` needed — it had been resolving the user
+  from the environment alone); and the backend's quiet window is lowered to 1200 ms from its 3000 ms
+  default (source note in `src/host/variants.ts`) so a send the host does not recognise as a prompt
+  returns in ~1.2–1.8 s instead of ~3.0–3.6 s — the send says which of the two happened rather than
+  presenting a quiet screen as a prompt. Verified on a real distribution, both build planes, as
+  `root` and as `ruler`: `bash-session-real` now carries the door's own cells (66/66), including a
+  keystroke typed into a program blocked on `/dev/tty` reaching it (`GOT=…`), `submit: false` typing
+  without running and the next Enter running it, `SIGINT` ending a `sleep 30` with the shell
+  surviving, and `close` leaving no `bash -i` behind — `open` measured 477–490 ms. Found on the way:
+  `tests/host-profile-isolation.mjs` was red on Windows only (it counted a boot *diagnostic* as a
+  failure, so its two healthy-frame cells passed in CI and failed on the platform this plugin exists
+  for); those cells now separate diagnostics from failures and say why.
 
 ## 0.7.5 — 2026-09-30
 

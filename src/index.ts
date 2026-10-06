@@ -725,7 +725,7 @@ async function waitForSubprocess(ctx: Context): Promise<SubprocessProbeFace | un
 async function materializeVariants(
   agentPresets: AgentPresetsService,
   dshHome: string,
-  paths: { shell: string; fs: string; relay: string; node: string; sandbox: string; search: string; jobs: string; bashTool: string; shellMode: 'session' | 'pty' },
+  paths: { shell: string; fs: string; relay: string; node: string; sandbox: string; search: string; jobs: string; bashTool: string; terminalTool: string; shellMode: 'session' | 'pty' },
   persistentShell: boolean,
   track: (dispose: unknown) => void,
 ): Promise<void> {
@@ -797,7 +797,7 @@ async function materializeOne(
   agentPresets: AgentPresetsService,
   preset: AgentPresetRosterEntry,
   userRoot: string,
-  paths: { shell: string; fs: string; relay: string; node: string; sandbox: string; search: string; jobs: string; bashTool: string; shellMode: 'session' | 'pty' },
+  paths: { shell: string; fs: string; relay: string; node: string; sandbox: string; search: string; jobs: string; bashTool: string; terminalTool: string; shellMode: 'session' | 'pty' },
   persistentShell: boolean,
   track: (dispose: unknown) => void,
   generated: Set<string>,
@@ -809,6 +809,7 @@ async function materializeOne(
     nodePath: paths.node,
     sandboxPath: paths.sandbox,
     bashPath: paths.bashTool,
+    terminalTool: paths.terminalTool,
     mode: paths.shellMode,
   } : undefined, paths.search, paths.jobs)
   // 0.1.7-alpha.1+ publishes a variant as a declaration row (the composition is
@@ -905,6 +906,10 @@ export function apply(ctx: Context, config: Config): void {
   const relayPath = join(packageRoot, 'lib', 'wsl-relay.js').replace(/\\/g, '/')
   // The pipe-driven persistent shell tool that replaces the host's PTY-backed one by default.
   const bashToolPath = join(packageRoot, 'lib', 'wsl-bash-tool.js').replace(/\\/g, '/')
+  // The keyboard door the session tier mounts beside it: the model-facing shape over the
+  // host's PTY registry, so a password prompt or a REPL has an answer that is not "a person
+  // must do it". It is the only row in this world that needs the relay's interpreter.
+  const terminalToolPath = join(packageRoot, 'lib', 'wsl-terminal-tool.js').replace(/\\/g, '/')
   const sandboxPath = join(packageRoot, 'lib', 'wsl-sandbox.js').replace(/\\/g, '/')
   // The in-distribution `grep`/`glob` twin that replaces the host search suite.
   const searchPath = join(packageRoot, 'lib', 'wsl-search.js').replace(/\\/g, '/')
@@ -1005,6 +1010,7 @@ export function apply(ctx: Context, config: Config): void {
           search: searchPath,
           jobs: jobsPath,
           bashTool: bashToolPath,
+          terminalTool: terminalToolPath,
           shellMode,
         }, persistentShell, track)
       })().catch((error) => {

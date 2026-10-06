@@ -22,7 +22,8 @@ import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { randomUUID } from 'node:crypto'
 
-import { isValidWslUsername, parseWslUnc, windowsToMntPath } from '../shared/paths.ts'
+import { isValidWslUsername, joinUnc, parseWslUnc, windowsToMntPath } from '../shared/paths.ts'
+import { getWindowsWorkspace, getWorkspaceUsername } from '../shared/wsl-credentials.ts'
 import { defaultDistroSync } from '../shared/wsl.ts'
 import { bridgeEnv } from '../shared/wsl-env.ts'
 import { SESSION_ARGV } from './wsl-bash-protocol.ts'
@@ -160,10 +161,24 @@ function resolveDistro(config: ResolvedConfig, headerCwd: string | undefined): s
 }
 
 /**
- * The Linux user a call runs as, or undefined for the distribution default.
+ * The Linux user a call runs as.
+ *
+ * The chain is the one `src/shell.ts` resolves, in the same order, so the persistent tier and
+ * the one-shot fallback agree about who a workspace runs as: the session's own fact
+ * (`DSH_WSL_USER`, contributed by the host half), then the workspace's stored username, then
+ * the configured one. The stored step was missing here: the store is keyed by the workspace
+ * path, the one-shot executor reads it, the dialog writes it — and a WSL workspace configured
+ * for a user other than the distribution's default silently ran as that default instead.
+ * @param config - the resolved plugin configuration.
+ * @param headerCwd - the session's workspace path, when it has one.
+ * @returns the username, or undefined for the distribution default user.
  */
-function resolveUser(config: ResolvedConfig): string | undefined {
-  const candidates = [config.username, process.env.DSH_WSL_USER]
+function resolveUser(config: ResolvedConfig, headerCwd: string | undefined): string | undefined {
+  const unc = headerCwd === undefined ? null : parseWslUnc(headerCwd)
+  const stored = unc !== null
+    ? getWorkspaceUsername(joinUnc(unc.distro, unc.linuxPath))
+    : headerCwd !== undefined && /^[A-Za-z]:[\\/]/.test(headerCwd) ? getWindowsWorkspace(headerCwd)?.username : undefined
+  const candidates = [process.env.DSH_WSL_USER, stored, config.username]
   for (const candidate of candidates) {
     if (candidate !== undefined && candidate !== '' && isValidWslUsername(candidate)) return candidate
   }
@@ -254,7 +269,7 @@ function toForeground(run: WslBashRun, timeoutMs: number, escalated: boolean, be
     // alternative is a deadline reached with no reason attached — and a reader would conclude the wait
     // had been examined and found to be normal.
     if (run.starveProbeBroken === true) {
-      notes.push('[the check for a command waiting on a keyboard could not run in this distribution — its `/proc` walk did not answer — so nothing was stopped early: if this command was waiting for input, pass `tty: true`, or ask a person to run it in the right sidebar\'s terminal tab]')
+      notes.push('[the check for a command waiting on a keyboard could not run in this distribution — its `/proc` walk did not answer — so nothing was stopped early: if this command was waiting for input, pass `tty: true`, run it in a `wsl_terminal` session, or ask a person to run it in the right sidebar\'s terminal tab]')
     }
     // Only say a restart happened when the session says it did — measured, not assumed, by the cell
     // that times out an escalated `sleep`.
@@ -280,9 +295,10 @@ function toForeground(run: WslBashRun, timeoutMs: number, escalated: boolean, be
   if (escalated && run.exitCode !== 0 && /sudo: (a password is required|no password was provided)/.test(`${run.stdout}\n${run.stderr}`)) {
     // The first way out is the one a person can take immediately: the product has interactive terminal
     // tabs in the right sidebar (`dsh-client-ui-sidebar-terminal`), which run the host's own PTY and are
-    // not this shell — a human there can type the password. Making the agent able to run it is the
-    // second option, not the first.
-    notes.push('[sudo asked for a password and this shell has nobody to type it: run this command once in the right sidebar\'s terminal tab, or give the session user NOPASSWD in sudoers (or start the session as root with DSH_WSL_USER) so the agent can run it alone]')
+    // not this shell — a human there can type the password. The agent's own door is named second, with
+    // the fact that makes it usable at all (the password has to come from the user), and making the
+    // session user passwordless is the third — the one that removes the prompt instead of answering it.
+    notes.push('[sudo asked for a password and this shell has nobody to type it: a person can run this once in the right sidebar\'s terminal tab; an agent-side answer is `wsl_terminal` (open a terminal, type the password the user gives you there — never guess one); or give the session user NOPASSWD in sudoers (or start the session as root with DSH_WSL_USER) so the agent can run it alone]')
   }
   // The attribution line. An escalated call that did not succeed, and is not explained above, says so
   // itself: one line naming the layer and the comparison that settles it, so a failure nobody predicted
@@ -346,7 +362,7 @@ const STREAM_SCHEMA = {
 export function buildSessionSpec(config: ResolvedConfig, headerCwd: string | undefined): WslBashSessionSpec | undefined {
   const distro = resolveDistro(config, headerCwd)
   if (distro === '') return undefined
-  const user = resolveUser(config)
+  const user = resolveUser(config, headerCwd)
   const linuxCwd = linuxOf(headerCwd)
   // One token per session, carried by every process the shell starts. It is what lets a rebuild stop
   // the children that detached themselves from the shell without touching a process the user owns.
@@ -417,7 +433,7 @@ export function apply(ctx: Context, config?: Config): void {
 
   const tool = defineTool({
     name: TOOL_NAME,
-    description: 'Run a bash command inside this WSL distribution. The shell is persistent: `cd`, exported variables, activated virtualenvs, aliases and shell functions survive between calls, so use absolute paths or an explicit `cd` when a call must not depend on where the last one left off. A command that reads from stdin is given /dev/null. A command that instead reaches for the keyboard (`sudo`, `ssh`, an editor, a database client asking for a password) is caught by watching the process rather than guessed from its name: when a call goes silent with nothing running, the tool stops it and runs it again on a pseudo-terminal of its own inside the same call, so the body is the program\'s own complaint about having no terminal. A live display (`top`, `htop`) exits on its own without a terminal, so ask for `top -bn1` unless you pass `tty: true`. For work that must outlive one call pass `run_in_background: true` — it starts a tracked job (`job_output` to read, `job_kill` to stop) in a separate process, so it does not see this shell\'s `cd` or `export`. Nothing in this shell can be typed into, so a prompt there is unanswerable by design: the second attempt is where the program gets to say what it wanted, and a person can run the same command in the right sidebar\'s terminal tab, which has a keyboard attached.',
+    description: 'Run a bash command inside this WSL distribution. The shell is persistent: `cd`, exported variables, activated virtualenvs, aliases and shell functions survive between calls, so use absolute paths or an explicit `cd` when a call must not depend on where the last one left off. A command that reads from stdin is given /dev/null. A command that instead reaches for the keyboard (`sudo`, `ssh`, an editor, a database client asking for a password) is caught by watching the process rather than guessed from its name: when a call goes silent with nothing running, the tool stops it and runs it again on a pseudo-terminal of its own inside the same call, so the body is the program\'s own complaint about having no terminal. A live display (`top`, `htop`) exits on its own without a terminal, so ask for `top -bn1` unless you pass `tty: true`. For work that must outlive one call pass `run_in_background: true` — it starts a tracked job (`job_output` to read, `job_kill` to stop) in a separate process, so it does not see this shell\'s `cd` or `export`. Nothing in this shell can be typed into, so a prompt there is unanswerable here by design: the second attempt is where the program gets to say what it wanted, and an answer has a door of its own — `wsl_terminal` opens an interactive terminal this agent can type into (ask the user for a password; never guess one), while a person can run the same command in the right sidebar\'s terminal tab, which has a keyboard attached.',
     parameters: {
       command: { type: 'string', required: true, description: 'The bash command to run.' },
       description: {

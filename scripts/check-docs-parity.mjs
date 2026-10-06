@@ -73,9 +73,12 @@ const FILES = {
   },
 }
 
-const BEHAVIOUR_BULLETS = 8   // bash, file tools, search, skills, shell lifetime, jobs, old hosts, banner
+// A README gaining or losing a behaviour bullet is a decision recorded here: the ninth one arrived
+// with the keyboard door (`wsl_terminal`, 2026-10-06), which is a new model-facing tool rather than
+// a difference of an existing one — the class of change a reader has to be told about.
+const BEHAVIOUR_BULLETS = 9   // bash, file tools, search, skills, shell lifetime, keyboard door, jobs, old hosts, banner
 const TOKENS = [
-  'wsl-search', 'wsl-relay', 'bash_background', 'readlink',
+  'wsl-search', 'wsl-relay', 'bash_background', 'readlink', 'wsl_terminal',
   'FS_SANDBOX_DENIED', 'CHANGELOG.md', 'docs/README.md', 'TESTING.md',
 ]
 const STALE = ['danger-full-access']

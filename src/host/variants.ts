@@ -22,6 +22,23 @@ const EDITOR_ROWS = new Set(['str-replace-editor', 'tool-str-replace-editor'])
 const WSL_WORLD_PROVIDER_IDS = ['shell-wsl', 'fs-wsl']
 
 /**
+ * How long the door's terminal backend may see no output before it returns control
+ * without having recognised a prompt — the host's `idleSilenceMs`, default 3000.
+ *
+ * The number comes from a measurement, not from taste (2026-10-06, real ConPTY, real
+ * distribution, `D:\Temp\issue51-s0\v4-report.txt`): a send whose prompt the backend
+ * recognises settles in 75–136 ms, while every send whose prompt it does not recognise
+ * costs the full default — 3.0–3.6 s, measured across seven sends — which is what a
+ * whole keyboard conversation would be made of. The recognition path is what a caller
+ * gets whenever the previous prompt's tail arrived intact; this knob only bounds the
+ * fallback, so lowering it trades the host default's patience for the agent's. 1200 ms
+ * stays ~9x above the measured recognition cost and ~2.5x below the default, and the
+ * one case it cuts short — a program that is quiet *and* still working — is exactly
+ * what the send's own note reports as unresolved instead of claiming a prompt.
+ */
+const TERMINAL_QUIET_MS = 1_200
+
+/**
  * Whether a top-level row is this generator's own WSL world group.
  *
  * A preset copied from a generated variant (a user renaming `wsl-standard` to
@@ -51,11 +68,23 @@ function isWslWorldGroup(block: readonly string[]): boolean {
  * also why DSH's own Minimal mode describes itself as "a single-tool agent with
  * a persistent shell". So a world with the relay paths swaps the shell tool
  * instead of adding one, and a world without them keeps the one-shot row.
+ *
+ * The session tier mounts the same registry and backend for a different
+ * consumer: the keyboard door (`wsl_terminal`), which is the only thing in this
+ * world that drives a PTY. It must NOT mount the host's persistent tool — that
+ * tool's completion check is what issue #51 is about, and it would collide with
+ * the session `bash` row over the `bash` name.
  */
-function persistentShellRows(relayPath: string, nodePath: string, bashPath: string, mode: 'session' | 'pty'): string[] {
+function persistentShellRows(
+  relayPath: string,
+  nodePath: string,
+  bashPath: string,
+  terminalToolPath: string,
+  mode: 'session' | 'pty',
+): string[] {
   if (mode === 'session') {
-    // The pipe-driven shell: one row, no PTY registry, no terminal backend, and no host tool.
-    // It registers the same `bash` name, so it still takes the one-shot row's place.
+    // The pipe-driven shell: one row, no PTY, no terminal readiness contract. It registers the
+    // same `bash` name, so it still takes the one-shot row's place.
     return [
       '    # Persistent shell: this plugin drives one long-lived `bash` over',
       '    # pipes and ends each command with a record carrying its own nonce,',
@@ -67,6 +96,37 @@ function persistentShellRows(relayPath: string, nodePath: string, bashPath: stri
       '      config:',
       '        timeoutMs: 120000',
       '        bootTimeoutMs: 20000',
+      // The door needs the host's PTY stack, but not the host's persistent tool:
+      // the same registry + backend pair as the tier above, consumed by this
+      // plugin's `wsl_terminal` instead of by a tool that ends a command by
+      // matching text on a screen the shell may repaint.
+      '    # The keyboard door: the host terminal registry and its backend, pointed',
+      '    # at this plugin\'s relay, so an interactive `wsl_terminal` session is a',
+      '    # real `wsl.exe … bash -i` under a real PTY. Mounted beside the pipe',
+      '    # shell, not instead of it: the pipe carries every byte and is the',
+      '    # default; this is only for what a pipe cannot answer (a password, a',
+      '    # fingerprint, a REPL, a TUI).',
+      '    - id: terminal-door',
+      '      name: cordis:group',
+      '      group: true',
+      '      isolate:',
+      '        terminals: true',
+      '      config:',
+      '        - id: pty',
+      "          name: '@deepseek-ai/dsh-terminal'",
+      '        - id: terminal-wsl',
+      "          name: '@deepseek-ai/dsh-terminal-bash'",
+      '          config:',
+      '            backendType: wsl',
+      '            shellDialect: bash',
+      `            shellPath: '${nodePath.replace(/'/g, "''")}'`,
+      '            shellArgs:',
+      `              - '${relayPath.replace(/'/g, "''")}'`,
+      `            idleSilenceMs: ${TERMINAL_QUIET_MS}`,
+      '        - id: terminal-door-tool',
+      `          name: '${terminalToolPath.replace(/'/g, "''")}'`,
+      '          config:',
+      `            quietMs: ${TERMINAL_QUIET_MS}`,
     ]
   }
   return [
@@ -144,7 +204,7 @@ function wslWorldGroup(
   shellPath: string,
   fsPath: string,
   includeEditor: boolean,
-  persistent?: { relayPath: string; nodePath: string; sandboxPath: string; bashPath: string; mode: 'session' | 'pty' },
+  persistent?: { relayPath: string; nodePath: string; sandboxPath: string; bashPath: string; terminalTool: string; mode: 'session' | 'pty' },
   searchPath?: string,
   jobsPath?: string,
   sawJobs = false,
@@ -215,7 +275,7 @@ function wslWorldGroup(
           '        maxOutputChars: 16000',
         ]
       : []),
-    ...(persistent === undefined ? [] : persistentShellRows(persistent.relayPath, persistent.nodePath, persistent.bashPath, persistent.mode)),
+    ...(persistent === undefined ? [] : persistentShellRows(persistent.relayPath, persistent.nodePath, persistent.bashPath, persistent.terminalTool, persistent.mode)),
     '',
   ].join('\n')
 }
@@ -430,7 +490,7 @@ export function transformPresetForWsl(
   source: string,
   shellPath: string,
   fsPath: string,
-  persistent?: { relayPath: string; nodePath: string; sandboxPath: string; bashPath: string; mode: 'session' | 'pty' },
+  persistent?: { relayPath: string; nodePath: string; sandboxPath: string; bashPath: string; terminalTool: string; mode: 'session' | 'pty' },
   searchPath?: string,
   jobsPath?: string,
 ): string {

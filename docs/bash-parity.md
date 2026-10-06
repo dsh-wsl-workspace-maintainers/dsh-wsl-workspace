@@ -16,7 +16,7 @@ the gates parse instead of in prose someone might read.
 
 | id | kind | difference | whose behaviour | what the user sees | verdict |
 | --- | --- | --- | --- | --- | --- |
-| `param-tty` | `api` | we accept `tty`, the host's tool does not | ours | nothing, unless the model passes it: `true` runs the command on a pseudo-terminal from the start, `false` keeps the ordinary pipe and vetoes the automatic second attempt | keep: the pseudo-terminal has two doors now — ask for one, or have one handed over after the wait is seen — and a caller that only wants the pipe must be able to insist |
+| `param-tty` | `api` | we accept `tty`, the host's tool does not | ours | nothing, unless the model passes it: `true` runs the command on a pseudo-terminal from the start, `false` keeps the ordinary pipe and vetoes the automatic second attempt | keep: there are three ways to a terminal now — ask for one, have one handed over after the wait is read, or drive one directly with `wsl_terminal` — and a caller that only wants the pipe must be able to insist |
 | `behaviour-escalated-streams` | `behaviour` | an escalated call arrives as one stream: a pseudo-terminal has no second channel, so `[stderr]` never appears in its body | mechanism — the same is true of the host's own PTY tier | `echo out; echo err >&2` reads `out err` escalated, `out [stderr] err` on the plain path | keep: this is what a terminal is. Asserting a separation there would mean faking one the program never wrote |
 | `behaviour-overstrike` | `behaviour` | a program that cannot colour its terminal writes emphasis as overstrike (`man` on a pty), and the pty tier folds it back before the model reads it | ours | `N\bNA\bAM\bME\bE` becomes `NAME`; measured on this distribution's `man` | keep: unfolded, the body was unreadable — but the fold covers the two shapes actually measured, and a dangling backspace overwrites left as a terminal would |
 | `param-run_in_background` | `api` | both accept `run_in_background`, ours returns the same `{kind:'background',jobId}` | aligned | `started background job <id>` in both | aligned 2026-10-05 |
@@ -54,3 +54,15 @@ followed immediately by a newline, and an interactive Linux shell repaints that 
 tier replaces it with a record on a byte channel; `DSH_WSL_PTY_SHELL=1` still mounts the old tier for
 comparison, and `scripts/compatibility/bash-session-real.mjs` keeps it as a control cell so the
 replaced behaviour cannot quietly come back.
+
+## The other tool in this world
+
+`wsl_terminal` is mounted beside `bash` and is deliberately *not* a row above: it is not a difference
+from the host's `bash` tool, it is a capability the host world does not have at all — the agent typing
+into a terminal of its own (a password prompt, a first-connection fingerprint, a REPL, a TUI). It has
+its own two devices, because this table's two gates only read `bash`'s surface:
+`tests/wsl-terminal-tool.test.ts` offline and nine live cells inside `bash-session-real.mjs`, both
+listed in [tty-triage.md](tty-triage.md#where-the-same-facts-live-in-machine-readable-form). The
+`bash` tool's own notes name it where a keyboard answer is what is missing — the sudo note and the
+"no keyboard check ran" note both point at it — so the model learns about the door from the failure
+that needs it, not from a tool list it never reads.

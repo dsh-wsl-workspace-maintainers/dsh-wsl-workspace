@@ -46,6 +46,8 @@ export default defineConfig([
       'wsl-jobs': 'src/host/wsl-jobs.ts',
       // The preset mounts the session bash tool by absolute path, like the shell and fs entries.
       'wsl-bash-tool': 'src/host/wsl-bash-tool.ts',
+      // And the keyboard door beside it: the model-facing shape over the host's PTY registry.
+      'wsl-terminal-tool': 'src/host/wsl-terminal-tool.ts',
     },
     outDir: 'lib',
     format: ['esm'],

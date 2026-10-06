@@ -228,7 +228,17 @@ if (SESSION_TIER) {
   assert(sessionRow !== undefined, 'the world mounts its own session bash tool')
   assert(sessionRow.name.startsWith('file://'), 'the session tool is declared as a file: URL like our other providers')
   assert(existsSync(fileURLToPath(sessionRow.name)), 'and it points at a real built file')
-  assert(!world.config.some(row => row.id === 'persistent-shell'), 'no PTY group is declared in the session tier')
+  // The keyboard door is declared on this channel too: a nested group whose own rows are file: URLs
+  // for the tool, and native paths for the interpreter and relay the backend spawns.
+  const door = world.config.find(row => row.id === 'terminal-door')
+  assert(door !== undefined && door.group === true, 'the keyboard door is declared in the session tier')
+  const doorTool = door.config.find(row => row.id === 'terminal-door-tool')
+  assert(doorTool !== undefined && doorTool.name.startsWith('file://'), 'the door tool is a file: URL')
+  assert(existsSync(fileURLToPath(doorTool.name)), 'and it points at a real built file')
+  const doorBackend = door.config.find(row => row.id === 'terminal-wsl')
+  assert(doorBackend.config.shellPath === process.execPath.replace(/\\/g, '/'), 'the door\'s interpreter stays a native path')
+  assert(doorBackend.config.shellArgs[0].endsWith('/lib/wsl-relay.js'), 'the door runs this installation\'s relay')
+  assert(!world.config.some(row => row.id === 'persistent-shell'), 'no host PTY group is declared in the session tier')
 } else {
 const shellGroup = world.config.find(row => row.id === 'persistent-shell')
 assert(shellGroup !== undefined, 'the world mounts its own persistent shell')

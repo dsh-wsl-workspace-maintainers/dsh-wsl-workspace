@@ -335,16 +335,28 @@ assert(minYaml.includes('str-replace-editor'), 'minimal variant re-injects the e
 // twice in `test:node`, once per tier, so both shapes are pinned by a real materialization.
 if (SESSION_TIER) {
   assert(!minYaml.includes('persistent-shell'), 'the source PTY group is gone, not re-declared')
-  assert(!minYaml.includes('dsh-terminal-bash'), 'no PTY backend is mounted for the session tier')
   assert(!minYaml.includes('dsh-tool-bash-persistent'), 'the host persistent tool is not mounted either')
   assert((minYaml.match(/- id: bash-wsl\n/g) ?? []).length === 1, 'minimal variant mounts exactly one bash-wsl row')
   assert(minYaml.includes('wsl-bash-tool.js'), 'the row points at this installation\'s session tool')
+  // The keyboard door rides the host's PTY stack, but not its tool: the stack is the only way an
+  // agent gets a real keyboard, and the host tool on top of it is the one issue #51 is about.
+  assert(minYaml.includes('- id: terminal-door'), 'the session tier also mounts the keyboard door')
+  assert(minYaml.includes('wsl-terminal-tool.js'), 'the door points at this installation\'s own tool')
+  assert(minYaml.includes('wsl-relay.js'), 'and starts its shell through this installation\'s relay')
+  assert(!minYaml.includes("name: '@deepseek-ai/dsh-tool-bash-persistent'"), 'the host tool stays unmounted')
   const minParsedSession = yaml.load(minYaml)
   const sessionWorld = minParsedSession.find(row => row.id === 'wsl-world')
   const sessionRow = sessionWorld.config.find(row => row.id === 'bash-wsl')
   assert(sessionRow !== undefined, 'the parsed world carries the session bash row')
   assert(typeof sessionRow.config.timeoutMs === 'number' && typeof sessionRow.config.bootTimeoutMs === 'number',
     `its config survives YAML as a mapping: ${JSON.stringify(sessionRow.config)}`)
+  const door = sessionWorld.config.find(row => row.id === 'terminal-door')
+  assert(door !== undefined && door.group === true && door.isolate.terminals === true,
+    'the door keeps the terminal registry in its own realm')
+  const doorBackend = door.config.find(row => row.id === 'terminal-wsl')
+  assert(doorBackend.config.backendType === 'wsl' && doorBackend.config.idleSilenceMs === 1200,
+    `the door backend is WSL-typed with a bounded quiet window: ${JSON.stringify(doorBackend.config)}`)
+  assert(door.config.some(row => row.id === 'terminal-door-tool'), 'and the door tool is a row of its own')
 } else {
 assert(!minYaml.includes('persistent-shell"') && minYaml.includes('- id: persistent-shell'), 'the source PTY group is replaced by the world\'s own')
 // The world mounts its OWN persistent shell instead of the source's group:

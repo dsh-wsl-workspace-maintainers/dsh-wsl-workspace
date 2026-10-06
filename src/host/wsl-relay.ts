@@ -17,10 +17,11 @@
  * executor in `src/shell.ts` prefixes an explicit `cd` too.
  *
  * Resolution mirrors that executor: the UNC cwd names its distribution, else
- * `DSH_WSL_DISTRO` (the per-session fact this plugin publishes), else the
- * host's default distribution; `DSH_WSL_USER` selects `wsl.exe -u`. Every
- * failure is reported on stderr and exits non-zero, so a broken shell surfaces
- * instead of leaving a silent dead terminal.
+ * `DSH_WSL_DISTRO` (the per-session fact this plugin publishes, normally absent here
+ * because the host scrubs it — see {@link resolveUser}), else the workspace's stored
+ * distribution, else the host's default; `DSH_WSL_USER`, else the workspace's stored
+ * user, selects `wsl.exe -u`. Every failure is reported on stderr and exits non-zero,
+ * so a broken shell surfaces instead of leaving a silent dead terminal.
  *
  * The spawn environment is not simply inherited. WSL imports a Windows variable
  * into a distribution only when `WSLENV` names it, and the host injects its bash
@@ -33,7 +34,8 @@
  */
 
 import { spawn } from 'node:child_process'
-import { isValidWslUsername, parseWslUnc, windowsToMntPath } from '../shared/paths.ts'
+import { isValidWslUsername, joinUnc, parseWslUnc, windowsToMntPath } from '../shared/paths.ts'
+import { getWindowsWorkspace, getWorkspaceUsername } from '../shared/wsl-credentials.ts'
 import { bridgeReadiness } from '../shared/wsl-env.ts'
 import { defaultDistroSync } from '../shared/wsl.ts'
 
@@ -52,27 +54,67 @@ function fail(message: string): never {
 }
 
 /** The distribution this shell belongs to. */
-function resolveDistro(uncDistro: string | undefined): string {
+function resolveDistro(uncDistro: string | undefined, storedDistro: string | undefined): string {
   if (uncDistro !== undefined && uncDistro !== '') return uncDistro
   const fromEnv = process.env.DSH_WSL_DISTRO
   if (fromEnv !== undefined && fromEnv !== '') return fromEnv
+  // A Windows-drive workspace registers its distribution, because its path names none.
+  if (storedDistro !== undefined && storedDistro !== '') return storedDistro
   const fallback = defaultDistroSync()
   if (fallback !== undefined && fallback !== '') return fallback
   return fail('persistent shell: the session cwd carries no distribution, DSH_WSL_DISTRO is unset and no WSL default is readable')
 }
 
-/** The workspace user, when one is configured and safe for `wsl.exe -u`. */
-function resolveUser(): string | undefined {
-  const user = process.env.DSH_WSL_USER
+/**
+ * The Linux user this shell runs as, when one is configured and safe for `wsl.exe -u`.
+ *
+ * The environment is read first because it is the more immediate statement of intent, but it
+ * is normally empty: the host builds this child's environment itself, and its
+ * `scrubbedParentEnv()` drops every `DSH_*` variable, so the per-session fact the plugin
+ * publishes never arrives here. What does survive is the workspace store the dialog writes —
+ * the same file the one-shot executor and the session `bash` read — and it is keyed by the
+ * very cwd this relay was started in. Measured 2026-10-06 under the real backend: with only
+ * the environment consulted, a PTY shell came up as the distribution's default user even
+ * when the workspace named another one.
+ * @param storedUser - the username stored for this workspace, if any.
+ * @returns the username, or undefined for the distribution default user.
+ */
+function resolveUser(storedUser: string | undefined): string | undefined {
+  const fromEnv = process.env.DSH_WSL_USER
+  const user = fromEnv !== undefined && fromEnv !== '' ? fromEnv : storedUser
   if (user === undefined || user === '') return undefined
   if (!isValidWslUsername(user)) fail(`persistent shell: refusing the malformed username "${user}"`)
   return user
 }
 
+/**
+ * The workspace coordinates this cwd has a stored entry for, if any.
+ *
+ * A UNC cwd names its distribution itself and only carries a user; a Windows-drive cwd
+ * (`/mnt/<drive>` workspace) names neither, so both come from the entry the dialog wrote.
+ * An absent entry is an empty answer, never a guess.
+ * @param cwd - this process's working directory.
+ * @param unc - the parsed UNC form of that cwd, when it is one.
+ * @returns the stored username and/or distribution.
+ */
+function storedCoordinates(cwd: string, unc: { distro: string, linuxPath: string } | null): { username?: string, distro?: string } {
+  if (unc !== null) {
+    const username = getWorkspaceUsername(joinUnc(unc.distro, unc.linuxPath))
+    return username === undefined ? {} : { username }
+  }
+  const entry = getWindowsWorkspace(cwd)
+  if (entry === undefined) return {}
+  return {
+    ...entry.username === undefined ? {} : { username: entry.username },
+    ...entry.distro === undefined ? {} : { distro: entry.distro },
+  }
+}
+
 const cwd = process.cwd()
 const unc = parseWslUnc(cwd)
-const distro = resolveDistro(unc?.distro)
-const user = resolveUser()
+const stored = storedCoordinates(cwd, unc)
+const distro = resolveDistro(unc?.distro, stored.distro)
+const user = resolveUser(stored.username)
 // The PTY's cwd is what `wsl.exe` inherits; it accepts both the UNC form of its
 // own filesystem and a drive path (mapped to `/mnt/<drive>`), so it is handed
 // through unchanged and only the login shell's `cd` needs the Linux spelling.

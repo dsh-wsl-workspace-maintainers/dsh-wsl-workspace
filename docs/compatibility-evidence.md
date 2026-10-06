@@ -3015,3 +3015,63 @@ typing time is the driver's, not a person's, and it ran its steps from `/mnt/d/�
 in `~` — same commands, a different mount.
 
 Report files: `D:\Temp\issue51-s0\three-arms-report.txt`, `speed-report.txt`, `terminal-report.txt`.
+
+### Round nine: the keyboard door, driven through the tool the world mounts (2026-10-06)
+
+The last gap in the ticket's contract was the class a pipe cannot answer: a program that asks a
+question. Round eight priced the answer that existed — diagnose, stop, re-run on a one-shot
+pseudo-terminal, read the complaint — and it ends with a person taking over. `wsl_terminal` is the
+door that makes the answer *answerable*: the host's own PTY registry and `dsh-terminal-bash` backend
+pointed at this plugin's relay, driven through the model-facing tool, with the agent's hands on the
+keyboard.
+
+Driven this time through **`ctx.tools.get('wsl_terminal')`** — the registry channel the model uses,
+not a hand-call into the service — with a real `wsl.exe … bash -i` under the host's ConPTY, on a real
+distribution, both build planes, as `root` and as `ruler` (66/66 cells each). Readings from the
+`src`/`root` run:
+
+- `open` **477–490 ms** (warm distribution), and the shell counted as a process: `bash -i` 0 → 1 in
+  the distribution, which is the reading that separates "a real shell started" from "a welcome
+  message was printed".
+- **The keystroke cell**: `sh -c 'read x < /dev/tty; echo GOT=$x'` sent (1 235 ms — the send settles
+  on the quiet window while the program waits), then `hello-from-the-door` sent (1 777 ms) — the
+  screen answered `GOT=hello-from-the-door`. This is the thing the pipe cannot do and the one-shot
+  pseudo-terminal cannot do either: nobody can type into the second one.
+- `submit: false` typed `echo TYPED_NOT_RUN` without running it, and the next send's Enter ran it.
+- **The user cell**: the workspace store named `root` for the door's own cwd while the distribution
+  default on this machine is `ruler`; `whoami` in the door answered `root`. This is the relay reading
+  the workspace store back, because the host builds a PTY child's environment itself and its
+  `scrubbedParentEnv()` drops every `DSH_*` variable — measured, so the environment route is not
+  available at all. On the `ruler` legs the two users coincide and the cell says so instead of
+  claiming a discrimination it did not have.
+- `SIGINT` was delivered to the foreground process group (9 ms) and ended a `sleep 30`; the shell
+  survived it and answered the next command.
+- `close` took the session and its shell down: `list` answered "no terminal is open" and `bash -i`
+  went 1 → 0 — counted in the distribution, not read off the tool's own sentence.
+
+**The cost shape, measured rather than promised.** Eight sends: `1762, 1277, 1764, 1281, 1762, 1733,
+1218, 1729` ms — every one settled on the backend's quiet window, none on its 30 s deadline. The
+host's quiet window is lowered to 1200 ms from its 3000 ms default (source note in
+`src/host/variants.ts`), which is what turns the earlier 3.0–3.6 s reading into this one. Worth
+recording honestly: **the host's fast prompt-recognition path did not fire in this run at all** — the
+2026-10-05 V4 measurement saw it fire on some sends (75–136 ms) and not others (3.0–3.6 s), both on
+this same machine and host build. That path compares the prompt tail six characters after the OSC
+marker, a sibling of the comparison issue #51 is about, and it lives in the host's code: the gate
+therefore asserts the computed answer and *reports* which path settled each send rather than requiring
+the fast one, and the door's note names the difference to the model.
+
+What this round does and does not say. It does: the door starts a real shell, a real program blocked
+on `/dev/tty` receives typed bytes, the shell is the workspace's user, signals reach the foreground
+process, and closing leaves nothing behind — on both planes and both users. It does not: that the
+host's fast path is reliable (it is not, see above); that the door was driven inside a live Desktop
+session (the chain driven here is the same host packages and the same relay the world mounts, and the
+Desktop end-to-end from round seven covered the pipe tier, not this tool); or that the shape holds on
+the other declared releases (the multi-version matrix has not been re-run on this tip).
+
+Found while adding the cells, and fixed in the same pass: `tests/host-profile-isolation.mjs` was red
+on **Windows only**. Its two "a healthy frame says nothing / a failing source is reported once" cells
+count `console.warn` output as failures, and the plugin legitimately warns once at boot on win32 when
+its session probe has no `subprocess` service to probe with (`session probe skipped … mounted
+unverified`) — a line the Linux CI never sees, because the whole win32 probe branch is skipped there.
+The tree at `60354d5` (before this round) reproduces both reds; the cells now separate diagnostics
+from failures, with the platform note attached to the constant.
