@@ -588,10 +588,18 @@ try {
   // and the call answered as if nothing had been lost.
   await call('big=$(printf "x%.0s" $(seq 1 70000)); eval "dshhugefn2() { : $big; }"')
   const starveReport = await call('read -r line < /dev/tty; echo LINE=[$line]', { timeoutMs: 20_000 })
+  // The half that does not move between kernels is the report of what the rebuild left behind — that is
+  // the seam the cell was written for. What moves is the *reason* sentence: where the kernel exposes the
+  // wait the call was stopped and the body says so, where it does not the body carries the reading it
+  // took instead. A rebuild that hides a loss is red on either arm; a reason that is not the one that
+  // actually fired is red too.
   check('a rebuild triggered by a terminal wait reports what it could not restore',
     /not restored: functions dshhugefn2\(\d+\)/.test(starveReport.rendered)
-    && /waiting for a keyboard|ran twice|pseudo-terminal/i.test(starveReport.rendered),
-    JSON.stringify(starveReport.rendered.slice(-170)))
+    && (canAct
+      ? /waiting for a keyboard|ran twice|pseudo-terminal/i.test(starveReport.rendered)
+      : clause(starveReport.rendered) !== '' && starveReport.value?.timedOut === true),
+    JSON.stringify({ canAct, clause: clause(starveReport.rendered).slice(0, 90),
+      tail: starveReport.rendered.slice(-120) }))
   await call('unset -f dshhugefn2 2>/dev/null; true')
 
   // Detached children. Measured: killing `wsl.exe` takes ordinary children with it (0 survivors) but
