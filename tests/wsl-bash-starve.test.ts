@@ -48,8 +48,25 @@ test('the readings parse into the fields the rule uses', () => {
   assert.deepEqual(rows.map(row => row.pid), [18673, 18255, 19091])
   assert.deepEqual(rows.map(row => row.wchan), ['wait_woken', '0', 'hrtimer_nanosleep'])
   assert.deepEqual(rows.map(row => row.ttyFds), [1, -1, 0])
+  // The transcribed table predates the `sc=` field, and a pass from an older probe must still parse —
+  // with the field empty rather than guessed at.
+  assert.deepEqual(rows.map(row => row.syscall), ['', '', ''])
   // Both schedstat numbers add up to one comparable count.
   assert.equal(rows[2]?.cpuNs, 500)
+})
+
+test('the syscall a process is parked in is read and reported, when the kernel says it', () => {
+  // `wchan` is the name of that location and WSL1 answers `0` for every process, which is where the
+  // keyboard-wait rule goes blind. The number is the same fact one layer lower: on x86-64 `0` is
+  // `read`, so a foreground process parked in `0` holding a terminal fd is the case that has to be
+  // tellable from a `sleep`.
+  const withSc = sample('P 9303 9303 9303 S+ w=0 c=800,200 tty=0 sc=0 comm=sh role=desc').rows
+  assert.equal(withSc[0]?.syscall, '0', `the field parses: ${JSON.stringify(withSc[0])}`)
+  assert.equal(describeRows(sample('P 9303 9303 9303 S+ w=0 c=800,200 tty=0 sc=35 comm=sleep role=desc'))
+    .includes('sleep:S+ w=0 sc=35 0tty fg'), true)
+  // Reading it costs one more `cut` per process, and the rule does not act on it yet — asserting the
+  // probe asks keeps the silence honest: the field is collected so a WSL1 report says what was there.
+  assert.ok(probeScript(42).includes('/proc/$pid/syscall'), 'the probe must collect it, not invent it')
 })
 
 test('a line that is not a row is dropped rather than guessed at', () => {

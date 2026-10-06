@@ -49,6 +49,14 @@ export interface StarveRow {
   wchan: string
   /** How many of its fds point at a pts, or `-1` when its fd table is not readable at all. */
   ttyFds: number
+  /**
+   * The first field of `/proc/<pid>/syscall`: the number of the syscall the process is parked in, or
+   * `''` when the kernel does not fill that file for this reader.
+   *
+   * It is the same fact `/proc/<pid>/wchan` names, one layer lower, and on the WSL1 runner it is the
+   * only place left to look: `wchan` answers `0` for every process there.
+   */
+  syscall: string
   /** `comm`, the executable's short name — used only to skip this tool's own wrapper, never to guess. */
   comm: string
   /**
@@ -158,10 +166,16 @@ export function probeScript(rootPid: number): string {
     + `[ -r /proc/$pid/stat ] || continue; `
     + 'set -- $(ps -o pid=,pgid=,tpgid=,stat=,comm= -p $pid); '
     + 'wchan=$(cat /proc/$pid/wchan 2>/dev/null); '
+    // The number of the syscall a process is parked in. `/proc/<pid>/wchan` names it on the kernels
+    // that fill that file; on the WSL1 runner every process answers `0` there, which is why a keyboard
+    // wait and a `sleep` are indistinguishable to the rule today. `syscall`'s first field is the raw
+    // number (`0` is `read` on x86-64), so this is the same fact one layer lower — read here so the
+    // note can report it, and so a fix can be written against what the kernel actually says.
+    + `sc=$(cut -d\' \' -f1 /proc/$pid/syscall 2>/dev/null); `
     + `cpu=$(cut -d' ' -f1,2 /proc/$pid/schedstat 2>/dev/null | tr ' ' ','); `
     + `if ls /proc/$pid/fd >/dev/null 2>&1; then ttys=$(ls -l /proc/$pid/fd 2>/dev/null | grep -c -e pts/ -e /dev/tty); else ttys=-1; fi; `
     + `role=desc; [ "$pid" = "$root" ] && role=shell; `
-    + `echo "P $1 $2 $3 $4 w=$wchan c=$cpu tty=$ttys comm=$5 role=$role"; `
+    + `echo "P $1 $2 $3 $4 w=$wchan c=$cpu tty=$ttys sc=$sc comm=$5 role=$role"; `
     + `done; echo ${PROBE_DONE_SENTINEL}`
 }
 
@@ -175,7 +189,7 @@ export function parseProbe(text: string, atMs: number): StarveSample {
   const rows: StarveRow[] = []
   const field = (groups: RegExpExecArray, index: number): string => groups[index] ?? ''
   for (const line of text.split(/\r?\n/)) {
-    const match = /^P (\d+) (\d+) (-?\d+) (\S+) w=(\S*) c=([\d,]*) tty=(-?\d+) comm=(.*?) role=(\S+)$/.exec(line.trim())
+    const match = /^P (\d+) (\d+) (-?\d+) (\S+) w=(\S*) c=([\d,]*) tty=(-?\d+)(?: sc=(\S*))? comm=(.*?) role=(\S+)$/.exec(line.trim())
     if (match === null) continue
     const [utime = '0', stime = '0'] = field(match, 6).split(',')
     rows.push({
@@ -188,8 +202,11 @@ export function parseProbe(text: string, atMs: number): StarveSample {
       // process was running. Both matter to the rule, so the empty case is kept as its own value.
       wchan: field(match, 5) === '' ? 'running' : field(match, 5),
       ttyFds: Number(field(match, 7)),
-      comm: field(match, 8),
-      shell: field(match, 9) === 'shell',
+      // Absent on a pass from a probe older than this field, and empty where the kernel does not
+      // expose it — which is the datum the WSL1 waiting rule is missing, so it is reported, not guessed.
+      syscall: field(match, 8),
+      comm: field(match, 9),
+      shell: field(match, 10) === 'shell',
     })
   }
   return { atMs, rows }
@@ -322,7 +339,8 @@ export function describeRows(sample: StarveSample | undefined): string {
   const parts = rows.slice(0, 4).map(row => {
     const fg = row.tpgid >= 0 && row.tpgid === row.pgid ? 'fg' : 'bg'
     const tty = row.ttyFds < 0 ? 'fd-unreadable' : `${row.ttyFds}tty`
-    return `${row.shell ? 'shell' : row.comm}:${row.state} w=${row.wchan} ${tty} ${fg}`
+    const sc = row.syscall === '' ? '' : ` sc=${row.syscall}`
+    return `${row.shell ? 'shell' : row.comm}:${row.state} w=${row.wchan}${sc} ${tty} ${fg}`
   })
   return `${parts.join('; ')}${rows.length > 4 ? `; +${rows.length - 4} more` : ''}`
 }
