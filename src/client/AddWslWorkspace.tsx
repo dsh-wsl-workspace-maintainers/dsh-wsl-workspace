@@ -101,6 +101,10 @@ export function AddWslWorkspace({ wide, t, describe, checkPreset, listDistros, l
   const [selfDescription, setSelfDescription] = useState<WslSelfDescription | null>(null)
   // Monotone browse-request sequence: stale responses for a superseded browse are dropped.
   const browseSeq = useRef(0)
+  // The same for the open flow, which Retry re-runs: a retry supersedes the
+  // open still in flight, and its late answers describe a state the dialog has
+  // already left.
+  const openSeq = useRef(0)
 
   const refreshBrowse = async (root: string, targetDistro: string): Promise<void> => {
     const seq = ++browseSeq.current
@@ -120,40 +124,58 @@ export function AddWslWorkspace({ wide, t, describe, checkPreset, listDistros, l
     }
   }
 
-  useEffect(() => {
-    if (!open) return
-    let cancelled = false
+  /**
+   * The dialog's open flow: check the preset, list the distros, browse `/`.
+   *
+   * Named rather than inlined in the effect because Retry has to RUN it. A
+   * retry that only cleared the error text left the dialog showing a verdict
+   * about the host that nothing had re-read — the exact complaint issue #52 is
+   * about, one button away from being unanswerable. Re-running is also what
+   * makes the button useful for the `presetPending` case, where the host may
+   * well have finished generating by the second press.
+   * @returns nothing; every result lands in state.
+   */
+  const onOpen = async (): Promise<void> => {
+    const seq = ++openSeq.current
     setError(null)
     // Advisory data for the help panel: never fatal, never blocking the form.
-    void describe().then(value => { if (!cancelled) setSelfDescription(value) }).catch(() => { if (!cancelled) setSelfDescription(null) })
+    void describe().then(value => { if (seq === openSeq.current) setSelfDescription(value) }).catch(() => { if (seq === openSeq.current) setSelfDescription(null) })
     setOpening(true)
-    void (async () => {
-      let presetIssue: string | undefined
-      try {
-        presetIssue = await checkPreset()
-      } catch {
-        presetIssue = t('error.loadDistros')
-      }
-      let names: string[]
-      try {
-        names = await listDistros()
-      } catch {
-        if (cancelled) return
-        setOpening(false)
-        setError(t('error.loadDistros'))
-        return
-      }
-      if (cancelled) return
-      setDistros(names)
-      const first = names[0] ?? ''
-      setDistro(first)
-      // The default browse root walks from `/`; the input defaults to `/home/`.
-      setBrowsing(true)
+    // The preset verdict and the distro list are separate questions with
+    // separate answers. Collapsing a failed preset check into "could not list
+    // distros" told the user to go look at their WSL installation for a
+    // generation that had not finished — so a refusal of the CHECK keeps the
+    // host's own words, which name the method that failed.
+    let presetIssue: string | undefined
+    try {
+      presetIssue = await checkPreset()
+    } catch (error) {
+      presetIssue = error instanceof Error ? error.message : String(error)
+    }
+    let names: string[]
+    try {
+      names = await listDistros()
+    } catch {
+      if (openSeq.current !== seq) return
       setOpening(false)
-      if (presetIssue !== undefined) setError(presetIssue)
-      if (first !== '') void refreshBrowse('/', first)
-    })()
-    return () => { cancelled = true }
+      setError(t('error.loadDistros'))
+      return
+    }
+    if (openSeq.current !== seq) return
+    setDistros(names)
+    const first = names[0] ?? ''
+    setDistro(first)
+    // The default browse root walks from `/`; the input defaults to `/home/`.
+    setBrowsing(true)
+    setOpening(false)
+    if (presetIssue !== undefined) setError(presetIssue)
+    if (first !== '') void refreshBrowse('/', first)
+  }
+
+  useEffect(() => {
+    if (!open) return
+    void onOpen()
+    return () => { openSeq.current += 1 }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- run once per open against current t.
   }, [open])
 
@@ -290,7 +312,7 @@ export function AddWslWorkspace({ wide, t, describe, checkPreset, listDistros, l
           {error !== null ? (
             <div className="dww-error">
               {error}
-              <button type="button" className="dww-retry" onClick={() => setError(null)}>{t('dialog.retry')}</button>
+              <button type="button" className="dww-retry" onClick={() => { void onOpen() }}>{t('dialog.retry')}</button>
             </div>
           ) : null}
           <div className="dww-field">
