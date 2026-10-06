@@ -553,6 +553,22 @@ try {
   check('the backgrounded command did not run inside the session shell', !afterBg.text.includes('BG_42')
     && afterBg.text.includes('AFTER_BG_4'), JSON.stringify(afterBg.text.trim()))
 
+  // The same hand-off with an input. The one-shot executor is the same code the host's own `bash`
+  // tool uses in its background arm, and it takes `stdin` on the resolved spec, so a backgrounded
+  // command is fed the way a foreground one is. Measured by *running* the job the producer recorded:
+  // the registry double above never calls `run()`, and a claim about what a job receives has to come
+  // from the job.
+  const bgStdinArgs = { command: 'cat; echo RC=$?', description: 'compatibility driver: background stdin', run_in_background: true, stdin: 'FED_TO_BACKGROUND\n' }
+  await tool.execute(bgStdinArgs, exec)
+  const bgJob = jobRequest.run()
+  const bgOutcome = await bgJob.done
+  // This producer's `readOutput` is the registry's contract — a rendered string, not the shell
+  // handle's `{delta}` — and the first version of this cell read it as the latter and asserted on ''.
+  const bgBody = String(bgJob.readOutput() ?? '')
+  check('a backgrounded command is fed the caller’s stdin too',
+    bgBody.includes('FED_TO_BACKGROUND') && bgBody.includes('RC=0') && bgOutcome?.status === 'completed',
+    JSON.stringify({ status: bgOutcome?.status, detail: bgOutcome?.detail, body: bgBody.trim().slice(0, 60) }))
+
   // The shells are children of this process, so counting them is a real lifecycle test: a session
   // that outlives its plugin fiber is a leak the user cannot see or cancel.
   const wslCount = () => (String(spawnSync('tasklist.exe', ['/FI', 'IMAGENAME eq wsl.exe', '/NH'],
@@ -788,7 +804,7 @@ try {
     `the control harness failed before comparing: ${String(error?.message ?? error).slice(0, 120)}`)
 }
 
-const EXPECTED_CHECKS = 70
+const EXPECTED_CHECKS = 71
 const passed = results.filter(r => r.pass).length
 console.log(`${passed}/${results.length} checks passed (plane=${plane()}, distro=${distro}, user=${username}, cwd=${sessionCwd})`)
 if (results.length !== EXPECTED_CHECKS) {

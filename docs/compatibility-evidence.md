@@ -3083,7 +3083,12 @@ arrives too — `read x; echo GOT=$x` under `script` answered `GOT=typed-by-stdi
 (`wsl-bash: stdin is 32769 bytes, over the 32768-byte ceiling …`) with nothing run; the ceiling is
 half the measured 64 kB frame point (a 64 kB command answers in ~3.8 s, 256 kB in ~59 s), and a
 program fed half its input fails in ways that look like the program's fault, which is why the answer
-is a refusal and not a truncation. Recorded because the first run of these cells showed
+is a refusal and not a truncation. The **background** arm was measured by actually running the job the
+producer recorded (the registry double never calls `run()`): `cat` there printed
+`FED_TO_BACKGROUND\nRC=0` and the job settled `completed`, so the one-shot executor — the same code the
+host's own background arm uses — carries the input too. First version of that cell asserted on `''`,
+because the producer's `readOutput()` is a rendered string (the registry's contract) and the cell read
+it as the shell handle's `{delta}`. Recorded because the first run of these cells showed
 `shell-init: error retrieving current directory` inside the escalated cell: the driver's earlier
 relative-`workdir` cell leaves the session inside a directory a later cell deletes, and the *first new
 bash* started there says so. The section now starts with a `cd` home and the line is gone — the
