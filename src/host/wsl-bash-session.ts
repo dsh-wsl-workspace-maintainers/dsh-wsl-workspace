@@ -27,7 +27,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { BOOTSTRAP_COMMAND, dropProtocolEcho, encodeFrame, parseState, readCompletion, readStateRecord, restoreChunks, shellPidOf, stripRecords } from './wsl-bash-protocol.ts'
-import { FIRST_PROBE_MS, LOOKS_BEFORE_SLOWING, MIN_WAIT_MS, PROBE_DONE_SENTINEL, PROBE_EVERY_MS, PROBE_SLOW_MS, confirmsTerminalRead, culpritPids, parseProbe, probeScript, starveOf, stopScript, type StarveKind, type StarveSample } from './wsl-bash-starve.ts'
+import { FIRST_PROBE_MS, LOOKS_BEFORE_SLOWING, MIN_WAIT_MS, PROBE_DONE_SENTINEL, PROBE_EVERY_MS, PROBE_SLOW_MS, confirmsTerminalRead, culpritPids, describeRows, parseProbe, probeScript, starveOf, stopScript, type StarveKind, type StarveSample } from './wsl-bash-starve.ts'
 
 /** How often the reader looks for a frame's records, in milliseconds. */
 const POLL_MS = 20
@@ -118,6 +118,13 @@ export interface WslBashRun {
    * than left to conclude it ran and found nothing.
    */
   starveProbeBroken?: boolean | undefined
+  /**
+   * What the last look actually read, when the call reached its deadline after looks that confirmed
+   * nothing. It is the difference between "the wait was examined and found ordinary" and "this
+   * kernel does not expose the wait" — measured on the WSL1 runner, where `/proc/<pid>/wchan` answers
+   * `0` for every process and no fd points at a pts.
+   */
+  starveSaw?: string | undefined
 }
 
 /** The seam a session needs: enough of the host context to spawn a child. */
@@ -649,7 +656,7 @@ export class WslBashSession {
 
   /** The run fields that carry a watchdog stop, or nothing when there was none. */
   private starvedFields(watch: FrameWatch):
-  Pick<WslBashRun, 'starved' | 'starvedAtMs' | 'starvedViaRoot' | 'starvedShellInterrupt' | 'starveProbeBroken'> {
+  Pick<WslBashRun, 'starved' | 'starvedAtMs' | 'starvedViaRoot' | 'starvedShellInterrupt' | 'starveProbeBroken' | 'starveSaw'> {
     if (watch.stop !== undefined) {
       return {
         starved: watch.stop.kind, starvedAtMs: watch.stop.atMs, starvedViaRoot: watch.viaRoot,
@@ -657,7 +664,11 @@ export class WslBashSession {
       }
     }
     // Looked and never got an answer: the check is not running here, which is a fact the caller needs.
-    return watch.looks === 0 && watch.failed > 0 ? { starveProbeBroken: true } : {}
+    if (watch.looks === 0 && watch.failed > 0) return { starveProbeBroken: true }
+    // Looked, got answers, and none of them confirmed a wait: say what was seen, because "timed out"
+    // alone reads as though the wait had been examined and found ordinary.
+    const saw = describeRows(watch.previous)
+    return watch.looks > 0 && saw !== '' ? { starveSaw: saw } : {}
   }
 
   /**

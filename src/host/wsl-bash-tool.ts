@@ -286,6 +286,13 @@ function toForeground(run: WslBashRun, timeoutMs: number, escalated: boolean, be
     else {
       notes.push('[the call reached its deadline; for work that outlives one call pass run_in_background: true, or use bash_background]')
     }
+    // The reading ran, saw processes, and none of them matched a terminal wait. Print what it read:
+    // on a kernel that exposes the wait this line is `w=wait_woken 1tty fg`; on the WSL1 runner every
+    // process answers `w=0` with no pts fd, and without this the body would read as though the wait
+    // had been examined and found ordinary.
+    if (run.starveSaw !== undefined) {
+      notes.push(`[the check for a command waiting on a keyboard looked and read: ${run.starveSaw}]`)
+    }
   }
   if (run.restarted) {
     notes.push(run.skipped === undefined || run.skipped.length === 0

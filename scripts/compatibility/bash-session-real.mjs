@@ -349,6 +349,15 @@ try {
   check('a timed-out call says a restart only when the session had one',
     ptyTimeout.value?.timedOut === true && claimedRecovery === actuallyRestarted,
     JSON.stringify({ claimedRecovery, actuallyRestarted, timedOut: ptyTimeout.value?.timedOut }))
+  // And a deadline reached *with* looks taken has to print what they read. On WSL2 the line names the
+  // sleep location; on the WSL1 runner every process answers `w=0` with no pts fd, and a body that
+  // says only "timed out" there reads as though the wait had been examined and found ordinary — which
+  // is precisely the claim this layer must not make about a kernel it cannot read.
+  const looked = await call('sleep 3', { timeoutMs: 1_500 })
+  check('a timed-out call carries the reading it took',
+    looked.value?.timedOut === true
+      && /\[the check for a command waiting on a keyboard looked and read: .*w=\S+ .*tty\b/.test(looked.rendered),
+  JSON.stringify(looked.rendered.slice(-150)))
   // The `tty: false` veto is asserted offline instead (`tests/wsl-bash-tty.test.ts`): it is a decision,
   // and the only live discriminator would be a program that hangs on a real terminal, which would make
   // the cell's cost the very defect it is measuring.
@@ -832,7 +841,7 @@ try {
     `the control harness failed before comparing: ${String(error?.message ?? error).slice(0, 120)}`)
 }
 
-const EXPECTED_CHECKS = 72
+const EXPECTED_CHECKS = 73
 const passed = results.filter(r => r.pass).length
 console.log(`${passed}/${results.length} checks passed (plane=${plane()}, distro=${distro}, user=${username}, cwd=${sessionCwd})`)
 if (results.length !== EXPECTED_CHECKS) {

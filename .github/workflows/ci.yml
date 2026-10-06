@@ -87,10 +87,20 @@ jobs:
           retention-days: 7
 
   wsl-gate:
-    name: real-WSL hard gates (windows + WSL1 Ubuntu)
+    name: real-WSL hard gates (windows + WSL${{ matrix.wslVersion }} Ubuntu)
     runs-on: windows-latest
     timeout-minutes: 35
     needs: lint-build
+    # Both kernel shapes, on the same distribution. The reading that decides "this command is waiting
+    # for a keyboard" is a `/proc` walk, and WSL1 answers it differently from WSL2: `wchan` reads `0`
+    # for every process and no fd points at a pts, so a keyboard wait there looked, for two rounds,
+    # exactly like a command that was merely slow. One runner version could not see that, and the
+    # product difference is real — measured on the WSL1 frame: five cells, all in that family, with the
+    # call burning its 20 s and 60 s deadlines.
+    strategy:
+      fail-fast: false
+      matrix:
+        wslVersion: [1, 2]
     defaults:
       run:
         shell: bash
@@ -118,23 +128,24 @@ jobs:
       - run: npm ci
       - name: install pinned @deepseek-ai host packages
         run: node ci/install-pinned.mjs
-      - name: provision WSL1 Ubuntu
+      - name: provision WSL${{ matrix.wslVersion }} Ubuntu
         uses: Vampire/setup-wsl@v3
         with:
-          wsl-version: 1
+          wsl-version: ${{ matrix.wslVersion }}
           distribution: Ubuntu-24.04
           set-as-default: 'true'
           systemd: 'false'
           use-headless: 'false'
-      - name: pin the distro to WSL1 and the default-distro registry keys
+      - name: pin the distro to WSL${{ matrix.wslVersion }} and the default-distro registry keys
         run: |
           set -u
+          want=${{ matrix.wslVersion }}
           v=$(wsl.exe -l -v 2>/dev/null | tr -d '\0' | grep -i ubuntu | grep -oE '[12]$' || true)
-          if [ "$v" != "1" ]; then
-            echo "instance is VERSION=${v:-unknown}; converting to 1 (conversion does not need Hyper-V)"
-            wsl.exe --set-version Ubuntu-24.04 1 2>&1 | tr -d '\0' | tail -2
+          if [ "$v" != "$want" ]; then
+            echo "instance is VERSION=${v:-unknown}; converting to $want (conversion does not need Hyper-V)"
+            wsl.exe --set-version Ubuntu-24.04 "$want" 2>&1 | tr -d '\0' | tail -2
           fi
-          wsl.exe -l -v 2>/dev/null | tr -d '\0' | grep -iE "ubuntu.*[[:space:]]1$" || { echo "RED — Ubuntu-24.04 is not running as WSL1"; exit 1; }
+          wsl.exe -l -v 2>/dev/null | tr -d '\0' | grep -iE "ubuntu.*[[:space:]]${want}$" || { echo "RED — Ubuntu-24.04 is not running as WSL${want}"; exit 1; }
           wsl.exe --set-default Ubuntu-24.04
       - name: fixture preparation (bounded keep-warm so the 9P share stays visible)
         run: |
@@ -258,6 +269,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: wsl-gate-logs
+          name: wsl-gate-logs-wsl${{ matrix.wslVersion }}
           path: logs/
           retention-days: 7

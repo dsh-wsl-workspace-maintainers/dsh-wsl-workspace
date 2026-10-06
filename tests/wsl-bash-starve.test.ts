@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { confirmsTerminalRead, culpritPids, parseProbe, probeScript, retryNote, starveNote, starveOf, stopScript, FIRST_PROBE_MS, LOOKS_BEFORE_SLOWING, MIN_WAIT_MS, PROBE_EVERY_MS, PROBE_SLOW_MS, OWN_TERMINAL_WAIT_MS, UNCONFIRMED_WAIT_MS, type StarveSample } from '../src/host/wsl-bash-starve.ts'
+import { confirmsTerminalRead, culpritPids, describeRows, parseProbe, probeScript, retryNote, starveNote, starveOf, stopScript, FIRST_PROBE_MS, LOOKS_BEFORE_SLOWING, MIN_WAIT_MS, PROBE_EVERY_MS, PROBE_SLOW_MS, OWN_TERMINAL_WAIT_MS, UNCONFIRMED_WAIT_MS, type StarveSample } from '../src/host/wsl-bash-starve.ts'
 
 /** A sample of one row, as the probe would report it. */
 function sample(...lines: string[]): StarveSample {
@@ -18,10 +18,30 @@ function sample(...lines: string[]): StarveSample {
 }
 
 const TERMINAL_ROW = 'P 18673 18673 18673 S+ w=wait_woken c=1200,300 tty=1 comm=sh role=desc'
+/**
+ * The same keyboard wait as the runner reports it on **WSL1** (measured on the cloud frame,
+ * 2026-10-06): `wchan` answers `0` for every process and the fd table lists no pts, while `ps -o tty=`
+ * still names a terminal. This row is what the five red cells were sitting on; it is deliberately not
+ * yet a shape the rule acts on, because a `sleep` on that kernel looks identical in these columns and
+ * stopping a merely-slow command twice is the one thing this layer may not do.
+ */
+const WSL1_TERMINAL_ROW = 'P 9303 9303 9303 S+ w=0 c=800,200 tty=0 comm=sh role=desc'
 const PRIVILEGED_ROW = 'P 18255 18255 18255 S+ w=0 c=900,200 tty=-1 comm=sudo role=desc'
 const SLEEP_ROW = 'P 19091 19091 19091 S+ w=hrtimer_nanosleep c=400,100 tty=0 comm=sleep role=desc'
 const NETWORK_ROW = 'P 19479 19479 19479 S w=poll_schedule_timeout.constprop.0 c=600,150 tty=0 comm=curl role=desc'
 const RUNNING_ROW = 'P 19299 19299 19299 Rl+ w= c=700,18000 tty=0 comm=dd role=desc'
+
+test('a call that timed out after looks that confirmed nothing says what it read', () => {
+  // The note is the only place this becomes visible to the model and to a bug report: on WSL1 every
+  // process answers `w=0`, and without the reading a timeout reads as "examined and found ordinary".
+  const seen = describeRows(sample(TERMINAL_ROW, SLEEP_ROW))
+  assert.ok(seen.includes('sh:S+ w=wait_woken 1tty fg'), `the confirmed wait must be in it: ${seen}`)
+  assert.ok(seen.includes('sleep:S+ w=hrtimer_nanosleep 0tty fg'), `so must the innocent one: ${seen}`)
+  const blind = describeRows(sample(WSL1_TERMINAL_ROW))
+  assert.equal(blind, 'sh:S+ w=0 0tty fg', 'the WSL1 shape is reportable even though the rule does not act on it')
+  assert.equal(describeRows(sample('P not-a-row')), '', 'a pass that reported no rows reports nothing')
+  assert.equal(describeRows(undefined), '', 'a pass that never answered is not a reading')
+})
 
 test('the readings parse into the fields the rule uses', () => {
   const rows = sample(TERMINAL_ROW, PRIVILEGED_ROW, SLEEP_ROW).rows

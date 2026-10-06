@@ -305,6 +305,29 @@ export function retryNote(kind: StarveKind, atMs: number, viaRoot = false, shell
 }
 
 /**
+ * What one probe pass saw, in the shortest form that is still a measurement.
+ *
+ * A call that reached its deadline with the watchdog having looked and looked and never confirmed is
+ * the shape this exists for: on the WSL1 runner the reading takes its rows and calls none of them a
+ * terminal wait (`/proc/<pid>/wchan` answers `0`, and no fd points at a pts), so the call burns its
+ * whole deadline and the body says only "timed out". Saying *what was seen* is what makes that
+ * attributable — on the kernel that can read it, the same line carries `w=wait_woken tty=1` — and it
+ * keeps the note honest about the tool looking and not finding, rather than about nothing having run.
+ * @param sample - the rows of one pass, or undefined when the pass never answered.
+ * @returns a clause for the note, or `''` when there was nothing to report.
+ */
+export function describeRows(sample: StarveSample | undefined): string {
+  const rows = sample?.rows ?? []
+  if (rows.length === 0) return ''
+  const parts = rows.slice(0, 4).map(row => {
+    const fg = row.tpgid >= 0 && row.tpgid === row.pgid ? 'fg' : 'bg'
+    const tty = row.ttyFds < 0 ? 'fd-unreadable' : `${row.ttyFds}tty`
+    return `${row.shell ? 'shell' : row.comm}:${row.state} w=${row.wchan} ${tty} ${fg}`
+  })
+  return `${parts.join('; ')}${rows.length > 4 ? `; +${rows.length - 4} more` : ''}`
+}
+
+/**
  * Whether a reading taken through the root plane confirms a terminal read, or rules it out.
  *
  * This is what replaces waiting eight seconds to be sure. A privileged program hides its `/proc` entries
