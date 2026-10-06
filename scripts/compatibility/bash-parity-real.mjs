@@ -13,8 +13,7 @@
 // this driver is red — a difference nobody wrote down is the thing that surprises a user.
 import { Context } from '@deepseek-ai/cordis'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
-import { existsSync } from 'node:fs'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join, resolve as resolvePath } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
@@ -191,10 +190,35 @@ async function ask(world, probe) {
   const args = { ...probe.args, description: `bash-parity-real: ${probe.name}` }
   try {
     const value = await world.tool.execute(args, { signal: AbortSignal.timeout(90_000), agent: world.owner })
+    // A spill file is the subprocess's own handle to close, and the tool's answer does not wait for
+    // its last write. On the lib plane of the WSL frame this cell counted 197,852 lines for
+    // `seq 1 200000` — the file was still growing when it was read. Wait for the size to hold still,
+    // and keep the whole-stream promise as the assertion.
+    await settleSpill(value?.stdout?.spillPath)
     const rendered = (world.tool.output?.render?.(args, value) ?? []).map(part => String(part?.text ?? '')).join('')
     return { signature: signature(value, rendered, probe.normalize) }
   } catch (error) {
     return { signature: { kind: 'threw', error: String(error?.message ?? error).slice(0, 60) } }
+  }
+}
+
+/**
+ * Read a spill file only once it has stopped growing.
+ * @param path - the spill path the tool reported, when there was one.
+ */
+async function settleSpill(path) {
+  if (typeof path !== 'string' || path === '') return
+  let previous = -1n
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    let size = 0n
+    try {
+      size = statSync(path).size
+    } catch {
+      return
+    }
+    if (size === previous) return
+    previous = size
+    await new Promise(resolve => setTimeout(resolve, 100))
   }
 }
 
