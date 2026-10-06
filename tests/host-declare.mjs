@@ -28,6 +28,16 @@ if (!SESSION_TIER) process.env.DSH_WSL_PTY_SHELL = '1'
 const home = mkdtempSync(join(tmpdir(), 'dsh-wsl-declare-'))
 process.env.DSH_HOME = home
 
+// The same registered-workspace premise `tests/host-materialize.mjs` states: an
+// empty registry makes `readinessCwd()` fall back to `SystemRoot`, which is not a
+// WSL path, so `buildSessionSpec` returns `undefined` and the session probe
+// demotes `persistentShell` — and the `*-wsl` rows this file exists to check are
+// never declared. Registering a UNC workspace is what a booted profile has.
+const registeredDistro = process.env.WSL_COMPAT_DISTRO ?? 'Ubuntu'
+writeFileSync(join(home, 'wsl-workspaces.json'), JSON.stringify({
+  [`\\\\wsl.localhost\\${registeredDistro}\\home`]: { distro: registeredDistro },
+}, null, 2))
+
 const { apply } = require('../lib/index.js')
 
 // ── source compositions (the entry-list YAML dialect the host documents) ────

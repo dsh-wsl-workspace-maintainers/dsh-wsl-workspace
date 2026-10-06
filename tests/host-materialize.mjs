@@ -23,6 +23,24 @@ if (!SESSION_TIER) process.env.DSH_WSL_PTY_SHELL = '1'
 const home = mkdtempSync(join(tmpdir(), 'dsh-wsl-home-'))
 process.env.DSH_HOME = home
 
+// A registered workspace, before `apply()` boots. This fixture used to leave the
+// registry empty, and that silently decided the subject under test: with no
+// workspace, `readinessCwd()` falls back to `SystemRoot` (`src/index.ts:717-723`),
+// `resolveDistro` cannot read a distribution out of `C:\Windows`, `buildSessionSpec`
+// returns `undefined`, and the session probe demotes `persistentShell` to false
+// (`src/index.ts:1108-1112`). The world then mounts no `bash-wsl` row at all — so
+// every assertion below about the session tier's SHAPE was unreachable, and the
+// file failed at the first of them rather than exercising it.
+//
+// Registering one UNC workspace makes `readinessCwd()` return a real
+// `\\wsl.localhost\<distro>\…` path, which is what a booted profile always has.
+// The distribution name is the convention the other host tests use; nothing here
+// spawns WSL, the probe is satisfied by the *shape* of the decision.
+const registeredDistro = process.env.WSL_COMPAT_DISTRO ?? 'Ubuntu'
+writeFileSync(join(home, 'wsl-workspaces.json'), JSON.stringify({
+  [`\\\\wsl.localhost\\${registeredDistro}\\home`]: { distro: registeredDistro },
+}, null, 2))
+
 const { apply } = require('../lib/index.js')
 
 // ── fake roster: one standard-like and one minimal-like source preset ──────
