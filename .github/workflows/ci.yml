@@ -163,6 +163,11 @@ jobs:
             echo "::group::$name"
             "$@" > "logs/$name.log" 2>&1 || rc=$?
             echo "rc=$rc"
+            # `tail -6` alone was not attribution: a driver that runs 45 of 72 cells leaves its
+            # summary line, its failing cells above the window, and the frame read as one red with
+            # no name attached. Print the verdict line, every FAIL, and the short-run guard's own
+            # sentence — then the tail for context.
+            grep -aE "checks passed|bash-session-real: RED|  FAIL" "logs/$name.log" 2>/dev/null | head -25 || true
             tail -6 "logs/$name.log" || true
             echo "::endgroup::"
             if [ "$rc" -ne 0 ]; then FAIL=1; fi
@@ -196,6 +201,7 @@ jobs:
             echo "::group::lib-$name"
             DSH_WSL_TEST_PLANE=lib "$@" > "logs/lib-$name.log" 2>&1 || rc=$?
             echo "rc=$rc"
+            grep -aE "  FAIL|: RED|checks passed" "logs/lib-$name.log" 2>/dev/null | head -20 || true
             tail -8 "logs/lib-$name.log" || true
             echo "::endgroup::"
             if [ "$rc" -ne 0 ]; then FAIL=1; fi
