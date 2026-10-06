@@ -1,9 +1,22 @@
 // End-to-end verification of the WSL skills provider against the REAL
 // \\wsl.localhost 9P share (requires WSL + the repro tree from repro-setup.sh).
-//   node scripts/repro-e2e.mjs
+//   WSL_COMPAT_USER=<user> npm run test:repro
 // Override the target with WSL_COMPAT_DISTRO / WSL_COMPAT_USER and the tree
 // location with WSL_REPRO_ROOT (NOT WSL_COMPAT_ROOT — in the compatibility
 // drivers that name means "fixture parent under /tmp", a different thing).
+//
+// WSL_COMPAT_USER is **required**, and that is a repair rather than a style choice: the default
+// used to be `mille`, a maintainer-machine account name, so on CI (root) the harness pointed at
+// \\wsl.localhost\<distro>\home\mille\repro-ws-root, which does not exist — the run was RED
+// before it started for a reason that had nothing to do with the provider. A wrong default here
+// does not degrade, it substitutes a different question.
+//
+// Nothing referenced this file — no npm script, no workflow — which is why it could sit here
+// claiming assertions while nothing ran them (issue #44 §7). It is now wired: `npm run
+// test:repro`, plus a `continue-on-error` step in ci.yml. It gets its OWN job on purpose:
+// `repro-setup.sh` does `rm -rf` and rebuilds the tree inside the distribution, which would
+// repollute the cold/warm instance state the other drivers take as a premise, and a shared job
+// would let that show up as a driver failure.
 //
 // This file used to PRINT four listings while TESTING.md and docs/CHECK-CATALOG.md
 // described it as carrying assertions. It carried none: `grep -cE 'assert|throw|exit'`
@@ -18,7 +31,20 @@ const control = { signal: new AbortController().signal, invalidate: () => {} }
 const provider = new WslSkillsProvider(control)
 
 const distro = process.env.WSL_COMPAT_DISTRO ?? 'Ubuntu'
-const user = process.env.WSL_COMPAT_USER ?? 'mille'
+const user = process.env.WSL_COMPAT_USER
+if (user === undefined || user === '') {
+  // Refused before the first assertion, so a missing account name can never be reported as a
+  // discovery failure — the two look identical from the outside otherwise.
+  console.error('repro-e2e: WSL_COMPAT_USER is required and has no default.\n'
+    + '  It names the Linux account whose $HOME holds the repro tree (repro-setup.sh writes\n'
+    + '  ~/repro-ws-root), so guessing it points the harness at a tree that does not exist and the\n'
+    + '  failure is then about the name rather than about skill discovery.\n'
+    + '  PowerShell:  $env:WSL_COMPAT_USER = "<user>"; npm run test:repro\n'
+    + '  Git Bash:    WSL_COMPAT_USER=<user> npm run test:repro\n'
+    + '  The value is whatever `wsl.exe -d <distro> -- printenv USER` prints, and it must be the\n'
+    + '  same account that ran repro-setup.sh.')
+  process.exit(2)
+}
 const rootPath = process.env.WSL_REPRO_ROOT ?? `/home/${user}/repro-ws-root`
 const workspaceRoot = `\\\\wsl.localhost\\${distro}\\${rootPath.replaceAll('/', '\\')}`
 const nestedProject = `${workspaceRoot}\\proj-a`

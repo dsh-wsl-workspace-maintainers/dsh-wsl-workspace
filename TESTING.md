@@ -158,11 +158,23 @@ The WSL skill provider publishes `.dsh/skills` / `.agents/skills` from nested pr
 2. Drive the provider against the real `\\wsl.localhost` share — ten assertions, all `node:assert/strict`, non-zero exit on any failure (workspace-root cwd finds its own skill **and** the nested projects, the pruned trees stay absent, every entry carries a source and a rank, nested-project cwd finds its own project and **not** a sibling's, `get()` returns a non-empty body for the entry asked for, a non-WSL cwd returns nothing). This file previously *printed* four listings and exited 0 whatever they contained, while this document described those prints as assertions — measured, `grep -cE 'assert|throw|exit'` on the old 34 lines returned 0.
 
    ```powershell
-   node scripts/repro-e2e.mjs
+   $env:WSL_COMPAT_USER = "<user>"   # required — see below
+   npm run test:repro
    ```
 
    The target defaults to `\\wsl.localhost\<distro>\home\<user>\repro-ws-root`; override the distro/user with `WSL_COMPAT_DISTRO` / `WSL_COMPAT_USER` and the tree location with `WSL_REPRO_ROOT` (no path editing needed).
-
+   **`WSL_COMPAT_USER` is required and has no default** (issue #44 §7): it used to default to
+   `mille`, a maintainer-machine account, so on a runner running as `root` the harness addressed
+   `…\home\mille\repro-ws-root`, which does not exist — red before the first assertion, for a reason
+   that had nothing to do with skill discovery. It is the value `wsl.exe -d <distro> -- printenv
+   USER` prints, and it must be the account that ran `repro-setup.sh`. Unset exits 2 with that
+   instruction rather than defaulting.
+   This harness is now **referenced by something** — `npm run test:repro` and a `continue-on-error`
+   step in its own `repro-e2e` job in `ci.yml`. It gets a separate job on purpose:
+   `repro-setup.sh` does `rm -rf` and rebuilds the tree inside the distribution, which would
+   repollute the cold/warm instance state the `wsl-gate` drivers take as a premise, and in a shared
+   job that would surface as an unrelated driver failure. Nothing referencing it was the reason it
+   rotted the first time.
    Two Git Bash traps, both hit on the maintainer machine while re-establishing this run: a bare
    `wsl.exe -d <distro> -- bash /tmp/repro-setup.sh` has its `/tmp/…` argument rewritten to the
    Windows temp directory (run it through `bash -c "…"` instead, as above), and
@@ -304,7 +316,7 @@ Two levels, in order of cost:
    - `node ci/install-pinned.mjs && npm run test:profile` — every arm green (issue #47: profile-shaped trees laid out by Node's own resolution, the hostile `js-yaml` major from `ci/deps-conflict`, one unreadable source among healthy ones). This is the CI step placed after `verify:install`, so a red there silences no other gate; its premise lines P1–P7 must stay green, because a red on one of those is the fixture, never the product.
 5. `node --experimental-strip-types tests/smoke.ts` — real-WSL round-trip passes.
 6. `node scripts/check-rank-parity.mjs` — host rank constants still match our copies.
-7. `node scripts/repro-e2e.mjs` (after `scripts/repro-setup.sh`) — nested skill-catalog assertions pass.
+7. `WSL_COMPAT_USER=<user> npm run test:repro` (after `scripts/repro-setup.sh`) — nested skill-catalog assertions pass.
 8. `npm pack --dry-run` — confirm the tarball carries only live `lib/` chunks, `src/`, `cordis.patch.yml`, READMEs, `LICENSE`, and `NOTICE`.
 9. `npm run verify:install` — packs the tree and installs the tarball with **plain npm** into a scratch directory, with no pnpm and no host packages present. This is the gate that would have caught 0.7.0, whose `peerDependencies` made npm auto-install an unpublished package (`E404 @deepseek-ai/dsh-retention`): every other check and every real session goes through `dsh plugin add` (pnpm), which only *warns* about unmet peers and installs anyway. `prepublishOnly` runs it, so `npm publish` now refuses to ship a package that npm users cannot install.
 10. Install the tarball into a clean profile (`dsh plugin --profile web add <tarball>`), restart `dsh web`, and run the end-to-end checks above plus the nested-skill probe. When the compatibility manifest changes, also run `scripts/verify-dsh-compat.sh` for every declared release.

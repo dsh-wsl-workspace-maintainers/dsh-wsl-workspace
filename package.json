@@ -32,6 +32,7 @@
     "test:rank": "node scripts/check-rank-parity.mjs",
     "test:profile": "node tests/host-profile-isolation.mjs",
     "test:compat": "bash scripts/verify-dsh-compat.sh",
+    "test:repro": "node --experimental-strip-types scripts/repro-e2e.mjs",
     "test:docs": "node scripts/check-docs-parity.mjs",
     "prepack": "npm run build",
     "prepublishOnly": "node scripts/verify-install.mjs && node scripts/verify-lib-sync.mjs"

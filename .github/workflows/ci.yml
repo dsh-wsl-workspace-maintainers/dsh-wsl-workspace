@@ -86,6 +86,72 @@ jobs:
           path: ~/.npm/_logs/
           retention-days: 7
 
+  repro-e2e:
+    name: nested-skill repro against the real share (windows + WSL1 Ubuntu)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    needs: lint-build
+    defaults:
+      run:
+        shell: bash
+    env:
+      WSL_COMPAT_DISTRO: Ubuntu-24.04
+      # Required, no default (issue #44 §7): the harness used to default to `mille`, a
+      # maintainer-machine account, so on a runner it addressed a tree that does not exist and
+      # failed for a reason unrelated to skill discovery.
+      WSL_COMPAT_USER: root
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: provision WSL1 Ubuntu
+        uses: Vampire/setup-wsl@v3
+        with:
+          wsl-version: 1
+          distribution: Ubuntu-24.04
+          set-as-default: 'true'
+          systemd: 'false'
+          use-headless: 'false'
+      - name: build the repro tree inside the distribution
+        run: |
+          set -u
+          mkdir -p logs
+          # Keep the instance warm for the same reason wsl-gate does: the 9P share is invisible
+          # when the distribution idles out, and an absent share reads as an empty catalogue.
+          wsl.exe -d Ubuntu-24.04 -- bash -c '(nohup sleep 900 >/dev/null 2>&1 & echo kept-alive)'
+          # `bash -c "…"` rather than `bash /tmp/script.sh`: the Windows bash runner rewrites a
+          # bare /tmp/… argument to the Windows temp dir (TESTING.md, "Nested skill-catalog
+          # regression" — both Git Bash traps recorded there).
+          wsl.exe -d Ubuntu-24.04 -- bash -c 'mkdir -p /tmp && cat > /tmp/repro-setup.sh' < scripts/repro-setup.sh
+          wsl.exe -d Ubuntu-24.04 -- bash -c 'bash /tmp/repro-setup.sh'
+      - name: the repro tree is where the harness will look
+        run: |
+          set -u
+          # Printed rather than assumed: the harness reads \\wsl.localhost\<distro>\home\<user>\…,
+          # and a root-owned tree somewhere else is a setup failure, not a discovery failure.
+          wsl.exe -d Ubuntu-24.04 -- bash -c 'ls -d ~/repro-ws-root ~/repro-ws-root/*' 2>&1 | tr -d '\0' | tee logs/repro-tree.log
+      - name: drive the provider against the real 9P share
+        continue-on-error: true
+        run: |
+          set -u
+          rc=0
+          npm run test:repro 2>&1 | tee logs/repro-e2e.log || rc=$?
+          echo "repro-e2e rc=$rc"
+          exit "$rc"
+      - name: what the repro step said, whether or not it passed
+        if: always()
+        run: |
+          tail -30 logs/repro-e2e.log 2>/dev/null || echo "(no repro log — the setup step above is where it stopped)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: repro-e2e-logs
+          path: logs/
+          retention-days: 7
+
   wsl-gate:
     name: real-WSL hard gates (windows + WSL1 Ubuntu)
     runs-on: windows-latest
@@ -216,7 +282,8 @@ jobs:
           # skills-real is deliberately not attempted under `lib`: tsdown declares no entry for
           # the provider (the class is file-local to lib/index.js:1122) and plane.mjs throws
           # rather than falling back to src. Adding the entry changes what users install, so it
-          # is a maintainer decision, not a night-run side effect.
+          # is a maintainer decision, not a night-run side effect. Those two cells (one per user
+          # in the plane/user matrix) are reported *not run*, never as passes.
           exit $FAIL
       - name: every gate must say which plane it loaded
         if: always()
