@@ -3101,3 +3101,53 @@ its session probe has no `subprocess` service to probe with (`session probe skip
 unverified`) — a line the Linux CI never sees, because the whole win32 probe branch is skipped there.
 The tree at `60354d5` (before this round) reproduces both reds; the cells now separate diagnostics
 from failures, with the platform note attached to the constant.
+
+### Round ten: his Desktop, a real model, an eleven-step development workflow (2026-10-06)
+
+The strongest device this repository has is the one it cannot run itself: the user's own DSH Desktop,
+with the plugin installed from this branch and a real model choosing the commands. He ran one prompt
+— an eleven-step workflow (environment, `git init`/branch/two commits, heredoc scaffolding, 200
+generated files with a `find | xargs sed -i` pass, a tar/sha256 bundle, word-frequency pipelines, a
+15 s progress loop, a background job read twice and killed, `stdin`, the interactive cases, and four
+boundary commands) — and the readings below come from the session transcript
+(`~/.dsh/sessions/--wsl.localhost-Ubuntu-home-ruler--/session-76fd6b4b…/session.v4.jsonl.zstd`), not
+from his summary.
+
+Shape of the run: **29 tool calls, 481 s wall clock of which ≈45 s is tool time** — the rest is the
+provider's own retries (nine `sensenova` retries on `EMPTY_RESPONSE`/`RATE_LIMIT`) and the model's
+reasoning. Nine of the eleven steps passed on the first attempt; neither of the two that did not was a
+plugin defect (below).
+
+| step | what it did | reading |
+| --- | --- | --- |
+| 1 | environment + workspace dir | **762 ms** (first call, session boot included); `Linux 6.18.40.1-microsoft-standard-WSL2`, `ruler`, node v22.22.0, Python 3.10.12 |
+| 2 | `git init`, two commits, branch, `log --graph`, `diff --stat` | **85 ms** |
+| 3 | two scripts written by heredoc, `chmod +x` | **37 ms** |
+| 4 | 200 `.log` files × 20 lines (CJK, quotes, `$`, backslash), `find \| xargs sed -i`, `grep -rl` = 200 files | **604 ms** |
+| 5 | `tar czf` + `sha256sum` + `git status` shows no `dist/` | **42 ms** |
+| 6 | word frequency, `wc -l`, a Node script and a Python script | **162 ms** |
+| 7 | 30 × 0.5 s progress loop | **15 122 ms**, `exit=0`, not interrupted — the "merely slow" case stays untouched |
+| 8 | background job appended to a file; two `job_output` reads; `job_kill` | start **55 ms**; both reads `(no new output) [status: running]` (the loop wrote to a file, so there was nothing on stdout to give); 35 lines before the kill, `tail -3` named them |
+| 9 | `stdin` → `python3 -c '…sys.stdin.read()…'` | **85 ms**; 45 characters in, the same characters echoed back — the first real-model use of the channel |
+| 10a | `read -r line < /dev/tty` | **3 084 ms**: stopped at **603 ms**, **the shell restarted** (the blocked process was the shell itself), re-run on a pty → `got:` empty; both facts in the note the model read |
+| 10b | `sudo true` | **2 153 ms**: stopped at **623 ms** through the **root plane** — the note says why (`read through the distribution's root rights, because this process hides its own /proc entries from its user`) — re-run on a pty → sudo's own three lines, `exit=1`. **First real-Desktop confirmation of the root witness** |
+| 10c | `wsl_terminal`: `open` → `python3 -i` → two expressions → `SIGINT` → `read` → `close` | **528 / 1 328 / 1 276 / 1 236 / 14 / 8 / 170 ms**. `1+1` → `2`, `print("ok" * 3)` → `okokok`, `SIGINT` → `KeyboardInterrupt` back at `>>>`, the screen re-read from the retained scrollback, close answered `[terminal pty-1 closed]`. **The door, on the real Desktop, in a real model's hands** |
+| 11 | space+CJK filename, symlink, `echo hi!`, `seq 1 100000` | one failure, and it was the model's own command: `ln -s dist/target.txt dist/link.txt` makes a link whose target resolves to `dist/dist/target.txt`, so `readlink -f` exited 1 and the `&&` chain stopped — **correct shell semantics**, found and fixed by the model itself in the next two calls; `echo hi!` printed `hi!` (history expansion off), and the bare `seq` came back truncated with the spill path plus a 100 000-line copy it had written itself |
+
+What it says, and what it does not. It says: the whole development-flow class works — pipelines, bulk
+file generation and in-place editing, archives, hashes, git, interpreters, a slow command that is left
+alone, a background job with the host's own `job_*` tools, `stdin`, the two keyboard-diagnosis paths
+(including the root-plane one), the door end to end, and the boundary cases. It does not say: that a
+password was ever typed (the machine's `sudo` wants one and nothing here holds it), that the door was
+driven from outside this one workflow, or that the eleven-release matrix holds on this tip.
+
+Two observations recorded rather than fixed: the door's screen carries the five `bash: export: … not a
+valid identifier` lines his own rc file prints on an interactive start (reproduced under a plain
+`wsl.exe -e bash -i` earlier the same day — his distro's PATH gains Windows entries with spaces), and
+the door's prompt is the host's controlled `dsh>` rather than his own `PS1`, which is what makes a
+send's prompt recognition possible at all. The model noticed both and worked around them; a person
+sees the same lines in any WSL terminal on this machine.
+
+Residue after the run, read from the distribution and from `tasklist`: `bash -i` **0**, `wsl-relay`
+**0**, `node.exe` **0** — the door's shell and the relay were both gone, and the only shell left is
+the session's own `bash --norc -i`, which is the session still being open.
