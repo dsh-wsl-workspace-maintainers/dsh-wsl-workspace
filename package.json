@@ -28,7 +28,7 @@
     "test:node": "node --experimental-strip-types --test tests/shell.test.ts tests/fs-execution-context.test.ts tests/wsl-jobs.test.ts tests/wsl-search.test.ts tests/wsl-bash-parity.test.ts tests/client-lifecycle.test.mjs && node tests/host-materialize.mjs && node tests/host-materialize.mjs --pty && node tests/host-declare.mjs && node tests/host-declare.mjs --pty && node tests/persistent-shell-fallback.mjs && node tests/shell-execute-shape.mjs && node scripts/typecheck-gate.mjs --self-test && node scripts/check-rank-parity.mjs --strict && node scripts/check-host-prompt-parity.mjs",
     "test:seams": "node scripts/run-seams.mjs",
     "test:node:fresh": "npm run build && npm run test:node",
-    "test:wsl": "node --experimental-strip-types tests/smoke.ts && node --experimental-strip-types tests/exec-shape.mjs && node tests/shell-extra.mjs && node scripts/make-smoke-built.mjs && node --experimental-strip-types tests/smoke-built.ts && node --experimental-strip-types scripts/run-wsl-real.mjs --plane src --drivers fs-real,skills-real,search-real,relay-real",
+    "test:wsl": "node --experimental-strip-types tests/smoke.ts && node --experimental-strip-types tests/exec-shape.mjs && node tests/shell-extra.mjs && node scripts/make-smoke-built.mjs && node --experimental-strip-types tests/smoke-built.ts && node --experimental-strip-types scripts/run-wsl-real.mjs --plane src --drivers fs-real,skills-real,search-real,relay-real,tool-bash-real,bash-session-real,bash-parity-real",
     "test:rank": "node scripts/check-rank-parity.mjs",
     "test:profile": "node tests/host-profile-isolation.mjs",
     "test:compat": "bash scripts/verify-dsh-compat.sh",
