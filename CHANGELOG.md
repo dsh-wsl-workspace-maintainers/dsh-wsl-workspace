@@ -103,7 +103,8 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   never be satisfied, since an agent reads a 16 889 ms silence as "this environment is slow" and
   reprices every later call — while `tar -cf /dev/null /usr` legitimately takes 15 s and `vim -es` over
   **1 000 000 lines** takes 1 s, so any rule that stops a quiet command must be able to tell those apart.
-  What ships reads, per sample (200–280 ms, ~2 Hz, only after 1.2 s of silence): the process state,
+  What ships reads, per sample (200–280 ms; first look at 600 ms of silence, then every 400 ms for the
+  first few looks and every 2 s after that): the process state,
   whether the job owns the terminal's foreground group, `/proc/<pid>/wchan`, whether a terminal is among
   the process's descriptors, and whether its CPU is advancing (`/proc/<pid>/schedstat`). `sleep`, a
   network wait and a build are each excluded by a different one of those columns; a program asleep in a
@@ -111,10 +112,13 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   `SIGTERM` — and runs the command once more on a pseudo-terminal inside the same call, where the
   keyboard read meets end-of-file and the program prints its own complaint. Measured on the real
   session (`D:\Temp\issue51-s0\v5-run.txt`): `sh -c 'read x < /dev/tty'` — a program called `sh`, in no
-  list that ever existed — stopped at 1 219 ms and answered at 2 278 ms; `sleep 4` was untouched;
+  list that ever existed — stopped at 628 ms and answered at 1 760 ms; `sleep 4` was untouched;
   `sudo` asking for a password, which hides its `/proc` entries by clearing its dumpable flag, is
-  treated as an *unconfirmable* wait on a longer window and came back with sudo's own words at
-  9 529 ms; a 60 000 ms deadline asked of a keyboard wait returned in 2 233 ms. Two things are said out
+  read through the distribution's root rights — a second pass of the same probe, run as root, sees the
+  wait its own user cannot; it reads `/proc` and nothing else, runs at most once per call, and a
+  distribution where root cannot be used falls back to the unconfirmable reading and says so — and came
+  back with sudo's own words at 2 412 ms; a 60 000 ms deadline asked
+  of a keyboard wait returned in 1 733 ms. Two things are said out
   loud rather than done quietly: **the command has now run twice** ("anything it had already done before
   that prompt has now been done twice"), because an unannounced second execution is the defect this
   ticket already caught once; and if the `/proc` walk never answers, the body says the check could not
@@ -159,7 +163,7 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   without matching one of the known shapes (a password, a waiting keyboard) appends
   `[this call ran on a pseudo-terminal (script -qec, one stream): re-run the same command with "tty": false to rule this layer out before looking anywhere else]`,
   and every terminal decision is logged at debug level — `wsl-bash: stopped a command waiting for input
-  (terminal at 1219ms) and re-running it on a pseudo-terminal` — so a `dsh web`/`headless` log answers
+  (terminal at 601ms) and re-running it on a pseudo-terminal` — so a `dsh web`/`headless` log answers
   the question too (the installed desktop keeps its child's stdout in memory only, so there the
   transcript lines are the readable half). The sheet of which symptom belongs to which layer — including
   the host's PTY tier's own sentinel, the one issue #51 was filed against — is

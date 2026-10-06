@@ -246,7 +246,9 @@ function toForeground(run: WslBashRun, timeoutMs: number, escalated: boolean, be
   // Whatever the session did that the model cannot see goes first, because it changes how to read the
   // body: a command that was stopped and run again answers differently from one that ran once.
   const notes: string[] = [...before]
-  if (run.starved !== undefined) notes.push(starveNote(run.starved, run.starvedAtMs ?? timeoutMs))
+  if (run.starved !== undefined) {
+    notes.push(starveNote(run.starved, run.starvedAtMs ?? timeoutMs, run.starvedViaRoot === true))
+  }
   if (run.timedOut) {
     // The check that would have caught a keyboard wait did not run here. Said out loud, because the
     // alternative is a deadline reached with no reason attached — and a reader would conclude the wait
@@ -355,6 +357,11 @@ export function buildSessionSpec(config: ResolvedConfig, headerCwd: string | und
     // The reaper runs a script of its own, so it gets the same distribution and user without the
     // session's working directory: it is not running the user's command.
     reaperArgv: [...prefix, '-e', 'bash', '-c'],
+    // The witness: the same probe, run as the distribution's root, for a process that hides its own
+    // `/proc` entries (`sudo` clears its dumpable flag). It is what turns an unconfirmable wait into a
+    // reading, so the tool never has to wait out a long silence to be sure — and when root is not
+    // available here the probe simply does not answer, which the session records.
+    witnessArgv: ['wsl.exe', '-d', distro, '-u', 'root', '-e', 'bash', '-c'],
     // The child never starts inside the UNC share: spawning with a UNC cwd is a documented
     // Node/Windows edge, and `wsl.exe --cd` already decides the Linux side.
     cwd: process.env.SystemRoot ?? 'C:\\Windows',
@@ -538,10 +545,10 @@ export function apply(ctx: Context, config?: Config): void {
       // the whole deadline before. `tty: false` vetoes this, because a caller that only wanted the plain
       // pipe must be able to insist on it.
       if (!escalated && !vetoTty && run.starved !== undefined && !run.aborted && !run.restarted) {
-        const first = { kind: run.starved, atMs: run.starvedAtMs ?? 0 }
-        logging?.debug?.(`wsl-bash: stopped a command waiting for input (${first.kind} at ${first.atMs}ms) and re-running it on a pseudo-terminal`)
+        const first = { kind: run.starved, atMs: run.starvedAtMs ?? 0, viaRoot: run.starvedViaRoot === true }
+        logging?.debug?.(`wsl-bash: stopped a command waiting for input (${first.kind}${first.viaRoot ? ' via the root plane' : ''} at ${first.atMs}ms) and re-running it on a pseudo-terminal`)
         escalated = true
-        before.push(retryNote(first.kind, first.atMs))
+        before.push(retryNote(first.kind, first.atMs, first.viaRoot))
         command = wrap(wrapForTty(args.command))
         run = await session.run(command, timeoutMs, exec.signal, true)
       }

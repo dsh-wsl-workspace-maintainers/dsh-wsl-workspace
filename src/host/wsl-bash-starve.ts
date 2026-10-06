@@ -15,20 +15,20 @@
  *
  * | the command is… | state | `/proc/<pid>/wchan` | a terminal in its fds | acted on |
  * |---|---|---|---|---|
- * | `sh -c 'read x < /dev/tty'` | `S+`, its pgid is the terminal's foreground one | `wait_woken` | yes — reported as `/dev/tty`, not `pts/N` | `terminal`, at 1.2 s |
+ * | `sh -c 'read x < /dev/tty'` | `S+`, its pgid is the terminal's foreground one | `wait_woken` | yes — reported as `/dev/tty`, not `pts/N` | `terminal`, at 0.6 s |
  * | `sleep 3` on a pty this tool made | `S+` | `hrtimer_nanosleep` | yes | never: the fds match and the wait does not |
  * | `curl` waiting on a host | `S` | `poll_schedule_timeout` | no | never |
  * | `dd` / `tar` working | `Rl+`, or its CPU advances | — | no | never |
- * | `sudo` asking for a password | `S+` | unreadable | unreadable — it clears its dumpable flag | `opaque`, at 8 s |
- * | `vim` on a pty this tool made | `S+` | `poll_schedule_timeout` | yes | `own-terminal`, at 8 s |
+ * | `sudo` asking for a password | `S+` | unreadable | unreadable — it clears its dumpable flag | `opaque`, at 1.5 s, unless the root-plane witness answers first |
+ * | `vim` on a pty this tool made | `S+` | `poll_schedule_timeout` | yes | `own-terminal`, at 2.5 s |
  *
  * Two rows are why this is three kinds rather than one test: `sleep` looks exactly like `sudo` in every
  * column a same-user reader can see, and a poll beside a terminal is only evidence when this tool is the
  * one that created that terminal. The fd count has to match `/dev/tty` as well as `pts/` — the first
  * version matched only `pts/`, and `read x < /dev/tty` looked like nothing at all.
  *
- * The probe costs 200–280 ms measured on this machine, which is why the caller samples at ~2 Hz and only
- * starts after a call has been silent.
+ * The probe costs 200–280 ms measured on this machine, which is why the caller looks first at 600 ms of
+ * silence, then at most every 400 ms for the first few looks and every 2 s after that.
  *
  * @module dsh-wsl-workspace/host/wsl-bash-starve
  */
@@ -49,6 +49,8 @@ export interface StarveRow {
   wchan: string
   /** How many of its fds point at a pts, or `-1` when its fd table is not readable at all. */
   ttyFds: number
+  /** `comm`, the executable's short name — used only to skip this tool's own wrapper, never to guess. */
+  comm: string
 }
 
 /** What one probe pass collected. */
@@ -70,30 +72,50 @@ export interface StarveSample {
 export type StarveKind = 'terminal' | 'own-terminal' | 'opaque'
 
 /** How long a call may be silent before the first look, and how often to look after that. */
-export const FIRST_PROBE_MS = 1_200
-export const PROBE_EVERY_MS = 500
+export const FIRST_PROBE_MS = 600
+export const PROBE_EVERY_MS = 400
 
 /**
- * How long a *privileged* process may be silent with no output and no CPU before it is stopped.
+ * The cadence to drop to once a wait has lasted a few looks.
  *
- * The reason it is longer than the confirmed case is that this plane cannot see why such a process is
- * waiting, and a command that is quietly talking to a network looks identical from here. Eight seconds
- * is the number the tool already used for a keyboard wait (issue #51, 2026-10-05), so it is a bound the
- * plugin has committed to and documented, not one picked to let a test pass.
+ * A pass costs 200–280 ms of a `wsl.exe` process, so a command that is silent for a minute must not be
+ * sampled 150 times: the first looks decide quickly, and after {@link LOOKS_BEFORE_SLOWING} the reader
+ * settles to this. Both numbers are above the measured cost of one pass, because a cadence faster than
+ * the probe is just queueing probes.
  */
-export const OPAQUE_WAIT_MS = 8_000
+export const LOOKS_BEFORE_SLOWING = 6
+export const PROBE_SLOW_MS = 2_000
 
 /**
- * How long the silence has to hold before each reading is acted on.
+ * How long the two readings that a legitimate long wait can also produce have to hold before the tool
+ * acts on them.
  *
- * The confirmed one acts at the first look because a `wait_woken` with a pts among the descriptors has
- * no other meaning: the terminal it is reading is the one nothing can type into. The other two are
- * shapes a legitimate long wait can also produce, so they wait for the window above.
+ * This used to be eight seconds, on the argument that an unconfirmable wait could be a privileged
+ * process talking to a network. That argument was answered by measuring instead of waiting: a probe run
+ * through the root plane can read what the process's own owner cannot, so the question "sleeping or
+ * waiting for a password" gets an answer rather than a longer silence (see `confirmsTerminalRead`).
+ * What is left here is the window for the case where even that plane is unavailable, and it is sized by
+ * the observation that a program which has produced no bytes *and* burned no CPU for a second and a half
+ * is not making progress whatever it is doing.
  */
+export const UNCONFIRMED_WAIT_MS = 1_500
+
+/**
+ * The window for a program that polls a terminal this tool created for it (`tty: true`, or the re-run).
+ *
+ * Longer than {@link UNCONFIRMED_WAIT_MS} on purpose: a program polling its own pty may legitimately be
+ * waiting on something else at the same time — `ssh` polls the terminal *and* its socket — so this is
+ * the one reading where a second of patience buys real precision. It is still a third of the eight
+ * seconds the old design spent on every keyboard wait, and it is only ever paid by a call that asked for
+ * a terminal.
+ */
+export const OWN_TERMINAL_WAIT_MS = 2_500
+
+/** The shortest silence each kind of reading has to hold before the tool acts on it. */
 export const MIN_WAIT_MS: Record<StarveKind, number> = {
   terminal: FIRST_PROBE_MS,
-  'own-terminal': OPAQUE_WAIT_MS,
-  opaque: OPAQUE_WAIT_MS,
+  'own-terminal': OWN_TERMINAL_WAIT_MS,
+  opaque: UNCONFIRMED_WAIT_MS,
 }
 
 /**
@@ -125,11 +147,11 @@ export function probeScript(rootPid: number): string {
     + 'done; '
     + 'for pid in $keep; do '
     + `[ "$pid" = "$root" ] && continue; [ -r /proc/$pid/stat ] || continue; `
-    + 'set -- $(ps -o pid=,pgid=,tpgid=,stat= -p $pid); '
+    + 'set -- $(ps -o pid=,pgid=,tpgid=,stat=,comm= -p $pid); '
     + 'wchan=$(cat /proc/$pid/wchan 2>/dev/null); '
     + `cpu=$(cut -d' ' -f1,2 /proc/$pid/schedstat 2>/dev/null | tr ' ' ','); `
     + `if ls /proc/$pid/fd >/dev/null 2>&1; then ttys=$(ls -l /proc/$pid/fd 2>/dev/null | grep -c -e pts/ -e /dev/tty); else ttys=-1; fi; `
-    + `echo "P $1 $2 $3 $4 w=$wchan c=$cpu tty=$ttys"; `
+    + `echo "P $1 $2 $3 $4 w=$wchan c=$cpu tty=$ttys comm=$5"; `
     + `done; echo ${PROBE_DONE_SENTINEL}`
 }
 
@@ -143,7 +165,7 @@ export function parseProbe(text: string, atMs: number): StarveSample {
   const rows: StarveRow[] = []
   const field = (groups: RegExpExecArray, index: number): string => groups[index] ?? ''
   for (const line of text.split(/\r?\n/)) {
-    const match = /^P (\d+) (\d+) (-?\d+) (\S+) w=(\S*) c=([\d,]*) tty=(-?\d+)$/.exec(line.trim())
+    const match = /^P (\d+) (\d+) (-?\d+) (\S+) w=(\S*) c=([\d,]*) tty=(-?\d+) comm=(.*)$/.exec(line.trim())
     if (match === null) continue
     const [utime = '0', stime = '0'] = field(match, 6).split(',')
     rows.push({
@@ -156,6 +178,7 @@ export function parseProbe(text: string, atMs: number): StarveSample {
       // process was running. Both matter to the rule, so the empty case is kept as its own value.
       wchan: field(match, 5) === '' ? 'running' : field(match, 5),
       ttyFds: Number(field(match, 7)),
+      comm: field(match, 8),
     })
   }
   return { atMs, rows }
@@ -187,6 +210,11 @@ export function starveOf(previous: StarveSample | undefined, current: StarveSamp
   let weaker: StarveKind | undefined
   for (const row of current.rows) {
     if (!row.state.startsWith('S') && !row.state.startsWith('T')) continue
+    // The wrapper this tool puts around a command for its own pty sits in a poll of its own while its
+    // child runs — measured: a `sleep 3` inside `script` was stopped at 1.5 s because the wrapper's poll
+    // looked like a keyboard wait. Skipping it is skipping our own process, not guessing the user's: no
+    // other entry in this walk is matched by name.
+    if (ownTerminal && row.comm === 'script') continue
     const isForegroundJob = row.tpgid >= 0 && row.pgid === row.tpgid
     if (!isForegroundJob) continue
     if (row.ttyFds > 0 && row.wchan === 'wait_woken') return 'terminal'
@@ -226,11 +254,31 @@ export function stopScript(pids: readonly number[]): string {
  * @param atMs - how long the first attempt had been silent when it was stopped.
  * @returns the note to put in the body of the retried call.
  */
-export function retryNote(kind: StarveKind, atMs: number): string {
+export function retryNote(kind: StarveKind, atMs: number, viaRoot = false): string {
   const why = kind === 'opaque'
     ? 'no output and no CPU, with its `/proc` entries unreadable (it runs with privileges this tool cannot see inside)'
-    : 'no output and no CPU, asleep in the terminal\'s foreground job with a pts among its descriptors'
+    : viaRoot
+      ? 'no output and no CPU, asleep in the terminal\'s foreground job — read through the distribution\'s root rights, because this process hides its own `/proc` entries from its user'
+      : 'no output and no CPU, asleep in the terminal\'s foreground job with a terminal among its descriptors'
   return `[the first attempt was stopped after ${atMs}ms because it was waiting for keyboard input this shell cannot supply (${why}). The command was then run once more on a pseudo-terminal of its own, so anything it had already done before that prompt has now been done twice — the body below is the second attempt]`
+}
+
+/**
+ * Whether a reading taken through the root plane confirms a terminal read, or rules it out.
+ *
+ * This is what replaces waiting eight seconds to be sure. A privileged program hides its `/proc` entries
+ * from its own owner (sudo clears its dumpable flag), so the user plane can only ever call such a wait
+ * *unconfirmable* — but a probe run as root reads `wchan`, the `syscall` and the fd table of those
+ * processes, which is the same evidence the confirmed reading uses. Three answers matter:
+ * `confirmed` (a terminal read is really there), `ruled-out` (the root plane read the wait and it is
+ * something else — a timer, a socket), and undefined (no root plane answered, so the caller keeps the
+ * unconfirmable reading and its own window).
+ * @param witness - the rows one root-plane pass reported, or undefined when the pass did not answer.
+ * @returns whether the root plane confirms a terminal read, rules it out, or could not say.
+ */
+export function confirmsTerminalRead(witness: StarveSample | undefined): boolean | undefined {
+  if (witness === undefined || witness.rows.length === 0) return undefined
+  return starveOf(undefined, witness, false) === 'terminal'
 }
 
 /**
@@ -241,12 +289,17 @@ export function retryNote(kind: StarveKind, atMs: number): string {
  * with a longer deadline, ask for a terminal, or hand the prompt to a person.
  * @param kind - which of the three readings the probe returned.
  * @param atMs - how long the call had been silent when it was stopped.
+ * @param viaRoot - true when the terminal read was confirmed through the root plane rather than read
+ *   directly, which happens for a privileged program whose own `/proc` entries are hidden.
  * @returns the note to put in the body.
  */
-export function starveNote(kind: StarveKind, atMs: number): string {
+export function starveNote(kind: StarveKind, atMs: number, viaRoot = false): string {
   const doors = 'run it with `tty: true` to give it a terminal, or ask a person to run it in the right sidebar\'s terminal tab, where a keyboard is attached'
   if (kind === 'terminal') {
-    return `[this command was waiting for keyboard input nobody is able to type into this shell: it was asleep in the terminal's foreground job with \`/proc/<pid>/wchan\` = \`wait_woken\` and a terminal among its descriptors. It was stopped so the shell stays usable — ${doors}]`
+    const how = viaRoot
+      ? 'a probe with the distribution\'s root rights read the wait this process hides from its own user (`/proc/<pid>/wchan` = `wait_woken`, a terminal among its descriptors)'
+      : 'it was asleep in the terminal\'s foreground job with `/proc/<pid>/wchan` = `wait_woken` and a terminal among its descriptors'
+    return `[this command was waiting for keyboard input nobody is able to type into this shell: ${how}. It was stopped so the shell stays usable — ${doors}]`
   }
   if (kind === 'own-terminal') {
     return `[this command was waiting for input on the pseudo-terminal this call gave it: after ${atMs}ms it was still asleep in that terminal's foreground job, polling a terminal nothing can type into, with no output and no CPU. It was stopped so the shell stays usable — ${doors}]`

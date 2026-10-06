@@ -10,18 +10,18 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { parseProbe, probeScript, retryNote, starveNote, starveOf, stopScript, FIRST_PROBE_MS, MIN_WAIT_MS, OPAQUE_WAIT_MS, PROBE_EVERY_MS, type StarveSample } from '../src/host/wsl-bash-starve.ts'
+import { confirmsTerminalRead, parseProbe, probeScript, retryNote, starveNote, starveOf, stopScript, FIRST_PROBE_MS, LOOKS_BEFORE_SLOWING, MIN_WAIT_MS, PROBE_EVERY_MS, PROBE_SLOW_MS, OWN_TERMINAL_WAIT_MS, UNCONFIRMED_WAIT_MS, type StarveSample } from '../src/host/wsl-bash-starve.ts'
 
 /** A sample of one row, as the probe would report it. */
 function sample(...lines: string[]): StarveSample {
   return parseProbe(lines.join('\n'), 2_000)
 }
 
-const TERMINAL_ROW = 'P 18673 18673 18673 S+ w=wait_woken c=1200,300 tty=1'
-const PRIVILEGED_ROW = 'P 18255 18255 18255 S+ w=0 c=900,200 tty=-1'
-const SLEEP_ROW = 'P 19091 19091 19091 S+ w=hrtimer_nanosleep c=400,100 tty=0'
-const NETWORK_ROW = 'P 19479 19479 19479 S w=poll_schedule_timeout.constprop.0 c=600,150 tty=0'
-const RUNNING_ROW = 'P 19299 19299 19299 Rl+ w= c=700,18000 tty=0'
+const TERMINAL_ROW = 'P 18673 18673 18673 S+ w=wait_woken c=1200,300 tty=1 comm=sh'
+const PRIVILEGED_ROW = 'P 18255 18255 18255 S+ w=0 c=900,200 tty=-1 comm=sudo'
+const SLEEP_ROW = 'P 19091 19091 19091 S+ w=hrtimer_nanosleep c=400,100 tty=0 comm=sleep'
+const NETWORK_ROW = 'P 19479 19479 19479 S w=poll_schedule_timeout.constprop.0 c=600,150 tty=0 comm=curl'
+const RUNNING_ROW = 'P 19299 19299 19299 Rl+ w= c=700,18000 tty=0 comm=dd'
 
 test('the readings parse into the fields the rule uses', () => {
   const rows = sample(TERMINAL_ROW, PRIVILEGED_ROW, SLEEP_ROW).rows
@@ -56,27 +56,58 @@ test('anything gaining CPU rules the answer out, even next to a terminal read', 
   const first = sample(TERMINAL_ROW, SLEEP_ROW)
   const second = sample(
     TERMINAL_ROW,
-    'P 19091 19091 19091 S+ w=hrtimer_nanosleep c=400,9000 tty=0',
+    'P 19091 19091 19091 S+ w=hrtimer_nanosleep c=400,9000 tty=0 comm=sleep',
   )
   assert.equal(starveOf(first, second), undefined)
 })
 
 test('a process that is not the terminal’s foreground job is left alone', () => {
   // pgid 20001 inside a terminal whose foreground group is 18673: another user's job, not this call's.
-  assert.equal(starveOf(undefined, sample('P 20001 20001 18673 S+ w=wait_woken c=1,1 tty=1')), undefined)
+  assert.equal(starveOf(undefined, sample('P 20001 20001 18673 S+ w=wait_woken c=1,1 tty=1 comm=sh')), undefined)
 })
 
 test('polling a terminal counts as a wait only when this tool is the one that made that terminal', () => {
-  const polling = 'P 19999 19999 19999 S w=poll_schedule_timeout.constprop.0 c=700,180 tty=1'
+  const polling = 'P 19999 19999 19999 S w=poll_schedule_timeout.constprop.0 c=700,180 tty=1 comm=vim'
   // On the ordinary pipe a poll beside a pts is indistinguishable from `ssh` waiting on its socket, so
   // nothing may be stopped for it.
   assert.equal(starveOf(undefined, sample(polling)), undefined)
   // On a pty this call created, the input side is ours and nothing can ever arrive: same reading, but
   // it has to hold the silence for the longer window before that is acted on.
   assert.equal(starveOf(undefined, sample(polling), true), 'own-terminal')
-  assert.equal(MIN_WAIT_MS['own-terminal'], OPAQUE_WAIT_MS)
-  assert.equal(MIN_WAIT_MS.opaque, OPAQUE_WAIT_MS)
+  assert.equal(MIN_WAIT_MS['own-terminal'], OWN_TERMINAL_WAIT_MS)
+  assert.equal(MIN_WAIT_MS.opaque, UNCONFIRMED_WAIT_MS)
+  // A pty this tool made gets a little more patience than an unconfirmable wait: a program polling its
+  // own terminal may be waiting on something else at the same time (`ssh` polls the socket too).
+  assert.ok(OWN_TERMINAL_WAIT_MS > UNCONFIRMED_WAIT_MS && OWN_TERMINAL_WAIT_MS <= 3_000, `${OWN_TERMINAL_WAIT_MS}`)
   assert.equal(MIN_WAIT_MS.terminal, FIRST_PROBE_MS)
+  // The unconfirmable window is short because it is no longer the only evidence: a root-plane pass
+  // answers the same question (see the witness tests below). Eight seconds was the old answer to "we
+  // cannot tell", and it was paid by every privileged wait in the product.
+  assert.ok(UNCONFIRMED_WAIT_MS <= 2_000, `${UNCONFIRMED_WAIT_MS}ms`)
+})
+
+test('the wrapper this tool made for its own pty is not read as a wait', () => {
+  // Measured: shortening the own-terminal window to 1.5 s stopped a legitimate silent `sleep 3` run
+  // under `tty: true`, because `script` — the wrapper this tool put there — polls the pty it created
+  // while its child sleeps. The child is the real waiter, and a timer wait is not a keyboard wait.
+  const wrapper = 'P 26455 26455 26455 S+ w=poll_schedule_timeout.constprop.0 c=700,180 tty=1 comm=script'
+  const inner = 'P 26456 26456 26456 S+ w=hrtimer_nanosleep c=700,180 tty=3 comm=sleep'
+  assert.equal(starveOf(undefined, sample(wrapper), true), undefined, 'the wrapper alone is not a finding')
+  assert.equal(starveOf(undefined, sample(wrapper, inner), true), undefined, 'nor when its child sleeps on a timer')
+  assert.equal(starveOf(undefined, sample(wrapper), false), undefined, 'and never on the plain pipe')
+})
+
+test('the root plane can confirm a read the process hides from its own user, or rule it out', () => {
+  // Root reads what sudo hides: the same fields the user plane uses, only reachable.
+  assert.equal(confirmsTerminalRead(sample(TERMINAL_ROW)), true)
+  // The privileged process is asleep on a timer, not on a terminal — root can see that, and the answer
+  // is "do not stop it", which is the whole point of asking.
+  assert.equal(confirmsTerminalRead(sample(SLEEP_ROW)), false)
+  assert.equal(confirmsTerminalRead(sample(NETWORK_ROW)), false)
+  // No witness at all (no root plane on this distribution, or the pass failed): the caller keeps the
+  // unconfirmable reading rather than inventing a verdict.
+  assert.equal(confirmsTerminalRead(undefined), undefined)
+  assert.equal(confirmsTerminalRead(sample('DSH_PROBE_DONE')), undefined)
 })
 
 test('no rows means the probe saw nothing, which is not evidence of anything', () => {
@@ -123,11 +154,11 @@ test('the note names the doors that exist and says which kind of wait was seen',
   assert.match(confirmed, /sidebar/)
   assert.match(confirmed, /wait_woken/)
   assert.match(confirmed, /keyboard input nobody is able to type into/, 'a person taking over is the first way out')
-  const opaque = starveNote('opaque', OPAQUE_WAIT_MS)
+  const opaque = starveNote('opaque', UNCONFIRMED_WAIT_MS)
   assert.match(opaque, /no CPU/)
   assert.match(opaque, /unreadable/)
   assert.doesNotMatch(opaque, /wait_woken/, 'an opaque wait must not claim it saw the terminal read')
-  const own = starveNote('own-terminal', OPAQUE_WAIT_MS)
+  const own = starveNote('own-terminal', UNCONFIRMED_WAIT_MS)
   assert.match(own, /pseudo-terminal this call gave it/)
   assert.doesNotMatch(own, /wait_woken/, 'a poll beside a pty was not a bare read')
 })
@@ -137,16 +168,18 @@ test('the retried sentence says the command ran twice, without claiming what the
   assert.match(note, /run once more on a pseudo-terminal/)
   assert.match(note, /done twice/, 'the second execution is the cost the caller has to be able to see')
   assert.match(note, /1250ms/)
-  assert.match(retryNote('opaque', OPAQUE_WAIT_MS), /unreadable/)
+  assert.match(retryNote('opaque', UNCONFIRMED_WAIT_MS), /unreadable/)
   // It must not promise the first attempt was harmless: it may have written before it reached its
   // prompt, and the tool cannot know.
   assert.doesNotMatch(note, /had no effect|did nothing|without running/)
 })
 
-test('the cadence is inside what the probe costs', () => {
-  // Measured 2026-10-05: one pass costs 200-280 ms, so a look can be taken at most about every
-  // 500 ms without the watchdog becoming the thing that slows the call down.
-  assert.ok(PROBE_EVERY_MS >= 500, `${PROBE_EVERY_MS}`)
-  assert.ok(FIRST_PROBE_MS >= 1_000, `${FIRST_PROBE_MS}`)
-  assert.ok(OPAQUE_WAIT_MS > FIRST_PROBE_MS)
+test('the cadence is priced by what a pass costs, and it slows down', () => {
+  // Measured 2026-10-05: one pass costs 200-280 ms (a `wsl.exe` of its own), so a faster cadence would
+  // only queue probes behind each other, and a long silent call must not be sampled 150 times a minute.
+  assert.ok(PROBE_EVERY_MS >= 300, `${PROBE_EVERY_MS}`)
+  assert.ok(FIRST_PROBE_MS >= 500, `${FIRST_PROBE_MS}`)
+  assert.ok(PROBE_SLOW_MS > PROBE_EVERY_MS, 'the cadence has to slow down, not speed up')
+  assert.ok(LOOKS_BEFORE_SLOWING >= 2, 'the fast cadence has to cover more than one look')
+  assert.ok(UNCONFIRMED_WAIT_MS > FIRST_PROBE_MS)
 })

@@ -2839,3 +2839,46 @@ this file has recorded twice already.
 And the honesty item that stays open: `ForegroundOutput` has no `restarted` field (the host's arm does not
 either), so a driver can only see a restart through its note — the cell that reads `value.restarted` gets
 `undefined` even when the body says the shell was rebuilt.
+
+### Round five: the eight-second window is gone, and why eight was the wrong price
+
+The 8 s window was the price of "we cannot see why this privileged process is silent". The price was
+mispriced, because the premise was wrong: the process hides its `/proc` entries from *its own user*, not
+from the distribution root. One more pass of the same probe, run as `wsl ... -u root`, reads `wchan`, the
+fd table and the syscall of exactly those processes — measured in `v6-report.txt`: a root-owned child of
+`sudo` shows `S ... w=hrtimer_nanosleep tty=0` to that plane, so "asleep on a timer" and "asleep reading
+the terminal" are separable there, which is the discrimination the user plane cannot make for a setuid
+program.
+
+| reading | before | now | why it can be shorter |
+| --- | --- | --- | --- |
+| a terminal read seen directly | 1.2 s | **600 ms** | nothing else a `wait_woken` with a terminal among the fds can mean |
+| a privileged wait (sudo's prompt) | 8 s | **1.5 s, and the witness usually answers inside it** | root reads the wait, so this is a reading rather than a silence to sit out |
+| a program polling a pty this tool made | 8 s | **2.5 s** | the one reading where patience buys precision: `ssh` polls its socket and the terminal together |
+
+| call, driven through the tool (`v5-run.txt`) | before | now |
+| --- | --- | --- |
+| `sh -c 'read x < /dev/tty'` | 2 342 ms | **1 760 ms**, stopped at 628 ms |
+| `sudo true` as `ruler` | 9 529 ms | **2 412 ms**, stopped at 601 ms and confirmed through the root plane |
+| `vim` with `tty: true` | 9 594 ms | **4 106 ms**, stopped at 2 913 ms |
+| the veto case (`tty: false`) | 2 344 ms | **1 587 ms** |
+| `sleep 3` with `tty: true` (a legitimate silent pty program) | 3 101 ms, untouched | 3 104 ms, untouched |
+| `tar -cf /dev/null /usr/bin` | 52 ms | 46 ms |
+
+The cadence was re-priced against the probe instead of guessed: first look at **600 ms**, every **400 ms**
+for the first six looks, then every **2 s** — a pass costs 200-280 ms, so anything faster only queues
+probes behind each other. A call that is working still pays **zero**: one byte arriving resets the timer.
+
+**The shorter window immediately produced a false stop, which is why it was worth measuring.** With the
+own-terminal window at 1.5 s, a legitimate `sleep 3` under `tty: true` was stopped at 1 549 ms — the
+polling process was `script`, the wrapper *this tool* puts around a command for its own pty, not the
+command. The fix skips that one process by name for an own-terminal reading (`comm=script`): skipping our
+own wrapper, not guessing the user's command. The unit test pins the rule, and the cell that ran red now
+reports `3 104 ms, exit 0, notes []`.
+
+**What the witness costs, and what it asks for.** It is a diagnostic process run as root inside the
+user's distribution: one pass per call, only when a privileged wait is suspected, reading `/proc` and
+nothing else; and one failed attempt is remembered for the session, so a distribution without a usable
+root account pays for that discovery once and afterwards falls back to the unconfirmable reading and its
+1.5 s window. The note says which of the two happened — a certainty this tool cannot support is exactly
+what the note channel exists to prevent.
