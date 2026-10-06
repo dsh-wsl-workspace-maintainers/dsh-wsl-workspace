@@ -119,7 +119,7 @@ plane it is measuring:
 | Caller | How it names the plane |
 | --- | --- |
 | `npm run test:wsl` | `scripts/run-wsl-real.mjs --plane src` |
-| `scripts/compatibility/Run-Checks.ps1` (maintainer sweep) | **not yet updated** — set `$env:DSH_WSL_TEST_PLANE = 'src'` before calling it, or its 19 `Run-Node` checks will each fail on the unset plane. Recorded here rather than silently patched, since the sweep is a maintainer-machine tool |
+| `scripts/compatibility/Run-Checks.ps1` (maintainer sweep) | names it itself: honours `$env:DSH_WSL_TEST_PLANE` when it is `src`/`lib`, picks `src` and prints a line saying so when unset, and **exits non-zero** on any other value rather than downgrading — so the sweep is runnable as-is and a typo cannot be swept silently |
 | `ci.yml#wsl-gate` | `run_one` lines carry `DSH_WSL_TEST_PLANE=src`, `run_lib` lines `=lib` |
 
 A `--plane` flag counts as naming rather than as a fallback default: it is written where a reader can
