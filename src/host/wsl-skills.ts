@@ -268,13 +268,28 @@ async function probeDirectory(distro: string, dir: string, depth: number, io: Ws
     // and the walk as a whole by MAX_VISITED_DIRECTORIES.
     try {
       const target = await io.stat(joinUnc(distro, childPath))
-      // A substrate that resolves Linux links itself answers here; a link
-      // to a file is not a project directory either way.
-      if (target.isDirectory()) children.push([childPath, depth + 1])
-      continue
+      if (target.isDirectory()) {
+        // A substrate that resolves Linux links itself answers here with the
+        // target's own type: follow the link directly.
+        children.push([childPath, depth + 1])
+        continue
+      }
+      // The stat answered and did not report a directory on a path the listing
+      // called a symlink. On the `\\wsl.localhost` 9P share that is what a link
+      // to a Linux directory looks like on both substrates: the stat SUCCEEDS
+      // (it does not throw) because the share describes the reparse point,
+      // never its target, so `isDirectory()` is false and `isFile()` is true
+      // for a directory link exactly as for a file link. Dropping it here is
+      // what used to make a linked-in project invisible; the distinction is
+      // real, not a guess (measured on WSL1 and WSL2: link-dir `stat` succeeds
+      // with dir=false, `lstat` throws EISDIR). Hand it to the distribution
+      // below, which resolves the target from inside Linux and re-stats it:
+      // that re-stat at the resolution step is what still rejects a link to a
+      // file, so it never costs a directory walk over one.
     } catch {
-      // The `\\wsl.localhost` 9P share reports the link entry but cannot
-      // resolve its Linux target; the distribution below can.
+      // The share reports the link entry but every Windows-side stat on it
+      // fails (a dangling link, or a build that answers `lstat` with EISDIR);
+      // the distribution below can still resolve it.
     }
     links.push([childPath, depth + 1])
   }
