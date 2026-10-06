@@ -28,7 +28,7 @@
 
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { cpSync, existsSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, lstatSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, isAbsolute, join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -36,6 +36,7 @@ import { homedir } from 'node:os'
 import { joinUnc, mntToWindowsPath, normalizeLinuxPath, isAbsoluteLinuxPath, isValidWslUsername, parseWslUnc } from './shared/paths.ts'
 import { canonicalWslUnc, getWindowsWorkspace, getWorkspaceUsername, listWorkspaceKeys, listWorkspaceRecords, registerWindowsWorkspace, setWorkspaceUsername } from './shared/wsl-credentials.ts'
 import { defaultDistro, listDistros } from './shared/wsl.ts'
+import { resolveLinuxSymlinks } from './shared/links.ts'
 import { isElectronHost, persistentShellAllowed, resolveRelayNode } from './shared/relay-node.ts'
 import { probePersistentShellReadiness } from './host/pty-readiness.ts'
 import { PROBE_CONFIG, buildSessionSpec } from './host/wsl-bash-tool.ts'
@@ -269,6 +270,59 @@ function listWslDir(distro: string, linuxPath: string): WslDirListingWire {
   return { path: linuxPath, parent, entries }
 }
 
+/** How many link hops the `check` fallback follows before giving up. */
+const CHECK_LINK_HOPS = 4
+
+/**
+ * Whether `readPath` is a Linux symlink the 9P share reports as an ordinary
+ * file. `statSync` cannot tell: for a link it answers `isFile() === true` with
+ * `isSymbolicLink() === false`, exactly like a real file. `lstatSync` can — it
+ * throws `EISDIR` for a link of either kind and answers a plain `isFile()` for
+ * a real file, with no distribution round trip. Any other failure is treated as
+ * "not a link", so an unreadable or absent path keeps its previous answer.
+ */
+function isShareReparsePoint(readPath: string): boolean {
+  try {
+    const info = lstatSync(readPath)
+    return !info.isFile() && !info.isDirectory()
+  } catch (error) {
+    // EISDIR is how the share spells "this is a link"; anything else (an absent
+    // path, a permission refusal) is not a link and must not be resolved.
+    return (error as NodeJS.ErrnoException).code === 'EISDIR'
+  }
+}
+
+/**
+ * Decide whether a `check`ed path that `isShareReparsePoint` identified is
+ * really a symlinked directory.
+ *
+ * The share cannot resolve the link, so the answer comes from the distribution,
+ * which resolves it with `readlink -f` (the same call the skill walk uses).
+ * That call resolves only the FIRST hop, so the resolved path is stat'ed and
+ * the walk continues while it is still a reparse point — a link to a real file
+ * ends the walk as "not a directory", and a link the distribution cannot
+ * resolve (a broken link, a stopped distribution) keeps the pre-existing
+ * "exists, not a directory" answer rather than becoming not-found.
+ */
+async function resolveCheckDirectory(readPath: string): Promise<boolean> {
+  let candidate = readPath
+  for (let hop = 0; hop < CHECK_LINK_HOPS; hop++) {
+    const resolved = (await resolveLinuxSymlinks([candidate]))[0]
+    if (resolved === undefined || resolved === candidate) return false
+    let info
+    try {
+      info = statSync(resolved)
+    } catch {
+      // A broken link resolves to a target that is not there: still a link.
+      return false
+    }
+    if (info.isDirectory()) return true
+    if (info.isFile() && !isShareReparsePoint(resolved)) return false
+    candidate = resolved
+  }
+  return false
+}
+
 /** Cached self-description for the dialog's help panel. */
 let selfDescription: { version: string; releases: { id: string; status: string }[] } | undefined
 
@@ -402,7 +456,20 @@ async function dispatch(method: string, params: Record<string, unknown>): Promis
       const readPath = winPath !== null ? winPath : joinUnc(distro, path)
       try {
         const info = statSync(readPath)
-        return { exists: true, isDirectory: info.isDirectory() }
+        // The common case: a real directory or a real file, answered without a
+        // distribution round trip.
+        if (info.isDirectory() || !isShareReparsePoint(readPath)) {
+          return { exists: true, isDirectory: info.isDirectory() }
+        }
+        // The 9P share describes a Linux symlink as a reparse point: `statSync`
+        // SUCCEEDS reporting `isDirectory() === false` / `isFile() === true` for
+        // BOTH a link to a directory and a link to a file (and `isSymbolicLink()`
+        // is false for both), so a symlinked project directory would be refused
+        // as "not a directory" (issue #10). `lstatSync` is the cheap, local way
+        // to tell the two apart: it throws `EISDIR` for either link kind and
+        // answers a plain `isFile()` for a real file. The distribution then says
+        // what the link really is.
+        return { exists: true, isDirectory: await resolveCheckDirectory(readPath) }
       } catch {
         return { exists: false, isDirectory: false }
       }

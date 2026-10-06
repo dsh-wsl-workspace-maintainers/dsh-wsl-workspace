@@ -32,6 +32,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, sym
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { execFile as execFileRaw } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const NAME = 'ROUTE ENVELOPE'
@@ -55,6 +56,28 @@ const skip = (label, reason) => {
   skips += 1
   console.error(`SKIP: ${label} — platform cannot answer it here (${reason})`)
 }
+
+/**
+ * `execFile` in promise form, WITHOUT `spawnSync`.
+ *
+ * This suite runs in an environment where the synchronous spawn is refused
+ * (`EBUSY`), so the live-distro fixture in section 8c shells out through the
+ * callback form the way the plugin's own `shared/links.ts` does — one call per
+ * `wsl.exe` invocation, and a rejection carries the same `{ stdout, stderr }`
+ * shape the callback received.
+ */
+const execFileResult = (file, args, options) => new Promise((settle, fail) => {
+  execFileRaw(file, args, options, (error, stdout, stderr) => {
+    const result = { stdout, stderr }
+    if (error != null && error.code !== 0) {
+      if (stdout === undefined || stdout === '') error.stdout = stdout
+      error.result = result
+      fail(error)
+      return
+    }
+    settle(result)
+  })
+})
 
 const isEnvelope = (value) =>
   value !== null && typeof value === 'object' && !Array.isArray(value) && typeof value.ok === 'boolean'
@@ -407,6 +430,103 @@ try {
           + `${JSON.stringify(absent.envelope?.value ?? absent.envelope?.error ?? null)})`)
     } finally {
       rmSync(loopRoot, { recursive: true, force: true })
+    }
+  }
+
+  // ── 8c. check: a symlinked DIRECTORY is a directory (issue #10) ─────────
+  // The 9P share describes a Linux symlink as a reparse point and `statSync` reports
+  // BOTH link kinds as a plain non-directory file, so `check` used to answer
+  // {exists:true, isDirectory:false} for a linked project directory — and the add-workspace
+  // dialog then refused it as path-not-found (AddWslWorkspace.tsx:239/269). Measured on the
+  // live share before the fix: dir link, file link and broken link all stat {isDirectory:false,
+  // isFile:true, isSymbolicLink:false}; `lstatSync` is what separates them (EISDIR vs a file),
+  // and `wsl.exe readlink -f` returns the link's IMMEDIATE target (one hop), which the route
+  // then stats.
+  //
+  // Tier: this case needs a live distribution, which this suite cannot assume — `check` reaches
+  // the real share only through a running distro. So it follows the suite's same TWO-part
+  // gating as the unreachable-platform halves above: probe with the real wsl.exe FIRST and SKIP
+  // loudly (never pass) when no distro answers, exactly as the non-win32 branch skips on win32.
+  // Everything else in the file stays independent of a distro, so a machine without WSL still
+  // gets the full non-skipped suite.
+  const distroList = await (async () => {
+    try {
+      const probed = await execFileResult('wsl.exe', ['-l', '-q'], { encoding: 'utf8', timeout: 20_000, windowsHide: true })
+      const names = String(probed.stdout ?? '').replace(/\0/g, '').split(/\r?\n/).map((name) => name.trim()).filter(Boolean)
+      return names.length > 0 ? names : undefined
+    } catch {
+      return undefined
+    }
+  })()
+
+  if (distroList === undefined) {
+    skip('a symlinked directory is reported as a directory by check',
+      'no live WSL distribution answered `wsl.exe -l -q` on this machine')
+  } else {
+    const distro = distroList[0]
+    // The probe asserted the premise: a distro that answers `-l -q` must also serve its share.
+    const probe = await execFileResult('wsl.exe',
+      ['-d', distro, '--', 'sh', '-c', 'echo ok'],
+      { encoding: 'utf8', timeout: 20_000, windowsHide: true })
+    assert(String(probe.stdout ?? '').trim() === 'ok',
+      `the live distribution ${JSON.stringify(distro)} can run a command (${JSON.stringify(String(probe.stdout ?? '').trim())})`)
+
+    // Fixture under /tmp, removed in the finally: a real directory, a real file, a directory
+    // link, a file link and a broken link. `-s`/`-n` keep every creation idempotent.
+    const fixture = `/tmp/dsh-route-envelope-links-${process.pid}`
+    const run = (command) => execFileResult('wsl.exe',
+      ['-d', distro, '--', 'sh', '-c', command],
+      { encoding: 'utf8', timeout: 30_000, windowsHide: true })
+    const created = await run(
+      `rm -rf ${fixture}/real-dir ${fixture}/real-file ${fixture}/link-dir ${fixture}/link-file ${fixture}/link-broken ${fixture}/no-such; `
+      + `mkdir -p ${fixture}/real-dir && printf x > ${fixture}/real-file `
+      + `&& ln -sfn ${fixture}/real-dir ${fixture}/link-dir `
+      + `&& ln -sfn ${fixture}/real-file ${fixture}/link-file `
+      + `&& ln -sfn ${fixture}/no-such ${fixture}/link-broken`)
+    assert(String(created.stdout ?? '').trim() === '' && (created.stderr ?? '') === '',
+      `the symlink fixture was created under ${fixture}`)
+
+    // The fixture premise, asserted: the share really does misreport the link as a non-directory.
+    // Without this line the case below could pass on a share that stopped describing links.
+    const linkOnShare = statSync(`\\\\wsl.localhost\\${distro}${fixture.replace(/\//g, '\\')}\\link-dir`)
+    assert(linkOnShare.isDirectory() === false,
+      'the fixture premise: the share itself reports the directory link as not-a-directory')
+    assert(linkOnShare.isFile() === true,
+      'the fixture premise: the share reports the directory link as a plain file '
+        + '(which is why statSync alone cannot answer this)')
+
+    try {
+      const dirLink = await post({ method: 'check', params: { distro, path: `${fixture}/link-dir` } })
+      assert(dirLink.status === 200 && dirLink.envelope?.ok === true
+        && dirLink.envelope?.value?.exists === true && dirLink.envelope?.value?.isDirectory === true,
+        `check reports a symlinked directory as a directory (got `
+          + `${JSON.stringify(dirLink.envelope?.value ?? dirLink.envelope?.error ?? null)})`)
+
+      // The discriminating half: a link to a real FILE must still be "not a directory", or the
+      // fallback could "close" the case above by calling every link a directory.
+      const fileLink = await post({ method: 'check', params: { distro, path: `${fixture}/link-file` } })
+      assert(fileLink.envelope?.ok === true && fileLink.envelope?.value?.exists === true
+        && fileLink.envelope?.value?.isDirectory === false,
+        `check still reports a symlinked file as not-a-directory (got `
+          + `${JSON.stringify(fileLink.envelope?.value ?? fileLink.envelope?.error ?? null)})`)
+
+      // A link the distribution cannot resolve keeps its pre-existing "exists, not a directory"
+      // answer: it must NOT become not-found, or a broken link would look like a missing path.
+      const brokenLink = await post({ method: 'check', params: { distro, path: `${fixture}/link-broken` } })
+      assert(brokenLink.envelope?.ok === true && brokenLink.envelope?.value?.exists === true
+        && brokenLink.envelope?.value?.isDirectory === false,
+        `check does not turn an unresolvable link into not-found (got `
+          + `${JSON.stringify(brokenLink.envelope?.value ?? brokenLink.envelope?.error ?? null)})`)
+
+      // The fast path and the plain-directory answer must be untouched.
+      const realDir = await post({ method: 'check', params: { distro, path: `${fixture}/real-dir` } })
+      assert(realDir.envelope?.value?.exists === true && realDir.envelope?.value?.isDirectory === true,
+        `check still reports a real directory as a directory (got ${JSON.stringify(realDir.envelope?.value ?? null)})`)
+      const absent = await post({ method: 'check', params: { distro, path: `${fixture}/no-such` } })
+      assert(absent.envelope?.value?.exists === false && absent.envelope?.value?.isDirectory === false,
+        `check still reports a missing path as absent (got ${JSON.stringify(absent.envelope?.value ?? null)})`)
+    } finally {
+      await run(`rm -rf ${fixture}`)
     }
   }
 
