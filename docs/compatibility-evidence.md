@@ -3323,8 +3323,11 @@ keyboard looked and read …`. The report half — `not restored: functions dshh
 intact on both planes. `287f283` makes the trigger half follow `canAct`, and keeps requiring the loss
 report whichever trigger fired.
 
-**Frame 37500642619 (`287f283`) is green on all four jobs** — created 2026-10-06T17:04:05Z, finished
-17:16:17Z (北京时价 10-07 01:04 → 01:16), 12 分 12 秒:
+**The tip's own green frame is 37506092966 (`ff626e6`)** — created 2026-10-06T17:46:07Z, finished
+17:59:13Z (北京时间 10-07 01:46:07 → 01:59:13), 13 分 06 秒. Two frames on this line were green before it —
+37500642619 (`287f283`, 17:04:05Z → 17:16:17Z) and 37502997936 (`59c083a`, 17:23Z → 17:34Z) — and each is
+cited where the value it printed is what a sentence rests on, because the tip's frame is not the source of
+every number quoted here:
 
 ```
 gates on the committed artifact plane (ubuntu) :: success

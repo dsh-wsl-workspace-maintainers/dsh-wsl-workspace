@@ -77,8 +77,9 @@ built arm.
 
 Hard gates in ci.yml#wsl-gate on windows-latest, **matrixed over WSL1 and WSL2** Ubuntu-24.04 via
 Vampire/setup-wsl (`fail-fast: false`, and the log artifact carries the version:
-`wsl-gate-logs-wsl1` / `-wsl2`). The two kernels are not interchangeable evidence, and as of frame
-37500642619 (head `287f283`, 2026-10-06T17:16:17Z) both arms are green on both planes — `bash-session-real`
+`wsl-gate-logs-wsl1` / `-wsl2`). The two kernels are not interchangeable evidence, and the tip's own
+green frame is 37506092966 (head `ff626e6`, 2026-10-06T17:46:07Z → 17:59:13Z), with both arms green on
+each of the two frames before it too — on both planes — `bash-session-real`
 73/73 on each, `bash-parity-real` 12/12, `tool-bash-real` 10/10. What differs is what each kernel will
 tell the tool: WSL1 answers `/proc/<pid>/wchan` **and** `/proc/<pid>/syscall` empty for every process and
 names no foreground job, so a keyboard wait there cannot be confirmed and is left to the deadline the call

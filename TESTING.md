@@ -293,8 +293,9 @@ matrixed over `wslVersion: [1, 2]` Ubuntu-24.04, and the log artifact carries wh
 for any process, so a command waiting on the keyboard is left to the deadline the call asked for and the
 body prints the rows the reading took, while on WSL2 the same wait is stopped in about 0.6 s and re-run.
 Each cell says which of the two it asserted — `branch:"reading-acts"` or `"reading-declares"` — and both
-spellings are in a passing frame's logs: frame 37502997936 (head `59c083a`) reads `reading-acts` with
-`canAct` true on the `src` and `lib` planes of the WSL2 arm, and `reading-declares` on the WSL1 one.
+spellings are in a passing frame's logs: frame 37506092966 (head `ff626e6`, 2026-10-06T17:59:13Z) reads
+`reading-acts` with `canAct` true on the `src` and `lib` planes of the WSL2 arm, and `reading-declares` on
+the WSL1 one.
 `docs/CHECK-CATALOG.md` states which cells assert which of the two shapes.
 **Which persistent shell is being tested matters**: the world now mounts the pipe-driven session by
 default, so `host-materialize` and `host-declare` each run twice in `test:node` — once per tier — and
