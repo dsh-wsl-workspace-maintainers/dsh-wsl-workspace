@@ -213,7 +213,13 @@ try {
   // took.
   const cttyProbe = await call('ps -o tty= -p $$; echo FLAGS=$-', { timeoutMs: 8_000 })
   const cttyName = (cttyProbe.text.trim().split('\n')[0] ?? '').trim()
-  const hasCtty = /^pts\/\d+$/.test(cttyName)
+  // A controlling terminal is any name except `??`. Requiring the `pts/N` spelling was this file
+  // committing the very mistake its comment warns about: on the WSL1 frame `ps -o tty=` answers `tty1`,
+  // the `/dev/tty` read really does block (measured there: 23 699 ms of silence), and every reactive
+  // cell below took its "this distribution has no terminal, so the read errors at once" branch —
+  // green while the product burned the deadline. The name goes into the details now, so which branch a
+  // frame took is readable from the log instead of inferred from the runner.
+  const hasCtty = cttyName !== '' && cttyName !== '??'
   check('the controlling-terminal premise is read, not assumed',
     cttyName === '??' || hasCtty,
   JSON.stringify({ tty: cttyName, hasCtty, flags: /\bFLAGS=(\S+)/.exec(cttyProbe.text)?.[1] }))
@@ -229,7 +235,7 @@ try {
       ? (starved.value?.timedOut === false && starved.text.includes('GOT=')
         && /first attempt was stopped/.test(starved.rendered))
       : (starved.value?.timedOut === false && starved.ms < 8_000),
-  JSON.stringify({ hasCtty, ms: starved.ms, exit: starved.value?.exitCode, tail: starved.text.trim().slice(0, 20) }))
+  JSON.stringify({ tty: cttyName, hasCtty, ms: starved.ms, exit: starved.value?.exitCode, tail: starved.text.trim().slice(0, 20) }))
   // The stopped-and-re-run sentence is the whole point: the second execution can repeat work the first
   // attempt did before it reached its prompt, and a body that hides that is the defect this file has
   // already caught once (`echo run >> f` landing twice, 2026-10-04).
