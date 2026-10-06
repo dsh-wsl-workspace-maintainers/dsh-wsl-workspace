@@ -121,8 +121,8 @@ export interface WslBashRun {
   /**
    * What the last look actually read, when the call reached its deadline after looks that confirmed
    * nothing. It is the difference between "the wait was examined and found ordinary" and "this
-   * kernel does not expose the wait" — measured on the WSL1 runner, where `/proc/<pid>/wchan` answers
-   * `0` for every process and no fd points at a pts.
+   * kernel does not expose the wait" — measured on the WSL1 runner (CI frame 37494104075), where
+   * `/proc/<pid>/wchan` and `/proc/<pid>/syscall` come back empty for every process, asleep or running.
    */
   starveSaw?: string | undefined
 }

@@ -19,28 +19,57 @@ function sample(...lines: string[]): StarveSample {
 
 const TERMINAL_ROW = 'P 18673 18673 18673 S+ w=wait_woken c=1200,300 tty=1 comm=sh role=desc'
 /**
- * The same keyboard wait as the runner reports it on **WSL1** (measured on the cloud frame,
- * 2026-10-06): `wchan` answers `0` for every process and the fd table lists no pts, while `ps -o tty=`
- * still names a terminal. This row is what the five red cells were sitting on; it is deliberately not
- * yet a shape the rule acts on, because a `sleep` on that kernel looks identical in these columns and
- * stopping a merely-slow command twice is the one thing this layer may not do.
+ * What the CI runner on **WSL1** answers for a process that is asleep (frame 37494104075, 2026-10-07,
+ * `sleep 3` in a real session): `wchan` and `/proc/<pid>/syscall` both come back **empty**, no terminal
+ * appears in the fd table, `ps` gives state `S` without the `+`, and the reported `tpgid` is not the
+ * process's own group (whether it answers `-1` or just a different number is what the row's own
+ * `no-tpgid` / `bg` spelling will say on the next frame). `ps -o tty=` there does name a terminal
+ * (`tty1`), so the read really blocks — the kernel simply does not say where anything is waiting.
+ *
+ * This is deliberately not a shape the rule acts on: on that kernel a `sleep` and a keyboard read are
+ * reported with the same four blanks, and stopping a merely-slow command is the one thing this layer
+ * may not do. The row is here so the reporting is tested against the measured text, not a guess —
+ * the first version of this fixture assumed `w=0`, which is WSL2's spelling of *another user's* process.
  */
-const WSL1_TERMINAL_ROW = 'P 9303 9303 9303 S+ w=0 c=800,200 tty=0 comm=sh role=desc'
+const WSL1_ROW = 'P 9303 9303 1 S w= c=800,200 tty=0 comm=sh role=desc'
+const WSL1_SLEEP_ROW = 'P 19091 19091 19090 S w= c=400,100 tty=0 comm=sleep role=desc'
 const PRIVILEGED_ROW = 'P 18255 18255 18255 S+ w=0 c=900,200 tty=-1 comm=sudo role=desc'
 const SLEEP_ROW = 'P 19091 19091 19091 S+ w=hrtimer_nanosleep c=400,100 tty=0 comm=sleep role=desc'
 const NETWORK_ROW = 'P 19479 19479 19479 S w=poll_schedule_timeout.constprop.0 c=600,150 tty=0 comm=curl role=desc'
 const RUNNING_ROW = 'P 19299 19299 19299 Rl+ w= c=700,18000 tty=0 comm=dd role=desc'
 
 test('a call that timed out after looks that confirmed nothing says what it read', () => {
-  // The note is the only place this becomes visible to the model and to a bug report: on WSL1 every
-  // process answers `w=0`, and without the reading a timeout reads as "examined and found ordinary".
+  // The note is the only place this becomes visible to the model and to a bug report, and it has to
+  // keep three facts apart that an empty field could stand for: the process is running so has no sleep
+  // location, the location belongs to someone the reader may not look inside (`0`), or the kernel does
+  // not fill the file at all. The third is what the WSL1 runner answers for a process that is plainly
+  // asleep, and printing it as the first would be a lie about the one thing this layer exists to know.
   const seen = describeRows(sample(TERMINAL_ROW, SLEEP_ROW))
   assert.ok(seen.includes('sh:S+ w=wait_woken 1tty fg'), `the confirmed wait must be in it: ${seen}`)
   assert.ok(seen.includes('sleep:S+ w=hrtimer_nanosleep 0tty fg'), `so must the innocent one: ${seen}`)
-  const blind = describeRows(sample(WSL1_TERMINAL_ROW))
-  assert.equal(blind, 'sh:S+ w=0 0tty fg', 'the WSL1 shape is reportable even though the rule does not act on it')
+  assert.equal(describeRows(sample(RUNNING_ROW)), 'dd:Rl+ w=running 0tty fg', 'empty with state R is running')
+  assert.equal(describeRows(sample(PRIVILEGED_ROW)), 'sudo:S+ w=0 fd-unreadable fg',
+    'and `0` is a location this reader may not see')
+  const blind = describeRows(sample(WSL1_ROW, WSL1_SLEEP_ROW))
+  assert.equal(blind, 'sh:S w=not-reported 0tty bg; sleep:S w=not-reported 0tty bg',
+    'the WSL1 shape is reportable even though the rule has nothing to act on')
+  // Why the rule cannot act there, in the frame's own words rather than in a platform name: these two
+  // rows are what a keyboard read and a `sleep` both report on WSL1, identical in every column.
+  assert.equal(starveOf(undefined, sample(WSL1_ROW)), undefined, 'a read cannot be told from a timer')
+  assert.equal(starveOf(undefined, sample(WSL1_SLEEP_ROW)), undefined, 'and the rule must not guess')
   assert.equal(describeRows(sample('P not-a-row')), '', 'a pass that reported no rows reports nothing')
   assert.equal(describeRows(undefined), '', 'a pass that never answered is not a reading')
+})
+
+test('a kernel that names no foreground job is reported as that, not as a background job', () => {
+  // `bg` and `no-tpgid` are different findings: one says the wait is somebody else's foreground job,
+  // the other says the kernel would not say. The WSL1 frame left this unresolved (both rows printed
+  // `bg` for commands that were foreground), so the two spellings are kept apart to be read off the
+  // next frame instead of inferred from a runner.
+  assert.equal(describeRows(sample('P 7 7 -1 S w= c=1,1 tty=0 comm=x role=desc')),
+    'x:S w=not-reported 0tty no-tpgid')
+  assert.equal(describeRows(sample('P 7 7 8 S+ w=wait_woken c=1,1 tty=1 comm=x role=desc')),
+    'x:S+ w=wait_woken 1tty bg')
 })
 
 test('the readings parse into the fields the rule uses', () => {
@@ -56,10 +85,11 @@ test('the readings parse into the fields the rule uses', () => {
 })
 
 test('the syscall a process is parked in is read and reported, when the kernel says it', () => {
-  // `wchan` is the name of that location and WSL1 answers `0` for every process, which is where the
-  // keyboard-wait rule goes blind. The number is the same fact one layer lower: on x86-64 `0` is
-  // `read`, so a foreground process parked in `0` holding a terminal fd is the case that has to be
-  // tellable from a `sleep`.
+  // `wchan` names the sleep location and WSL2 leaves it `0` for another user's process; the number is
+  // the same fact one layer lower, so it is read as well — on x86-64 `0` is `read`, and a foreground
+  // process parked in `read` holding a terminal is exactly the case that has to be tellable from a
+  // `sleep`. Measured on the WSL2 runner (frame 37494104075): `sleep` answers `sc=230`, the shell's own
+  // wait answers `sc=61`. WSL1 answers nothing in either field, which is the row above.
   const withSc = sample('P 9303 9303 9303 S+ w=0 c=800,200 tty=0 sc=0 comm=sh role=desc').rows
   assert.equal(withSc[0]?.syscall, '0', `the field parses: ${JSON.stringify(withSc[0])}`)
   assert.equal(describeRows(sample('P 9303 9303 9303 S+ w=0 c=800,200 tty=0 sc=35 comm=sleep role=desc'))

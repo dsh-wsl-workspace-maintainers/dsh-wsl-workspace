@@ -286,12 +286,15 @@ function toForeground(run: WslBashRun, timeoutMs: number, escalated: boolean, be
     else {
       notes.push('[the call reached its deadline; for work that outlives one call pass run_in_background: true, or use bash_background]')
     }
-    // The reading ran, saw processes, and none of them matched a terminal wait. Print what it read:
-    // on a kernel that exposes the wait this line is `w=wait_woken 1tty fg`; on the WSL1 runner every
-    // process answers `w=0` with no pts fd, and without this the body would read as though the wait
-    // had been examined and found ordinary.
+    // The reading ran, saw processes, and none of them matched a terminal wait. Print what it read and
+    // which fields it read it from: on a kernel that exposes the wait this line carries
+    // `w=wait_woken sc=0 1tty fg`; on the WSL1 runner (CI frame 37494104075) `wchan` and `syscall` both
+    // come back empty for every process, asleep or running, and the line says `w=not-reported` instead.
+    // Without the fields named, either shape reads as though the wait had been examined and found
+    // ordinary — which is the one claim this layer must not make about a kernel it cannot read.
     if (run.starveSaw !== undefined) {
-      notes.push(`[the check for a command waiting on a keyboard looked and read: ${run.starveSaw}]`)
+      notes.push('[the check for a command waiting on a keyboard looked and read '
+        + `(/proc/<pid>/wchan, /proc/<pid>/syscall, its fd table): ${run.starveSaw}]`)
     }
   }
   if (run.restarted) {

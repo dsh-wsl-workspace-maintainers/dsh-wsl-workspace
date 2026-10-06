@@ -2,7 +2,7 @@
 // backend spawns must hand a stateful WSL shell its stdio, start in the
 // session's directory, and resolve the distribution from the cwd/env.
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { resolvePath } from './plane.mjs';
 
@@ -25,26 +25,43 @@ const linuxOf = unc => `/${unc.replace(/^[/\\]+wsl[.]localhost[/\\][^/\\]+[/\\]?
 const reEsc = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
- * The premise every spawn here depends on: the distribution's 9P share is mounted.
+ * The premise every spawn here depends on: the distribution's 9P share is answering *for this
+ * driver's own directory*, and if it is not, the driver makes the directory and asks again.
  *
- * On the WSL2 frame the second (lib-plane) pass died with `spawn
- * C:\hostedtoolcache\windows\node\24.21.0\x64\node.exe ENOENT` — a message about a program that
- * exists, because Windows reports an unreachable `cwd` as an ENOENT on the child. The real fact is
- * that `\\wsl.localhost\<distro>\…` stops answering while the instance is being idled out between
- * the two passes, which the job's bounded keep-warm did not cover once both planes run (it is now a
- * 2400 s keeper, longer than the job's own bound). Say the premise, and say it before spawning, so the
- * frame reads as an environment verdict rather than as a missing interpreter.
+ * The keeper did not carry this premise. On the WSL2 frame both `/tmp/dsh-wsl-relay-ws` (the cwd this
+ * driver spawns into) and `/tmp/dsh-wsl-compat` were gone at postflight while `wsl -l -v` still said
+ * `Running`, and the job's setup step had created them an hour earlier — so a directory created by a
+ * step is not a premise a later pass may assume. Two shapes follow from that: the second (lib-plane)
+ * pass used to die with `spawn C:\…\node.exe ENOENT`, Windows reporting an unreachable `cwd` as a
+ * missing interpreter, and any pass could die on a share that has not finished mounting.
+ *
+ * So the driver asks for what it is about to use, and says which of the two answers it got. A red from
+ * here is an environment verdict, never a product one, and it is stated as such.
  */
-function requireShare() {
-  if (!existsSync(workspace)) {
-    throw new Error(`relay-real: RED — the 9P share at ${workspace} is not answering (the distribution idled out between passes); `
-      + 'this is a fixture premise, not a product failure — re-run the step or lengthen the keep-warm')
+function ensureShare() {
+  if (existsSync(workspace)) return 'already-mounted'
+  const linux = linuxOf(workspace)
+  // The path comes from the workflow's own env, but it is about to be quoted into a `bash -c`, so it
+  // is checked rather than trusted: no quotes, no globs, no semicolons.
+  if (!/^\/[A-Za-z0-9._/-]+$/.test(linux)) throw new Error(`relay-real: RED — refusing the fixture path ${workspace} (its Linux spelling ${linux} is not a plain absolute path)`)
+  const made = spawnSync('wsl.exe', ['-d', distro, '-u', user, '--', 'bash', '-c', `mkdir -p -- '${linux}' && echo DSH_MADE`],
+    { encoding: 'utf8', timeout: 30_000 })
+  const out = `${made.stdout ?? ''}${made.stderr ?? ''}`
+  for (let tryToWait = 0; tryToWait < 10; tryToWait += 1) {
+    if (existsSync(workspace)) return made.status === 0 ? `created-on-demand (${out.trim().slice(0, 20)})` : `mounted without the driver's mkdir answering (rc=${made.status})`
+    // A bounded wait in a synchronous place: `existsSync` on a 9P path can hang, so this cannot be an
+    // await, and a loop with no sleep would hammer the redirector instead of giving it time.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2_000)
   }
+  throw new Error(`relay-real: RED — the 9P share at ${workspace} is not answering, and asking the distribution to create it `
+    + `(rc=${made.status}, out=${JSON.stringify(out.slice(0, 80))}) did not make it visible from Windows within 20 s; `
+    + 'this is a fixture premise, not a product failure — re-run the step')
 }
 
 /** Run the relay, feed it lines, and collect its output. */
 async function drive(lines, options = {}) {
-  requireShare()
+  const share = ensureShare()
+  if (share !== 'already-mounted') console.log(`relay-real: the fixture share was not mounted; ${share}`)
   const child = spawn(node, ['--experimental-strip-types', relay], {
     cwd: options.cwd ?? workspace,
     env: { ...process.env, ...options.env ?? {} },

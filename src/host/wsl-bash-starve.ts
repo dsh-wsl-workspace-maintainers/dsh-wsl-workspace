@@ -53,8 +53,9 @@ export interface StarveRow {
    * The first field of `/proc/<pid>/syscall`: the number of the syscall the process is parked in, or
    * `''` when the kernel does not fill that file for this reader.
    *
-   * It is the same fact `/proc/<pid>/wchan` names, one layer lower, and on the WSL1 runner it is the
-   * only place left to look: `wchan` answers `0` for every process there.
+   * It is the same fact `/proc/<pid>/wchan` names, one layer lower, and was added because the WSL1
+   * runner answers `wchan` empty for every process. Measured there (frame 37494104075): it answers
+   * empty too, so on that kernel neither layer reports where a process is asleep.
    */
   syscall: string
   /** `comm`, the executable's short name — used only to skip this tool's own wrapper, never to guess. */
@@ -167,10 +168,9 @@ export function probeScript(rootPid: number): string {
     + 'set -- $(ps -o pid=,pgid=,tpgid=,stat=,comm= -p $pid); '
     + 'wchan=$(cat /proc/$pid/wchan 2>/dev/null); '
     // The number of the syscall a process is parked in. `/proc/<pid>/wchan` names it on the kernels
-    // that fill that file; on the WSL1 runner every process answers `0` there, which is why a keyboard
-    // wait and a `sleep` are indistinguishable to the rule today. `syscall`'s first field is the raw
-    // number (`0` is `read` on x86-64), so this is the same fact one layer lower — read here so the
-    // note can report it, and so a fix can be written against what the kernel actually says.
+    // that fill that file; on the WSL1 runner both come back empty for every process, asleep or running
+    // (frame 37494104075), which is why a keyboard wait and a `sleep` are indistinguishable there. Read
+    // both so the note can report which of the two answers the kernel gave.
     + `sc=$(cut -d\' \' -f1 /proc/$pid/syscall 2>/dev/null); `
     + `cpu=$(cut -d' ' -f1,2 /proc/$pid/schedstat 2>/dev/null | tr ' ' ','); `
     + `if ls /proc/$pid/fd >/dev/null 2>&1; then ttys=$(ls -l /proc/$pid/fd 2>/dev/null | grep -c -e pts/ -e /dev/tty); else ttys=-1; fi; `
@@ -198,8 +198,9 @@ export function parseProbe(text: string, atMs: number): StarveSample {
       tpgid: Number(field(match, 3)),
       state: field(match, 4),
       cpuNs: Number(utime) + Number(stime),
-      // `0` is what Linux prints for a sleep location this user may not read; an empty field means the
-      // process was running. Both matter to the rule, so the empty case is kept as its own value.
+      // `0` is what Linux prints for a sleep location this user may not read; an empty field means
+      // either "running, nowhere asleep" (state `R`) or a kernel that does not fill the file at all —
+      // the WSL1 runner answers empty for every process, asleep or not. `describeRows` tells them apart.
       wchan: field(match, 5) === '' ? 'running' : field(match, 5),
       ttyFds: Number(field(match, 7)),
       // Absent on a pass from a probe older than this field, and empty where the kernel does not
@@ -326,10 +327,18 @@ export function retryNote(kind: StarveKind, atMs: number, viaRoot = false, shell
  *
  * A call that reached its deadline with the watchdog having looked and looked and never confirmed is
  * the shape this exists for: on the WSL1 runner the reading takes its rows and calls none of them a
- * terminal wait (`/proc/<pid>/wchan` answers `0`, and no fd points at a pts), so the call burns its
- * whole deadline and the body says only "timed out". Saying *what was seen* is what makes that
- * attributable — on the kernel that can read it, the same line carries `w=wait_woken tty=1` — and it
- * keeps the note honest about the tool looking and not finding, rather than about nothing having run.
+ * terminal wait, so the call burns its whole deadline and the body says only "timed out". Saying *what
+ * was seen* is what makes that attributable — on the kernel that can read it, the same line carries
+ * `w=wait_woken 1tty fg` — and it keeps the note honest about the tool looking and not finding, rather
+ * than about nothing having run.
+ *
+ * What each kernel actually answers was measured on the CI runners, not assumed: frame 37494104075
+ * reads `shell:Ss w=do_wait sc=61 1tty bg; sleep:S+ w=hrtimer_nanosleep sc=230 0tty fg` on WSL2 and
+ * `shell:S w= 1tty bg; sleep:S w= 0tty bg` on WSL1 — there `wchan` and `syscall` come back *empty*,
+ * which is not the same fact as WSL2's `0` ("another user's process, not readable from here"), and not
+ * the same fact as an empty `wchan` on a process in state `R` ("running, so nowhere asleep"). The
+ * three are printed apart below because a note that calls an asleep process `running` is a lie about
+ * the one thing this layer is supposed to know.
  * @param sample - the rows of one pass, or undefined when the pass never answered.
  * @returns a clause for the note, or `''` when there was nothing to report.
  */
@@ -337,10 +346,11 @@ export function describeRows(sample: StarveSample | undefined): string {
   const rows = sample?.rows ?? []
   if (rows.length === 0) return ''
   const parts = rows.slice(0, 4).map(row => {
-    const fg = row.tpgid >= 0 && row.tpgid === row.pgid ? 'fg' : 'bg'
+    const w = row.wchan === 'running' && !row.state.startsWith('R') ? 'not-reported' : row.wchan
+    const fg = row.tpgid < 0 ? 'no-tpgid' : row.tpgid === row.pgid ? 'fg' : 'bg'
     const tty = row.ttyFds < 0 ? 'fd-unreadable' : `${row.ttyFds}tty`
     const sc = row.syscall === '' ? '' : ` sc=${row.syscall}`
-    return `${row.shell ? 'shell' : row.comm}:${row.state} w=${row.wchan}${sc} ${tty} ${fg}`
+    return `${row.shell ? 'shell' : row.comm}:${row.state} w=${w}${sc} ${tty} ${fg}`
   })
   return `${parts.join('; ')}${rows.length > 4 ? `; +${rows.length - 4} more` : ''}`
 }
