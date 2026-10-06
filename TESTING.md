@@ -397,9 +397,13 @@ maintainer-machine deep tool. Drive a case with:
 
 ```powershell
 scripts/compatibility/Prepare-Case.ps1 -Version 0.1.5-rc.2 ...   # build the case
-scripts/compatibility/Start-Case.ps1 ... ; Run-Checks.ps1 ...    # boot + 15 checks
+scripts/compatibility/Start-Case.ps1 ... ; Run-Checks.ps1 ...    # boot + 19 checks
 scripts/compatibility/Stop-Case.ps1 ; Check-Uninstall.ps1 ...    # stop + uninstall probe
 ```
+
+The 19 is `Run-Checks.ps1`'s own count — 19 `Run-Node` call sites between its `try{` and
+`finally{` — not an estimate. It was written as 15 here for months while `bash-session-real`,
+`conpty-relay` and others were added, which is the drift this section is correcting.
 
 For the lighter rolling-window pass (what GitHub Actions `compat.yml` runs
 weekly), use the Git-Bash driver instead — no PowerShell needed:
@@ -430,7 +434,7 @@ shapes produce a correct `{ stdout, stderr }`. `conpty-relay` takes the case's
 the way the plugin does, and requires a live bash prompt through a real ConPTY — the
 invariant issue #40 broke. `host-api` needs a running `dsh web` for the case, so it is
 expected to fail in a sweep — point it at a live instance's `runtime.json` instead (an
-absolute path; it is 12/12 there). The `typecheck` check exits non-zero because of the
+absolute path; it is 13/13 there). The `typecheck` check exits non-zero because of the
 pre-existing `tsc --noEmit` errors in this tree; the gate is that the count does not grow —
 machine-enforced since the CI consolidation by `npm run typecheck:gate` against
 `ci/typecheck-baseline.json` (`--record` to rebaseline after a reviewed change; the count
