@@ -3,6 +3,7 @@
 // session's directory, and resolve the distribution from the cwd/env.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { resolvePath } from './plane.mjs';
 
 // The relay is spawned by path rather than imported, so the plane is chosen through the same
@@ -13,12 +14,37 @@ const node = process.execPath;
 const distro = process.env.WSL_COMPAT_DISTRO || 'Ubuntu';
 const user = process.env.WSL_COMPAT_USER || 'mille';
 const workspace = process.env.WSL_COMPAT_RELAY_CWD || '\\\\wsl.localhost\\Ubuntu\\home\\mille\\symprobe\\ws';
-/** The Linux path of a `\\wsl.localhost\<distro>\…` spelling (as in skills-real). */
-const linuxOf = unc => `/${unc.replace(/^\\\\wsl\.localhost\\[^\\]+\\/, '').replaceAll('\\', '/')}`;
+/**
+ * The Linux path of a `\\wsl.localhost\<distro>\…` spelling (as in skills-real).
+ *
+ * Both slash spellings are accepted because the Windows side resolves either — `//wsl.localhost/…`
+ * is what a bash-driven invocation ends up passing when its own quoting keeps backslashes — and the
+ * driver's assertions should not depend on which one the caller typed.
+ */
+const linuxOf = unc => `/${unc.replace(/^[/\\]+wsl[.]localhost[/\\][^/\\]+[/\\]?/, '').replaceAll('\\', '/')}`;
 const reEsc = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * The premise every spawn here depends on: the distribution's 9P share is mounted.
+ *
+ * On the WSL2 frame the second (lib-plane) pass died with `spawn
+ * C:\hostedtoolcache\windows\node\24.21.0\x64\node.exe ENOENT` — a message about a program that
+ * exists, because Windows reports an unreachable `cwd` as an ENOENT on the child. The real fact is
+ * that `\\wsl.localhost\<distro>\…` stops answering while the instance is being idled out between
+ * the two passes, which the job's bounded keep-warm (`sleep 900`) does not cover once both planes
+ * have run. Say the premise, and say it before spawning, so the frame reads as an environment
+ * verdict rather than as a missing interpreter.
+ */
+function requireShare() {
+  if (!existsSync(workspace)) {
+    throw new Error(`relay-real: RED — the 9P share at ${workspace} is not answering (the distribution idled out between passes); `
+      + 'this is a fixture premise, not a product failure — re-run the step or lengthen the keep-warm')
+  }
+}
 
 /** Run the relay, feed it lines, and collect its output. */
 async function drive(lines, options = {}) {
+  requireShare()
   const child = spawn(node, ['--experimental-strip-types', relay], {
     cwd: options.cwd ?? workspace,
     env: { ...process.env, ...options.env ?? {} },
@@ -26,11 +52,23 @@ async function drive(lines, options = {}) {
   })
   let out = ''
   let err = ''
+  /** Set when the spawn itself failed, so the assertion below can name it. */
+  let spawnFailure = ''
+  let settleExit = () => {}
   // Attach before feeding: a fast shell can exit while the writes are pending.
-  const exited = new Promise(resolve => child.on('exit', (code) => resolve(code)))
+  const exited = new Promise(resolve => { settleExit = resolve; child.on('exit', (code) => resolve(code)) })
+  // Without this, a spawn that cannot even start (a share that stopped answering) surfaces as an
+  // unhandled 'error' event with a stack about `node.exe` — the reason is in a message Node cannot
+  // produce. Report it as the code the caller already asserts on, naming the program and the cwd.
+  child.on('error', (error) => {
+    spawnFailure = `${error.code ?? error.message}: program=${node} cwd=${options.cwd ?? workspace}`
+    settleExit(`spawn failed (${spawnFailure})`)
+  })
   child.stdout.on('data', (chunk) => { out += chunk.toString() })
   child.stderr.on('data', (chunk) => { err += chunk.toString() })
   for (const line of lines) {
+    // A child that never started has no stdin, and an EPIPE here would bury the reason above.
+    if (spawnFailure !== '') break
     await new Promise(resolve => setTimeout(resolve, 1200))
     child.stdin.write(`${line}\n`)
   }
