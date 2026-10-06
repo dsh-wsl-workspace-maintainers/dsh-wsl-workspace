@@ -84,14 +84,23 @@ function unc(linux: string): string {
  * @param root - the fake tree's root.
  * @param options.resolveSymlinks - the share itself follows links (a future or
  *   non-9P substrate); `false` models the `\\wsl.localhost` share.
+ * @param options.reparsePointLinks - the `\\wsl.localhost` 9P share's own shape
+ *   for a Linux symlink: the dirent is listed as a link, and `stat` SUCCEEDS
+ *   reporting `isDirectory() === false` because the share describes the reparse
+ *   point rather than its target. This is the shape the defect below turns on,
+ *   and the two states above cannot produce it: `resolveSymlinks: false` throws
+ *   instead, `true` resolves to the target's real type. Ignored when
+ *   `resolveSymlinks` is true (a substrate resolves the link, so there is no
+ *   reparse point to describe).
  * @param options.distributionFallback - implement the `wsl.exe readlink`
  *   fallback face the real `nodeSkillIo` provides.
  */
 function createIo(
   root: FakeNode,
-  options: { resolveSymlinks?: boolean; distributionFallback?: boolean } = {},
+  options: { resolveSymlinks?: boolean; reparsePointLinks?: boolean; distributionFallback?: boolean } = {},
 ): WslSkillIo {
   const resolveSymlinks = options.resolveSymlinks ?? false
+  const reparsePointLinks = options.reparsePointLinks === true && !resolveSymlinks
   /** The Linux path a UNC or Windows spelling names. */
   const linuxOf = (path: string): string | undefined => {
     // Provider hands over `\\wsl.localhost\<distro>\<linux>` UNC spellings.
@@ -134,8 +143,12 @@ function createIo(
       const linux = linuxOf(path)
       const node = linux === undefined ? undefined : lookup(linux)
       if (node === undefined || !node.directory) throw new Error(`ENOENT: ${path}`)
-      // The 9P share lists a link entry but cannot list through it.
-      const listed = node.symlink === true ? (resolveSymlinks ? realNode(node) : undefined) : node
+      // The 9P share lists a link entry but cannot list through it. That holds
+      // for the reparse-point shape too: `stat` describes the link, but a
+      // `readdir` below it resolves the target and fails (`ELOOP`/`ENOENT`, both
+      // measured on the real share), so the contents are only reachable after
+      // the distribution hands back the real path.
+      const listed = node.symlink === true && !resolveSymlinks ? undefined : node
       if (listed === undefined) throw new Error(`ENOENT (9P cannot follow): ${path}`)
       return [...(listed.children?.entries() ?? [])].map(([name, child]) => ({
         name,
@@ -157,6 +170,16 @@ function createIo(
         throw new Error(`ENOENT (9P cannot follow): ${path}`)
       }
       if (node.symlink === true) {
+        if (reparsePointLinks) {
+          // The `\\wsl.localhost` 9P share as it actually answers: the stat
+          // SUCCEEDS, describing the reparse point itself. `isDirectory()` is
+          // false and `isFile()` is true for a link to a DIRECTORY exactly as
+          // for a link to a FILE or a dangling link — the share cannot tell
+          // them apart, which is the whole reason the resolution step
+          // (`wsl-skills.ts:346-347`) re-stats the distribution's real path.
+          // No `mtimeMs`/`size`: the share reports none for a reparse point.
+          return { isDirectory: () => false }
+        }
         // Model the `\\wsl.localhost` 9P share by default: Linux symlinks are
         // reported by readdir but their targets cannot be resolved Windows-side.
         if (!resolveSymlinks) throw new Error(`ENOENT (9P cannot follow): ${path}`)
@@ -547,6 +570,92 @@ test('follows a linked-in project through the distribution when the share cannot
     '\\\\wsl.localhost\\Ubuntu\\srv\\projects\\linked-project\\.dsh\\skills\\linked-skill\\SKILL.md')
   const definition = await provider.get(skills[0]!, { cwd: CWD_WORKSPACE_ROOT })
   assert.equal(definition?.content, 'Body of linked-skill.')
+})
+
+test('follows a linked-in project the share lists but describes as a reparse point', async () => {
+  // The third substrate state, and the one the real `\\wsl.localhost` share
+  // actually produces: the dirent says symlink, and `stat` SUCCEEDS reporting
+  // `isDirectory() === false`. The two states above cannot express it — a
+  // throwing stat and a target-typed stat are both different shapes — so a
+  // regression that re-drops a directory link on the reparse-point answer used
+  // to leave this file fully green while the real driver went red (issue #44's
+  // failure mode: the gate tested the wrong thing).
+  const root = tree()
+  dir(root, ['home', 'mille', 'repro-ws-root'])
+  // The real project lives OUTSIDE the workspace root; only the link is inside,
+  // so the distribution is the only thing that can resolve it.
+  dir(root, ['srv', 'projects', 'linked-project', '.dsh', 'skills'])
+  file(root, ['srv', 'projects', 'linked-project', '.dsh', 'skills', 'linked-skill', 'SKILL.md'],
+    SKILL_MD('linked-skill', 'Reached through a reparse-point link'))
+  linkDir(root, ['home', 'mille', 'repro-ws-root', 'linked-project'], ['srv', 'projects', 'linked-project'])
+  dir(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills'])
+  file(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills', 'plain.md'],
+    SKILL_MD('plain', 'A plain in-workspace project'))
+
+  const provider = new WslSkillsProvider(control(), createIo(root, {
+    reparsePointLinks: true,
+    distributionFallback: true,
+  }))
+  const skills = await provider.list({ cwd: CWD_WORKSPACE_ROOT })
+
+  // Named, not counted: the link's skill must be there by name.
+  assert.deepEqual(skills.map(skill => skill.name).sort(), ['linked-skill', 'plain'])
+  // Served at the real path, which is the one the share can read.
+  const linked = skills.find(skill => skill.name === 'linked-skill')
+  assert.equal(linked?.locator.path,
+    '\\\\wsl.localhost\\Ubuntu\\srv\\projects\\linked-project\\.dsh\\skills\\linked-skill\\SKILL.md')
+  const definition = await provider.get(linked!, { cwd: CWD_WORKSPACE_ROOT })
+  assert.equal(definition?.content, 'Body of linked-skill.')
+})
+
+test('does not walk a reparse-point link to a file as if it were a directory', async () => {
+  // The non-regression half of the same state. At the reparse-point stat a link
+  // to a FILE and a link to a DIRECTORY are indistinguishable, so the walk must
+  // hand both to the distribution and let the resolution step's re-stat
+  // (`wsl-skills.ts:346-347`) reject the file — never descend into it. Without
+  // this the fallback would cost a directory walk over every file link.
+  const root = tree()
+  file(root, ['home', 'mille', 'repro-ws-root', 'notes.md'], '# notes\n')
+  linkAt(root, ['home', 'mille', 'repro-ws-root', 'notes-link'], ['home', 'mille', 'repro-ws-root', 'notes.md'])
+  // A directory link in the same listing, so the fallback is genuinely entered
+  // and the file link's rejection is observed rather than merely skipped by a
+  // substrate that never resolves links at all.
+  dir(root, ['srv', 'projects', 'linked-project', '.dsh', 'skills'])
+  file(root, ['srv', 'projects', 'linked-project', '.dsh', 'skills', 'linked-skill', 'SKILL.md'],
+    SKILL_MD('linked-skill', 'Reached through a reparse-point link'))
+  linkDir(root, ['home', 'mille', 'repro-ws-root', 'linked-project'], ['srv', 'projects', 'linked-project'])
+  dir(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills'])
+  file(root, ['home', 'mille', 'repro-ws-root', 'proj', '.dsh', 'skills', 'real.md'],
+    SKILL_MD('real', 'A plain in-workspace project'))
+
+  const base = createIo(root, { reparsePointLinks: true, distributionFallback: true })
+  const handed: string[][] = []
+  const readdirs: string[] = []
+  const io: WslSkillIo = {
+    ...base,
+    readdir: async (path, options) => {
+      readdirs.push(path)
+      return base.readdir(path, options)
+    },
+    resolveLinks: async (paths) => {
+      handed.push([...paths])
+      return base.resolveLinks!(paths)
+    },
+  }
+  const provider = new WslSkillsProvider(control(), io)
+  const skills = await provider.list({ cwd: CWD_WORKSPACE_ROOT })
+
+  // Both links reached the fallback — this is what makes the test discriminate:
+  // pre-fix the directory link never got here (it was dropped), so the file
+  // link's rejection below would be unobservable.
+  const flat = handed.flat()
+  assert.equal(flat.some(path => path.includes('notes-link')), true)
+  assert.equal(flat.some(path => path.includes('linked-project')), true)
+
+  // The directory link resolves; the file link does not become a directory, so
+  // the guard rejects it and it is never published nor descended into.
+  assert.deepEqual(skills.map(skill => skill.name).sort(), ['linked-skill', 'real'])
+  assert.equal(readdirs.some(path => path.includes('notes-link')), false)
 })
 
 test('keeps walking below a linked-in project and does not publish it twice', async () => {
