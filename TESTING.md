@@ -287,6 +287,15 @@ system temp directory and compares **two tools against each other**, so a differ
 wrote down in [docs/bash-parity.md](docs/bash-parity.md) is a red build; the same table is read by
 `tests/wsl-bash-parity.test.ts`, which needs the installed host package and says `NOT VERIFIED`
 rather than skipping when it is absent.
+Those same live gates run in CI on **two WSL kernels** — `ci.yml`'s `real-WSL hard gates` job is
+matrixed over `wslVersion: [1, 2]` Ubuntu-24.04, and the log artifact carries which one it came from
+(`wsl-gate-logs-wsl1` / `-wsl2`). They are not interchangeable: the WSL1 runner reports no sleep location
+for any process, so a command waiting on the keyboard is left to the deadline the call asked for and the
+body prints the rows the reading took, while on WSL2 the same wait is stopped in about 0.6 s and re-run.
+Each cell says which of the two it asserted — `branch:"reading-acts"` or `"reading-declares"` — and both
+spellings are in a passing frame's logs: frame 37502997936 (head `59c083a`) reads `reading-acts` with
+`canAct` true on the `src` and `lib` planes of the WSL2 arm, and `reading-declares` on the WSL1 one.
+`docs/CHECK-CATALOG.md` states which cells assert which of the two shapes.
 **Which persistent shell is being tested matters**: the world now mounts the pipe-driven session by
 default, so `host-materialize` and `host-declare` each run twice in `test:node` — once per tier — and
 `persistent-shell-fallback` is pinned to the PTY tier because its subject is that tier's
