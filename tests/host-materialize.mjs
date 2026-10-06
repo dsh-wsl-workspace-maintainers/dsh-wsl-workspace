@@ -8,6 +8,7 @@
  */
 
 import { mkdirSync, mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
@@ -449,6 +450,63 @@ sources['third-party-local'].path = join(home, 'missing-source', 'agent.cordis.y
 apply(fakeCtx, { route: '/wsl-workspace/api' })
 await new Promise(resolve => setTimeout(resolve, 3_000))
 assert(!readFileSync(join(prefabVariant, 'agent.cordis.yml'), 'utf8').includes('incomplete-update-must-not-publish'), 'failed regeneration preserves the previous complete variant')
+
+// ── #52: the outcome reaches the route, not only stdout ────────────────────
+// The failure above is the fixture this needs: `sources['third-party-local'].path` points at a
+// directory that does not exist, so its `cpSync` threw and the generator already retained that
+// variant. That reason currently terminates in `console.error`, which on DSH Desktop has no sink —
+// so the dialog can only say "no healthy wsl preset found" (issue #52). No new failure is arranged
+// here on purpose: an arranged one would be a second thing that can be wrong.
+const outcomeServer = createServer((req, res) => {
+  // An early response while the client is still uploading surfaces an ECONNRESET on the request
+  // side; that is the harness's problem, not the subject's.
+  req.on('error', () => {})
+  res.on('finish', () => { req.resume() })
+  try {
+    const answered = registrations.at(-1).handler(req, res)
+    if (answered !== undefined && typeof answered?.catch === 'function') {
+      answered.catch(() => { if (!res.headersSent) res.writeHead(500), res.end('{}') })
+    }
+  } catch {
+    if (!res.headersSent) res.writeHead(500, { 'content-type': 'application/json' }), res.end('{"ok":false}')
+  }
+})
+await new Promise(resolveListen => outcomeServer.listen(0, '127.0.0.1', resolveListen))
+const askVariantStatus = async () => {
+  const response = await fetch(`http://127.0.0.1:${outcomeServer.address().port}/wsl-workspace/api`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ method: 'variantStatus' }),
+  })
+  return (await response.json()).value
+}
+
+// The premise, asserted before any claim about the payload: the fixture really did fail this boot.
+// Without it, `failed` could be empty because generation silently succeeded and every line below
+// would pass on nothing — the same structure `tests/route-envelope.mjs` uses for its ELOOP fixture.
+const outcome = await askVariantStatus()
+assert(outcome !== undefined && outcome.state === 'partial',
+  `the last boot's outcome is 'partial', not a bare count (got ${JSON.stringify(outcome)})`)
+assert(outcome.produced === 6 && outcome.sources === 7,
+  `the counts are the ones the log line carries: 6/7 (got ${outcome?.produced}/${outcome?.sources})`)
+// Asserted on the CAUSE, not on the copy: a repair that invents a generic sentence fails here,
+// which is the property issue #52 asks for.
+assert(outcome.failed.length >= 1 && outcome.failed[0].id === 'wsl-third-party-local',
+  `the failing variant is NAMED (got ${JSON.stringify(outcome?.failed)})`)
+assert(typeof outcome.failed[0].reason === 'string' && outcome.failed[0].reason.length > 0,
+  `and it carries the cause the log line carried (got ${JSON.stringify(outcome?.failed?.[0]?.reason)})`)
+assert(outcome.failed[0].source === 'third-party-local',
+  'and which source preset it came from')
+assert(outcome.truncated === 0, 'a single failure is under the cap, so nothing was truncated')
+assert(typeof outcome.generation === 'number' && outcome.generation >= 1,
+  'the outcome carries the generation counter a stale read is detected by')
+assert(typeof outcome.at === 'number' && outcome.at >= 0,
+  'and a readable age, so "4 minutes old" is sayable in the dialog')
+// The sweep's semantics must survive the failure being reported: the retained variant keeps its
+// bytes, and the retired ones are still swept. This is the `Set` -> `Map` change under test.
+assert(existsSync(join(prefabVariant, 'agent.cordis.yml')), 'the retained variant is still on disk')
+assert(!existsSync(join(home, '.agent-presets', 'wsl-ghost')), 'and the sweep still ran for the others')
+outcomeServer.close()
 
 rmSync(home, { recursive: true, force: true })
 console.log('HOST MATERIALIZE PASSED')
