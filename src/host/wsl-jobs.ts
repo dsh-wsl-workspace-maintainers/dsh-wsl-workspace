@@ -83,7 +83,7 @@ interface ShellProcessFace {
 
 /** The `ctx.shell` face: resolve a request, then start it in the background. */
 interface ShellFace {
-  resolve(request: { command: string; workdir?: string; dshEnv?: Record<string, string> }): unknown
+  resolve(request: { command: string; workdir?: string; stdin?: string; dshEnv?: Record<string, string> }): unknown
   start(spec: unknown): ShellProcessFace
 }
 
@@ -191,13 +191,15 @@ export function renderRead(read: { delta: string; lossy: boolean; stdoutSpillPat
  * or an `export` from earlier `bash` calls, which is what the tool descriptions say.
  *
  * @param ctx - the host context, providing `jobs`, `shell` and `shellEnv`.
- * @param args - the command and an optional working directory.
+ * @param args - the command, an optional working directory, and the caller's `stdin` text when the
+ *   call brought one (the one-shot executor accepts it on the resolved spec, so a backgrounded
+ *   command is fed the same way a foreground one is).
  * @param exec - the tool execution, whose agent owns the job.
  * @returns the registry job id.
  */
 export function startBackgroundJob(
   ctx: Context,
-  args: { command: string, workdir?: string },
+  args: { command: string, workdir?: string, stdin?: string },
   exec: ToolExecution,
 ): { jobId: string } {
   const jobs = ctx.get('jobs') as unknown as JobsFace | undefined
@@ -228,6 +230,7 @@ export function startBackgroundJob(
     // executor's 120 s foreground timeout. Cancellation is `cancel()` below.
     onExpiry: 'none' as const,
     ...workdir === undefined ? {} : { workdir },
+    ...args.stdin === undefined ? {} : { stdin: args.stdin },
     ...dshEnv === undefined ? {} : { dshEnv },
   }
   const jobId = jobs.start({

@@ -237,16 +237,19 @@ export class WslBashSession {
    * @param ownTerminal - true when this command was wrapped onto a pseudo-terminal that the session
    *   itself created. The watchdog reads a poll wait on that terminal as unsatisfiable; on an ordinary
    *   pipe call the same reading would be indistinguishable from a network wait.
+   * @param stdin - the caller's `stdin` text, when the call brought one. It travels inside the frame
+   *   and becomes a file the command's stdin is redirected from (see {@link encodeFrame}); without it
+   *   the command reads `/dev/null`.
    * @returns the outcome, with `restarted` set when the session had to be rebuilt.
    */
-  async run(command: string, timeoutMs: number, signal?: AbortSignal, ownTerminal = false): Promise<WslBashRun> {
+  async run(command: string, timeoutMs: number, signal?: AbortSignal, ownTerminal = false, stdin?: string): Promise<WslBashRun> {
     const previous = this.queue
     let release: () => void = () => {}
     this.queue = new Promise<void>(resolve => { release = resolve })
     await previous
     try {
       if (this.disposed) throw new Error('wsl-bash: the session is closed')
-      const first = await this.execute(command, timeoutMs, signal, DEFINITION.test(command), ownTerminal)
+      const first = await this.execute(command, timeoutMs, signal, DEFINITION.test(command), ownTerminal, stdin)
       if (first.settled) return first.run
       // A starved frame is not re-executed here: the command was blocked on a terminal, so running it
       // again in the same kind of shell would block again. The tool retries it on a pseudo-terminal.
@@ -260,7 +263,7 @@ export class WslBashSession {
       const recovery = await this.rebuild()
       const recovered = { restarted: true, ...recovery }
       if (!childGone || signal?.aborted === true || first.run.starved !== undefined) return { ...first.run, ...recovered }
-      const second = await this.execute(command, timeoutMs, signal, DEFINITION.test(command), ownTerminal)
+      const second = await this.execute(command, timeoutMs, signal, DEFINITION.test(command), ownTerminal, stdin)
       return { ...second.run, ...recovered }
     } finally {
       release()
@@ -394,7 +397,7 @@ export class WslBashSession {
    * @returns the run, plus whether the shell answered at all.
    */
   private async execute(command: string, timeoutMs: number, signal: AbortSignal | undefined,
-    forceFunctions = false, ownTerminal = false):
+    forceFunctions = false, ownTerminal = false, stdinText?: string):
     Promise<{ run: WslBashRun; settled: boolean }> {
     const handle = this.handle
     const stdin = handle?.stdin
@@ -420,7 +423,7 @@ export class WslBashSession {
     this.errWritten = 0
     // `-1` is a function count no shell can report, which is how "send the bodies whatever the
     // count" reaches the frame; `this.functionCount` asks the shell to compare and stay quiet.
-    const frame = encodeFrame(command, forceFunctions ? -1 : this.functionCount)
+    const frame = encodeFrame(command, forceFunctions ? -1 : this.functionCount, stdinText)
     const armed = deadline(signal, timeoutMs, 'WSL_BASH_TIMEOUT')
     // The watchdog's memory for this frame: when it last saw a byte, when it last looked, and what
     // the look found. Only a frame whose shell pid is known can be watched, because the look walks
@@ -439,7 +442,7 @@ export class WslBashSession {
         // has to happen *before* the window is taken, or it waits for nothing (measured on the src plane:
         // `echo oops >&2` came back `(no output)` and those bytes landed in the next call's window).
         await this.settleStderr()
-        const stderr = this.takeStderr(frame.payload)
+        const stderr = this.takeStderr(frame.payload, frame.stdinPayload)
         const truncated = this.outTruncated
         this.out = this.out.subarray(done.nextOffset)
         this.outTruncated = false
@@ -471,7 +474,7 @@ export class WslBashSession {
           settled: false,
           run: {
             stdout: stripRecords(this.out).toString('utf8'),
-            stderr: this.takeStderr(frame.payload),
+            stderr: this.takeStderr(frame.payload, frame.stdinPayload),
             exitCode: timedOut ? -1 : 1,
             timedOut,
             // A frame the watchdog stopped is neither a deadline nor a caller abort: the caller cancelled
@@ -764,14 +767,15 @@ export class WslBashSession {
    * filter always sees a whole echo line, whose tags identify it whatever frame wrote it.
    *
    * @param payload - the frame in flight's payload, for the case where the echo is one line.
+   * @param stdinPayload - that frame's stdin payload, which is part of the same echoed line.
    * @returns the completed, filtered stderr for this call.
    */
-  private takeStderr(payload: string): string {
+  private takeStderr(payload: string, stdinPayload?: string): string {
     const boundary = this.err.lastIndexOf(0x0a)
     if (boundary < 0) return ''
     const window = this.err.subarray(0, boundary + 1).toString('utf8')
     this.err = this.err.subarray(boundary + 1)
-    return dropProtocolEcho(window, payload)
+    return dropProtocolEcho(window, payload, stdinPayload)
   }
 
   /**

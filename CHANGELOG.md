@@ -330,6 +330,19 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   `tests/host-profile-isolation.mjs` was red on Windows only (it counted a boot *diagnostic* as a
   failure, so its two healthy-frame cells passed in CI and failed on the platform this plugin exists
   for); those cells now separate diagnostics from failures and say why.
+- **A command can be fed its input now** (`stdin`). The session shell's own stdin *is* the protocol
+  channel, so a command's stdin was `/dev/null` by construction — right for most calls, and fatal for
+  the class that reads a program's input from a pipe (`cat`, a build tool asking its question on stdin,
+  a script that reads data). The call's `stdin` text now travels inside the same frame and is decoded
+  into a temporary file the command's stdin is redirected from, removed after the exit status has been
+  read; the escalated (`tty: true`) path gets it too, because `script` forwards its stdin to the pty it
+  creates, and a background job receives it through the one-shot executor's own `stdin` spec field.
+  Over 32 KiB the call is refused by name and nothing runs — the frame's cost is measured (64 kB
+  answers in ~3.8 s, 256 kB in ~59 s), and a program fed half its input fails in ways that look like the
+  program's fault. Live cells: `cat` printing both fed lines **and the call still settling afterwards**
+  (the record that ends a call must not be eaten by the command's own read — that is the failure this
+  channel is shaped around), the same on a real pseudo-terminal (`read x; echo GOT=$x`), and the
+  refusal's own sentence.
 
 ## 0.7.5 — 2026-09-30
 

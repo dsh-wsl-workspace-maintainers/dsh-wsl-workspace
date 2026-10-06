@@ -14,6 +14,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import { BOOTSTRAP_COMMAND, RECORD_TAG, SESSION_ARGV, STATE_TAG, dropProtocolEcho, encodeFrame, newNonce, readFrame, restoreChunks, restoreScript, stripRecords } from '../src/host/wsl-bash-protocol.ts'
+import { STDIN_CAP_BYTES, stdinRefusal } from '../src/host/wsl-bash-tool.ts'
 
 const NUL = String.fromCharCode(0)
 
@@ -119,6 +120,43 @@ test('an echo delivered to a later call than the frame that wrote it is still re
     'the pipe split the earlier echo, so the window carrying it holds a payload this call never had')
   assert.ok(dropProtocolEcho(late, current.payload).includes('real warning'),
     'the filter keys on both record tags, which every frame line carries')
+})
+
+test('a call with stdin carries it inside the frame and redirects the command at a file', () => {
+  const frame = encodeFrame('read x; echo GOT=$x', undefined, 'hello\n')
+  assert.equal(frame.line.includes('hello'), false, 'the text never travels literally on the line')
+  assert.equal(frame.stdinPayload, Buffer.from('hello\n').toString('base64'))
+  assert.ok(frame.line.includes(frame.stdinPayload), 'it travels as its own base64 payload, like the command')
+  assert.match(frame.line, /mktemp/, 'decoded into a temporary file')
+  assert.match(frame.line, /< "\$__dsh_in"/, 'which becomes the command\'s stdin')
+  const status = frame.line.indexOf('__dsh_status=$?')
+  const cleanup = frame.line.indexOf('rm -f -- "$__dsh_in"')
+  assert.ok(status > 0 && cleanup > status, 'the exit status is read before the file is removed')
+  // The plain path is byte-identical to what it was: no stdin means no file, no redirect, no cleanup.
+  const plain = encodeFrame('echo hi')
+  assert.equal(plain.stdinPayload, undefined)
+  assert.match(plain.line, /<\/dev\/null[; ]/)
+  assert.equal(plain.line.includes('mktemp'), false)
+})
+
+test('the echo filter also drops a line carrying the stdin payload', () => {
+  const stdinPayload = Buffer.from('a secret\n').toString('base64')
+  const echoed = `output\nbash-5.1$ printf %s '${stdinPayload}' | base64 -d > "$__dsh_in"\nmore output\n`
+  const kept = dropProtocolEcho(echoed, 'COMMAND_PAYLOAD', stdinPayload)
+  assert.ok(!kept.includes(stdinPayload), 'the model must not read back what it fed the program')
+  assert.ok(kept.includes('output') && kept.includes('more output'), 'the program\'s own streams survive')
+})
+
+test('an input over the frame ceiling is refused by name, never truncated', () => {
+  assert.equal(stdinRefusal(undefined), undefined)
+  assert.equal(stdinRefusal('x'.repeat(STDIN_CAP_BYTES)), undefined, 'exactly at the ceiling is allowed')
+  const refusal = stdinRefusal('x'.repeat(STDIN_CAP_BYTES + 1))
+  assert.notEqual(refusal, undefined)
+  assert.match(refusal ?? '', /32768-byte ceiling/)
+  assert.match(refusal ?? '', /never truncated|nothing was truncated/, 'the sentence says nothing ran')
+  // The cap is about bytes, not code units: a multi-byte input must be measured the way the frame is.
+  const multi = '好'.repeat(Math.floor(STDIN_CAP_BYTES / 3) + 1)
+  assert.notEqual(stdinRefusal(multi), undefined, 'three bytes per character, so this one is over')
 })
 
 test('every tail the line editor could deliver is recognised as protocol', () => {

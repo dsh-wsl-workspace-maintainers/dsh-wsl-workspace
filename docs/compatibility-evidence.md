@@ -3068,6 +3068,27 @@ session (the chain driven here is the same host packages and the same relay the 
 Desktop end-to-end from round seven covered the pipe tier, not this tool); or that the shape holds on
 the other declared releases (the multi-version matrix has not been re-run on this tip).
 
+### The stdin channel (2026-10-06, same day, four cells)
+
+The protocol owns the session shell's stdin, so a command's stdin was `/dev/null` by construction.
+That is right for most calls and fatal for the class that reads a program's input from a pipe, so the
+call's `stdin` text now travels inside the frame and is decoded into a temporary file the command's
+stdin is redirected from (removed after the exit status is read). The cells that matter are not "the
+bytes arrived" but the two ways this could be worse than not having it: `cat` fed two lines printed
+both **and the call still settled** (the command must not eat the record that ends the call — the
+reason the channel exists at all is that the shell's stdin is the protocol), and the *next* call
+answered normally (the session's own stdin was not consumed). On the escalated path the same input
+arrives too — `read x; echo GOT=$x` under `script` answered `GOT=typed-by-stdin` in 306 ms, because
+`script` forwards its stdin to the pty it creates. One byte over the 32 KiB ceiling refuses by name
+(`wsl-bash: stdin is 32769 bytes, over the 32768-byte ceiling …`) with nothing run; the ceiling is
+half the measured 64 kB frame point (a 64 kB command answers in ~3.8 s, 256 kB in ~59 s), and a
+program fed half its input fails in ways that look like the program's fault, which is why the answer
+is a refusal and not a truncation. Recorded because the first run of these cells showed
+`shell-init: error retrieving current directory` inside the escalated cell: the driver's earlier
+relative-`workdir` cell leaves the session inside a directory a later cell deletes, and the *first new
+bash* started there says so. The section now starts with a `cd` home and the line is gone — the
+artifact was the driver's, not the channel's, and it was measured rather than assumed.
+
 Found while adding the cells, and fixed in the same pass: `tests/host-profile-isolation.mjs` was red
 on **Windows only**. Its two "a healthy frame says nothing / a failing source is reported once" cells
 count `console.warn` output as failures, and the plugin legitimately warns once at boot on win32 when

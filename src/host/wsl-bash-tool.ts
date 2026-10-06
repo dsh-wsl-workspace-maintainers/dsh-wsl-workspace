@@ -105,6 +105,32 @@ interface BashArgs {
   timeoutMs?: number
   tty?: boolean
   run_in_background?: boolean
+  stdin?: string
+}
+
+/**
+ * The ceiling on one call's `stdin`, and the reason it is where it is.
+ *
+ * The text travels inside the frame line (base64, like the command), so its cost is the frame's cost,
+ * and that was measured on this machine (2026-10-05, `D:\Temp\issue51-s0`): a 64 kB command answers in
+ * ~3.8 s and a 256 kB one in ~59 s, because a piped bash reads the line as fast as the pipe delivers
+ * it. Half the measured 64 kB point is the ceiling — a command plus its input at the frame size
+ * nobody has measured past should still feel like a tool call — and a larger input is refused by name
+ * rather than truncated, because a program fed half its input fails in ways that look like the
+ * program's fault.
+ */
+export const STDIN_CAP_BYTES = 32 * 1024
+
+/**
+ * Whether a call's `stdin` is beyond what the frame can carry.
+ * @param stdin - the caller's input, if any.
+ * @returns the sentence to throw for the tool, or undefined when the input fits.
+ */
+export function stdinRefusal(stdin: string | undefined): string | undefined {
+  if (stdin === undefined) return undefined
+  const bytes = Buffer.byteLength(stdin, 'utf8')
+  if (bytes <= STDIN_CAP_BYTES) return undefined
+  return `wsl-bash: stdin is ${bytes} bytes, over the ${STDIN_CAP_BYTES}-byte ceiling. The input travels in the same line as the command, and a frame's cost grows with its length (measured: a 64 kB frame answers in ~3.8 s, 256 kB in ~59 s). Write the data to a file first and redirect the command\'s stdin from it (\`command < file\`) — nothing was truncated and nothing ran`
 }
 
 /** Environment facts that must reach the distribution. */
@@ -433,7 +459,7 @@ export function apply(ctx: Context, config?: Config): void {
 
   const tool = defineTool({
     name: TOOL_NAME,
-    description: 'Run a bash command inside this WSL distribution. The shell is persistent: `cd`, exported variables, activated virtualenvs, aliases and shell functions survive between calls, so use absolute paths or an explicit `cd` when a call must not depend on where the last one left off. A command that reads from stdin is given /dev/null. A command that instead reaches for the keyboard (`sudo`, `ssh`, an editor, a database client asking for a password) is caught by watching the process rather than guessed from its name: when a call goes silent with nothing running, the tool stops it and runs it again on a pseudo-terminal of its own inside the same call, so the body is the program\'s own complaint about having no terminal. A live display (`top`, `htop`) exits on its own without a terminal, so ask for `top -bn1` unless you pass `tty: true`. For work that must outlive one call pass `run_in_background: true` — it starts a tracked job (`job_output` to read, `job_kill` to stop) in a separate process, so it does not see this shell\'s `cd` or `export`. Nothing in this shell can be typed into, so a prompt there is unanswerable here by design: the second attempt is where the program gets to say what it wanted, and an answer has a door of its own — `wsl_terminal` opens an interactive terminal this agent can type into (ask the user for a password; never guess one), while a person can run the same command in the right sidebar\'s terminal tab, which has a keyboard attached.',
+    description: 'Run a bash command inside this WSL distribution. The shell is persistent: `cd`, exported variables, activated virtualenvs, aliases and shell functions survive between calls, so use absolute paths or an explicit `cd` when a call must not depend on where the last one left off. A command that reads from stdin is given /dev/null unless the call passes `stdin`. A command that instead reaches for the keyboard (`sudo`, `ssh`, an editor, a database client asking for a password) is caught by watching the process rather than guessed from its name: when a call goes silent with nothing running, the tool stops it and runs it again on a pseudo-terminal of its own inside the same call, so the body is the program\'s own complaint about having no terminal. A live display (`top`, `htop`) exits on its own without a terminal, so ask for `top -bn1` unless you pass `tty: true`. For work that must outlive one call pass `run_in_background: true` — it starts a tracked job (`job_output` to read, `job_kill` to stop) in a separate process, so it does not see this shell\'s `cd` or `export`. Nothing in this shell can be typed into, so a prompt there is unanswerable here by design: the second attempt is where the program gets to say what it wanted, and an answer has a door of its own — `wsl_terminal` opens an interactive terminal this agent can type into (ask the user for a password; never guess one), while a person can run the same command in the right sidebar\'s terminal tab, which has a keyboard attached.',
     parameters: {
       command: { type: 'string', required: true, description: 'The bash command to run.' },
       description: {
@@ -453,6 +479,10 @@ export function apply(ctx: Context, config?: Config): void {
       run_in_background: {
         type: 'boolean',
         description: 'Run in the background and return a job id immediately (collect with job_output, stop with job_kill). No timeout applies, and the job runs in its own process rather than in this shell.',
+      },
+      stdin: {
+        type: 'string',
+        description: `Text to feed the command\'s standard input (up to ${STDIN_CAP_BYTES} bytes; larger input is refused by name, never truncated — write it to a file and redirect instead). Without it a command that reads stdin gets end-of-file, which is why a program that reaches for the keyboard is handled by \`tty\` and by \`wsl_terminal\` instead.`,
       },
     },
     output: {
@@ -493,14 +523,19 @@ export function apply(ctx: Context, config?: Config): void {
       const headerCwd = exec.agent?.session?.header?.cwd
       const timeoutMs = Math.min(args.timeoutMs ?? resolved.timeoutMs, resolved.maxTimeoutMs)
       const ownerKey = exec.agent?.id ?? exec.agent?.session?.id ?? 'default'
+      const overCap = stdinRefusal(args.stdin)
+      if (overCap !== undefined) throw new Error(overCap)
       // `run_in_background` goes to the jobs producer — the same one `bash_background` uses, so there
       // is one registration of a background bash and one shape of job for `job_list` to read. It is
       // not the persistent shell's process, which is what the tool description says.
       if (args.run_in_background === true) {
         return {
           kind: 'background' as const,
-          ...startBackgroundJob(ctx, { command: args.command, ...(args.workdir === undefined ? {} : { workdir: args.workdir }) },
-            exec as unknown as Parameters<typeof startBackgroundJob>[2]),
+          ...startBackgroundJob(ctx, {
+            command: args.command,
+            ...(args.workdir === undefined ? {} : { workdir: args.workdir }),
+            ...(args.stdin === undefined ? {} : { stdin: args.stdin }),
+          }, exec as unknown as Parameters<typeof startBackgroundJob>[2]),
         }
       }
       // Whether this call runs on a terminal is decided by what the process *does*, not by what its
@@ -551,7 +586,7 @@ export function apply(ctx: Context, config?: Config): void {
       if (tally === undefined) { tally = new Map<string, number>(); attempts.set(session, tally) }
       const tried = (tally.get(signature) ?? 0) + 1
       tally.set(signature, tried)
-      let run = await session.run(command, timeoutMs, exec.signal, escalated)
+      let run = await session.run(command, timeoutMs, exec.signal, escalated, args.stdin)
       // What the session did that the body cannot show, in the order the model has to read it.
       const before: string[] = []
       // The command was caught waiting for a keyboard, so give it what a person at a terminal would: a
@@ -569,7 +604,7 @@ export function apply(ctx: Context, config?: Config): void {
         escalated = true
         before.push(retryNote(first.kind, first.atMs, first.viaRoot, first.shellInterrupted))
         command = wrap(wrapForTty(args.command))
-        run = await session.run(command, timeoutMs, exec.signal, true)
+        run = await session.run(command, timeoutMs, exec.signal, true, args.stdin)
       }
       if (run.aborted) throw toolAborted()
       // Any success clears every streak: the note's claim is about a shell where nothing has worked

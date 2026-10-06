@@ -386,6 +386,48 @@ try {
     && /No such file or directory/.test(missing.rendered), JSON.stringify(missing.rendered.slice(0, 80)))
   await call(`rmdir "${linuxHome}/dsh-session-real-relative"`)
 
+  // ── the stdin channel ─────────────────────────────────────────────────────
+  // The protocol owns the shell's stdin, so a command's stdin was `/dev/null` by construction — which
+  // is right for most calls and wrong for the class that reads a program's input from a pipe. The
+  // caller's text now travels inside the frame and is decoded into a file the command reads from; the
+  // cell that matters is not "the bytes arrived" but "the protocol still settles afterwards", because
+  // a command fed from the session's own pipe would eat the record that ends the call.
+  //
+  // The first call puts the session back home: the cell above deleted the directory an earlier
+  // relative-`workdir` call had left it in (the `cd` in that wrapper is the session's own), and a
+  // *new* bash started in a deleted directory reports `shell-init: error retrieving current directory`
+  // — true, but the escalated cell below is about the stdin channel and must not read as if that line
+  // were its result. Measured here: without this `cd` the line appears in the cell's text.
+  await call(`cd "${linuxHome}"`)
+  const fed = await call('cat; echo RC=$?', { stdin: 'STDIN_LINE_1\nSTDIN_LINE_2\n' })
+  check('a command reads the caller’s stdin, and the record still settles after it',
+    fed.text.includes('STDIN_LINE_1') && fed.text.includes('STDIN_LINE_2') && fed.value?.exitCode === 0,
+    `${fed.ms}ms ${JSON.stringify(fed.text.trim().slice(0, 60))}`)
+  const afterFed = await call('echo AFTER_STDIN_$(( 4 * 4 ))')
+  check('the session’s stdin was not consumed by the command', afterFed.text.includes('AFTER_STDIN_16'),
+    JSON.stringify(afterFed.text.trim().slice(0, 40)))
+
+  // The escalated path gets the same input: `script` forwards its stdin to the pty it creates, so a
+  // program that reads its terminal is fed there too. Measured here rather than assumed, because the
+  // wrapper changes who owns stdin (`script`, not the eval).
+  const fedTty = await call('read x; echo GOT=$x', { tty: true, stdin: 'typed-by-stdin\n' })
+  check('stdin reaches a command on the escalated pseudo-terminal too',
+    /GOT=typed-by-stdin/.test(fedTty.text) && fedTty.value?.exitCode === 0,
+    `${fedTty.ms}ms ${JSON.stringify(fedTty.text.trim().slice(0, 200))}`)
+
+  // Over the ceiling the call refuses by name and runs nothing — the alternative is a program failing
+  // on half its input, which reads as the program's fault.
+  let refusal = ''
+  try {
+    await call('cat', { stdin: 'x'.repeat(32 * 1024 + 1) })
+    refusal = '(no error thrown)'
+  } catch (error) {
+    refusal = String(error?.message ?? error)
+  }
+  check('an input over the frame ceiling is refused, not truncated',
+    /32768-byte ceiling/.test(refusal) && /nothing was truncated/.test(refusal),
+    JSON.stringify(refusal.slice(0, 120)))
+
   // Large output: the head goes to a file and the model is pointed at it, in the host's exact
   // sentence (`[output truncated; full output: <path>]`, dsh-tool-bash:137). The file's own line
   // count is the assertion, because a spill file that is short is a spill that lost data.
@@ -746,7 +788,7 @@ try {
     `the control harness failed before comparing: ${String(error?.message ?? error).slice(0, 120)}`)
 }
 
-const EXPECTED_CHECKS = 66
+const EXPECTED_CHECKS = 70
 const passed = results.filter(r => r.pass).length
 console.log(`${passed}/${results.length} checks passed (plane=${plane()}, distro=${distro}, user=${username}, cwd=${sessionCwd})`)
 if (results.length !== EXPECTED_CHECKS) {

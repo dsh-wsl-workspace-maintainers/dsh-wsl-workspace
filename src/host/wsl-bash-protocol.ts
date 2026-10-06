@@ -44,6 +44,8 @@ export interface CommandFrame {
   line: string
   /** The encoded payload, which {@link dropProtocolEcho} matches stderr against. */
   payload: string
+  /** The encoded stdin text, when the call brought one, for the same echo-matching purpose. */
+  stdinPayload?: string
 }
 
 /** Base64 with no line wrapping, so the frame stays one line however long the command is. */
@@ -123,16 +125,34 @@ export const FRAME_SIGNATURES: readonly string[] = [RECORD_TAG, STATE_TAG, '__ds
  * @param functionCount - the shell's function count as last seen, or `undefined` to ask for a full
  *   function snapshot on this frame (the first frame, and any frame whose command looks like a
  *   definition).
+ * @param stdin - the caller's `stdin` text, when the call brought one. It travels inside this same
+ *   line (base64, like the command) and is decoded into a temporary file the command's stdin is
+ *   redirected from — the pipe itself cannot carry it, because a command that reads stdin from a
+ *   pipe would eat the protocol bytes that end the call. Without it the command gets `/dev/null`,
+ *   which is what a model running ordinary commands wants.
  * @returns the frame to write, and the nonce its completion record must carry.
  */
-export function encodeFrame(command: string, functionCount?: number): CommandFrame {
+export function encodeFrame(command: string, functionCount?: number, stdin?: string): CommandFrame {
   const nonce = newNonce()
   const payload = encodePayload(command)
+  const stdinPayload = stdin === undefined ? undefined : encodePayload(stdin)
   // `</dev/null` on the eval: a command that reads stdin must never consume protocol bytes.
   // The state record that follows the completion record is what makes a restart transparent: it
   // carries the working directory and the exported environment of the shell that just ran.
-  const line = `eval "$(printf %s '${payload}' | base64 -d)" </dev/null; `
+  const input = stdinPayload === undefined
+    ? { setup: '', redirect: '</dev/null' }
+    : {
+        // `mktemp` with a fallback, because the failure mode of a missing name is a redirect to `""`
+        // and a message nobody can act on. The file is removed after the status is read, so its
+        // existence never outlives the call.
+        setup: `__dsh_in=$(mktemp 2>/dev/null || printf %s "/tmp/dsh-stdin-$$"); `
+          + `printf %s '${stdinPayload}' | base64 -d > "$__dsh_in"; `,
+        redirect: `< "$__dsh_in"`,
+      }
+  const line = input.setup
+    + `eval "$(printf %s '${payload}' | base64 -d)" ${input.redirect}; `
     + `__dsh_status=$?; `
+    + (stdinPayload === undefined ? '' : 'rm -f -- "$__dsh_in"; ')
     + `printf '\\0${RECORD_TAG}\\0%s\\0%s\\0' '${nonce}' "$__dsh_status"; `
     // One NUL byte on stderr, written after the command and after the completion record: stdout carries
     // the record while stderr carries half the answer, on two pipes with no order between them, so a
@@ -149,7 +169,7 @@ export function encodeFrame(command: string, functionCount?: number): CommandFra
     // newline), so the head — where the payload and the record tags are — never reaches stderr.
     // Putting a tag at the very end means every possible tail carries something recognisable.
     + `"$( ${stateReport(functionCount)} )" # ${RECORD_TAG}\n`
-  return { nonce, line, payload }
+  return stdinPayload === undefined ? { nonce, line, payload } : { nonce, line, payload, stdinPayload }
 }
 
 /**
@@ -170,14 +190,17 @@ export function encodeFrame(command: string, functionCount?: number): CommandFra
  *
  * @param text - stderr accumulated for the command in flight, whole lines only.
  * @param payload - {@link CommandFrame.payload} of the frame currently in flight.
+ * @param stdinPayload - {@link CommandFrame.stdinPayload} of that frame, when it carried one: it is
+ *   part of the same echoed line, so a line containing it is protocol too.
  * @returns the same text with the echoed frames removed.
  */
-export function dropProtocolEcho(text: string, payload: string): string {
+export function dropProtocolEcho(text: string, payload: string, stdinPayload?: string): string {
   return text
     .split('\n')
     .filter((line) => !FRAME_SIGNATURES.some(signature => line.includes(signature))
       && !endsWithTagSuffix(line)
-      && !(payload.length > 0 && line.includes(payload)))
+      && !(payload.length > 0 && line.includes(payload))
+      && !(stdinPayload !== undefined && stdinPayload.length > 0 && line.includes(stdinPayload)))
     .join('\n')
 }
 
