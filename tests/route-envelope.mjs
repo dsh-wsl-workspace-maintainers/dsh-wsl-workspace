@@ -257,6 +257,34 @@ try {
     && /unknown method/.test(String(unknown.envelope.error)),
     `an unknown method answers 200 {ok:false} naming it ("${unknown.envelope?.error ?? ''}")`)
 
+  // ── variantStatus ──
+  // The route half of issue #52. `tests/client-lifecycle.test.mjs` already drives the
+  // CLIENT against a stubbed answer, which leaves the host's own duty unverified: whether
+  // `dispatch` has a `case 'variantStatus'` at all, and what it answers. Delete that case and
+  // every other test in this file still passes — a green suite over a route that does not
+  // exist. These two assertions are what make the deletion red.
+  //
+  // Only the SHAPE is pinned. This harness deliberately answers `webServer` and nothing else
+  // (:75-81), so the preset materializer never runs and `state` is the boot-time `'pending'`.
+  // Asserting `'partial'` here would pin this harness's fixture, not the contract: the value
+  // depends on whether the WSL machine has distros, which is the wrong thing for a
+  // platform-independent gate to depend on. What must hold everywhere is that the answer
+  // parses, says ok, and carries every field the dialog reads.
+  const outcome = await post({ method: 'variantStatus' })
+  const state = outcome.envelope?.value?.state
+  assert(outcome.status === 200 && isEnvelope(outcome.envelope) && outcome.envelope.ok === true
+    && typeof state === 'string' && ['pending', 'ok', 'partial', 'failed'].includes(state)
+    && typeof outcome.envelope.value.generation === 'number'
+    && typeof outcome.envelope.value.at === 'number'
+    && Array.isArray(outcome.envelope.value.failed),
+  `variantStatus answers 200 {ok:true} carrying a bounded outcome (got state=${JSON.stringify(state)})`)
+  // A host WITHOUT this case answers {ok:false, error:'unknown method "variantStatus"'} — and
+  // that refusal is exactly what the client's fallback branch is written against, so reading it
+  // as a pass would let the client's fallback silently become the only tested path. The error
+  // field is where the missing case names itself, which is what makes this half discriminating.
+  assert(!/variantStatus/.test(String(outcome.envelope?.error ?? '')),
+    'the positive half above is a real case, not a route that merely answered 200')
+
   // ── 6. describe answers the manifest, live ──────────────────────────────
   const manifest = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8'))
   const declared = manifest?.dsh?.compatibility?.dshReleases
