@@ -340,7 +340,12 @@ try {
   // are produced from different facts, so asserting they agree catches the claim without trusting it.
   const ptyTimeout = await call('sleep 5', { tty: true, timeoutMs: 1_000 })
   const claimedRecovery = /shell was restarted to recover/.test(ptyTimeout.rendered)
-  const actuallyRestarted = /was restarted and its directory/.test(ptyTimeout.rendered)
+  // Both renderings of the restart have to count as one, because the tool picks between them by
+  // whether the rebuild had anything to report: `and its directory …` when nothing was left out,
+  // `; not restored: …` when it was. Matching only the first made this cell impossible to pass on a
+  // distribution where the rebuild does report — measured 2026-10-06 on the external gauntlet's
+  // machine, where the claim and the fact were both true and the cell still read them as disagreeing.
+  const actuallyRestarted = /was restarted (and its directory|; not restored:)/.test(ptyTimeout.rendered)
   check('a timed-out call says a restart only when the session had one',
     ptyTimeout.value?.timedOut === true && claimedRecovery === actuallyRestarted,
     JSON.stringify({ claimedRecovery, actuallyRestarted, timedOut: ptyTimeout.value?.timedOut }))
@@ -451,12 +456,35 @@ try {
     && restored.text.includes('FN_OK_9') && restored.text.includes('SHOPT_OK_5') && restored.text.includes('SET_OK_3'),
   JSON.stringify(restored.text.trim()))
 
-  const many = await call('for i in $(seq 1 4000); do eval "dshbig$i() { echo $i; }"; done; declare -f | wc -c')
+  // The cap is a budget per function, not a veto over the snapshot. Measured 2026-10-06 on a
+  // distribution whose own startup functions alone are 86,954 bytes: the whole-set form reported
+  // `functions (86954 bytes over the 65536 byte cap)` and restored *nothing*, the function the model
+  // had just defined included. Those functions do not need replaying at all — a rebuilt shell
+  // re-sources the same startup files — and one oversized user function must not take its neighbours
+  // down with it, so this cell makes exactly that shape: a body over the cap beside a small one.
+  const mixed = await call('big=$(printf "x%.0s" $(seq 1 70000)); eval "dshhugefn() { : $big; }"; '
+    + 'dshsmallfn() { echo SMALL_OK_6; }; declare -f dshhugefn | wc -c')
+  const hugeBytes = Number((mixed.text.match(/^\s*(\d+)/) ?? [])[1] ?? '0')
   const bigRestart = await call('sleep 4', { timeoutMs: 1_500 })
-  const overCap = /not restored: functions \(\d+ bytes over the \d+ byte cap\)/.test(bigRestart.rendered)
-  check('a function snapshot over the cap is reported, not silently dropped', many.value?.exitCode === 0 && overCap,
-    `snapshot=${many.text.trim()} bytes; note=${overCap}`)
-  await call('for i in $(seq 1 4000); do unset -f dshbig$i 2>/dev/null; done; true')
+  const named = /not restored: functions dshhugefn\(\d+\)([^.\n]*)\(over the \d+ byte cap/.test(bigRestart.rendered)
+  const keptBack = await call('dshsmallfn')
+  check('a function over the cap is named, and the others still come back',
+    hugeBytes > 65_536 && named && keptBack.text.includes('SMALL_OK_6'),
+    `huge=${hugeBytes}B note=${JSON.stringify(bigRestart.rendered.slice(-160))} kept=${JSON.stringify(keptBack.text.trim().slice(0, 40))}`)
+  await call('unset -f dshhugefn dshsmallfn 2>/dev/null; true')
+
+  // The same reporting on the path that needs it most. A builtin that reads the terminal blocks the
+  // shell itself, so the rebuild happens *inside* the starve handling, and the run the tool reports is
+  // the pseudo-terminal retry — which does not know about the rebuild unless the first attempt's facts
+  // are carried onto it. Measured before the fix: the restart happened, functions were left behind,
+  // and the call answered as if nothing had been lost.
+  await call('big=$(printf "x%.0s" $(seq 1 70000)); eval "dshhugefn2() { : $big; }"')
+  const starveReport = await call('read -r line < /dev/tty; echo LINE=[$line]', { timeoutMs: 20_000 })
+  check('a rebuild triggered by a terminal wait reports what it could not restore',
+    /not restored: functions dshhugefn2\(\d+\)/.test(starveReport.rendered)
+    && /waiting for a keyboard|ran twice|pseudo-terminal/i.test(starveReport.rendered),
+    JSON.stringify(starveReport.rendered.slice(-170)))
+  await call('unset -f dshhugefn2 2>/dev/null; true')
 
   // Detached children. Measured: killing `wsl.exe` takes ordinary children with it (0 survivors) but
   // `setsid`/`nohup` ones live (2/2), so the session marks its processes and reaps exactly those.
@@ -804,7 +832,7 @@ try {
     `the control harness failed before comparing: ${String(error?.message ?? error).slice(0, 120)}`)
 }
 
-const EXPECTED_CHECKS = 71
+const EXPECTED_CHECKS = 72
 const passed = results.filter(r => r.pass).length
 console.log(`${passed}/${results.length} checks passed (plane=${plane()}, distro=${distro}, user=${username}, cwd=${sessionCwd})`)
 if (results.length !== EXPECTED_CHECKS) {

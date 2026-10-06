@@ -14,12 +14,14 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { bridgeReadiness, READINESS_KEYS } from '../src/shared/wsl-env.ts'
+import { READINESS_COPY_KEY, READINESS_KEYS, bridgeReadiness, readinessReassertion } from '../src/shared/wsl-env.ts'
 
 test('the contract keys are named when the host injected them', () => {
   const merged = bridgeReadiness({ PATH: 'C:\\Windows', PS1: 'dsh> ', PROMPT_COMMAND: 'printf x' })
-  assert.equal(merged.WSLENV, 'PS1:PROMPT_COMMAND', 'both keys named, in declaration order')
+  assert.equal(merged.WSLENV, `PS1:PROMPT_COMMAND:${READINESS_COPY_KEY}`, 'both keys and the copy named, in declaration order')
   assert.equal(merged.PATH, 'C:\\Windows', 'the rest of the environment survives')
+  assert.equal(merged[READINESS_COPY_KEY], 'printf x',
+    'the copy carries the host value verbatim, so a login pass rewriting PROMPT_COMMAND cannot take it away')
 })
 
 test('a key the host did not inject is not named', () => {
@@ -27,17 +29,24 @@ test('a key the host did not inject is not named', () => {
   // must not have a dangling name added to WSLENV for a variable that does not exist.
   assert.equal(bridgeReadiness({ PATH: 'x' }).WSLENV, undefined,
     'nothing to bridge: WSLENV is not invented out of nowhere')
-  assert.equal(bridgeReadiness({ PS1: '', PROMPT_COMMAND: 'printf x' }).WSLENV, 'PROMPT_COMMAND',
+  assert.equal(bridgeReadiness({ PATH: 'x' })[READINESS_COPY_KEY], undefined,
+    'and no copy is invented for a contract the host never injected')
+  assert.equal(bridgeReadiness({ PS1: '', PROMPT_COMMAND: 'printf x' }).WSLENV, `PROMPT_COMMAND:${READINESS_COPY_KEY}`,
     'an empty value is skipped the same way an absent one is')
+  assert.equal(bridgeReadiness({ PS1: 'dsh> ', PROMPT_COMMAND: '' }).WSLENV, 'PS1',
+    'an empty PROMPT_COMMAND names neither itself nor the copy')
 })
 
 test('ambient WSLENV is preserved and never duplicated', () => {
   const merged = bridgeReadiness({ WSLENV: 'FOO/p:BAR', PS1: 'dsh> ', PROMPT_COMMAND: 'printf x' })
-  assert.equal(merged.WSLENV, 'FOO/p:BAR:PS1:PROMPT_COMMAND', 'existing entries keep their flags and order')
+  assert.equal(merged.WSLENV, `FOO/p:BAR:PS1:PROMPT_COMMAND:${READINESS_COPY_KEY}`, 'existing entries keep their flags and order')
   const already = bridgeReadiness({ WSLENV: 'PS1/p', PS1: 'dsh> ' })
   assert.equal(already.WSLENV, 'PS1/p', 'a name already present is not added a second time')
   assert.equal(already.WSLENV?.split(':').filter(entry => entry.replace(/\/[plu]$/, '') === 'PS1').length, 1,
     'exactly one PS1 entry — a duplicate would make wsl.exe resolve it twice')
+  const twice = bridgeReadiness({ WSLENV: `${READINESS_COPY_KEY}`, PROMPT_COMMAND: 'printf x' })
+  assert.equal(twice.WSLENV?.split(':').filter(entry => entry.replace(/\/[plu]$/, '') === READINESS_COPY_KEY).length, 1,
+    'the copy is named once too, for the same reason')
 })
 
 test('prompt values never get the path-translation flag', () => {
@@ -62,4 +71,16 @@ test('the caller environment object is not mutated', () => {
 test('the declared key list is the only place the names appear', () => {
   assert.deepEqual([...READINESS_KEYS], ['PS1', 'PROMPT_COMMAND'],
     'a second list would let the two halves drift apart')
+})
+
+test('the re-assertion clears the array attribute before it re-assigns', () => {
+  // Measured 2026-10-06: `PROMPT_COMMAND+=(…)` leaves the variable an array, bash will not export
+  // an array, and a plain assignment to it writes element `[0]` without clearing that attribute —
+  // so the assignment form alone still exports nothing. `unset` is the step that makes it scalar.
+  const text = readinessReassertion()
+  assert.ok(text.indexOf('unset PROMPT_COMMAND') < text.indexOf('PROMPT_COMMAND="${'),
+    'unset has to come first: ' + text)
+  assert.ok(text.includes('export PROMPT_COMMAND'), 'and the scalar value has to be exported for `exec bash -i`')
+  assert.ok(text.includes(`\${${READINESS_COPY_KEY}:-}`), 'it reads the copy, not whatever the login pass left behind')
+  assert.ok(!text.includes('\n'), 'one line — it is spliced into the command `bash -lc` is handed')
 })

@@ -604,7 +604,16 @@ export function apply(ctx: Context, config?: Config): void {
         escalated = true
         before.push(retryNote(first.kind, first.atMs, first.viaRoot, first.shellInterrupted))
         command = wrap(wrapForTty(args.command))
-        run = await session.run(command, timeoutMs, exec.signal, true, args.stdin)
+        // What the first attempt did to the shell is a fact about this call, not about the attempt it
+        // was found in: a builtin that read the terminal blocks the shell itself, so the shell is
+        // restarted here, and what that restart could not restore has to reach the note. Measured
+        // 2026-10-06: dropped with the first run, the loss went unreported on exactly the path that
+        // loses the most.
+        const firstRun = run
+        const retry = await session.run(command, timeoutMs, exec.signal, true, args.stdin)
+        run = { ...retry,
+          restarted: retry.restarted || firstRun.restarted,
+          skipped: retry.skipped ?? firstRun.skipped }
       }
       if (run.aborted) throw toolAborted()
       // Any success clears every streak: the note's claim is about a shell where nothing has worked

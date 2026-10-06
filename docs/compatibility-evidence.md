@@ -3151,3 +3151,95 @@ sees the same lines in any WSL terminal on this machine.
 Residue after the run, read from the distribution and from `tasklist`: `bash -i` **0**, `wsl-relay`
 **0**, `node.exe` **0** — the door's shell and the relay were both gone, and the only shell left is
 the session's own `bash --norc -i`, which is the session still being open.
+
+## The outside run's three findings, measured here before any of them was believed or fixed (2026-10-06, eleventh round)
+
+An adversarial re-run of this branch arrived as a file (67 independent cells, its author's own gate at
+68/71, the eleven-release matrix at 17/20). It claimed three defects. None of them reproduced on this
+machine as described, and one of them could not: this distribution is Ubuntu 22.04, which ships no
+`/etc/profile.d/80-systemd-osc-context.sh`. So each claim was measured here before a line was written,
+and the first was reproduced by **simulating the profile that takes the contract away**, in a scratch
+`HOME` (`/tmp/dsh-relay-guard-<pid>`, removed at the end of the same script).
+
+**Finding 1 — the readiness contract depended on the distribution's startup files leaving it alone.**
+Four arms, each running the relay's own command shape and asking the inner interactive shell what it
+actually inherited:
+
+| arm | command | `PROMPT_COMMAND` exported into the inner shell | `133;D;` on the wire | prompt |
+|---|---|---|---|---|
+| 1 | old, hostile profile (the 26.04 shape) | `0` | no | the distribution's own |
+| 2 | old, benign profile (what this machine is) | `1` | yes | `dsh> ` |
+| 3 | **new, hostile profile** | **`1`** | **yes** | **`dsh> `** |
+| 4 | new, no contract bridged at all | `0` | no | its own — the guard is inert |
+
+The mechanism, measured on this machine directly: `PROMPT_COMMAND=x; PROMPT_COMMAND+=(y)` then export
+answers `0` — bash does not export arrays — while `unset` first answers `1`. A plain re-assignment
+without the `unset` also answers `0`, because assigning to an array writes element `[0]` and keeps the
+array attribute. That is why the relay now bridges the value a second time under
+`__DSH_READINESS_PROMPT_COMMAND` (a name no startup file has a reason to touch) and re-asserts it
+between the login pass and `exec`. The consequence the report described is real and was confirmed by
+reading: a session whose contract never arrives still gets the pipe-driven `bash` (which needs no
+prompt at all), while `wsl_terminal` pays its quiet window on every keystroke.
+
+**Finding 2 — the function snapshot's 64 KiB cap was applied to the whole dump.** The report's
+distribution has 86,954 bytes of startup functions, so every function in the shell — the one the model
+had just defined included — was thrown away. Costs measured here first, in a shell that has sourced the
+same rc files the session sources:
+
+| what | reading |
+|---|---|
+| startup set on this machine | 91 names, 61,881 bytes (under the cap by 3,655) |
+| the `sort`/`comm` set difference against a recorded baseline | 7 ms |
+| a walk of all 91 bodies one at a time | 150 ms |
+| snapshot emitted when nothing of the user's is defined | 0 bytes |
+| snapshot emitted after one user function | 68 bytes |
+| snapshot emitted with 120 kB of user functions present | 64,039 bytes, the rest named |
+
+The snapshot now carries only the functions the distribution's own files did not define (a rebuilt
+shell re-sources those, so replaying them proved nothing), budgets them one at a time, and names what
+does not fit. The 150 ms walk is paid only on a frame whose function count moved; an ordinary call still
+pays the comparison alone, which is why the loop lives in a helper the bootstrap defines rather than in
+the frame that goes out on every call.
+
+**The fix itself introduced a defect, and the live matrix caught it.** The first version read function
+names by cutting the prefix off `declare -F`. With `set -o allexport` in effect — which one of the
+existing cells turns on, in the same call that defines the function — bash prints `declare -fx name`, so
+every name came out as `declare -fx name`, every function looked new, the lookup found no such name, and
+the snapshot came back empty. Run through the frame shape directly, that reads as:
+
+```
+probe again: RCFLINES=92 NOW=96 NEW=declare -fx dshafter declare -fx dshrealfn2 declare -fx dshrealfnC dshrealfn
+```
+
+Names now come from `compgen -A function`, both in the baseline and in the snapshot, so a flag change
+cannot make the two sides disagree. Same three cells after the switch: the defining call's note reports
+`dshhugefn(70025)` by name and `dshsmallfn` comes back; `alias, function, shopt and set options survive
+a restart` carries `FN_OK_9` again; and a new cell — the builtin that reads the terminal, which rebuilds
+the shell inside the starve handling — now puts `not restored: functions dshhugefn2(70026)` in the body
+of the call that asked for the terminal, instead of losing it with the first attempt.
+
+**Finding 3 — a rebuild that had something to report was not believed by the cell that checks it.** The
+note renders as `was restarted and its directory …` when nothing was left out and `was restarted; not
+restored: …` when something was, and the check matched only the first form, so on a reporting machine
+the claim and the fact were both true and the cell still read them as disagreeing. Both forms count
+now, and the count that guards a short run moved with them: `EXPECTED_CHECKS` is 72.
+
+**What this round does not claim.** The four-arm table simulates the offending profile rather than
+running on a distribution that ships it, so `conpty-relay` on a 26.04-class machine is still unproven
+here; the eleven-release matrix has not been re-run on this tip; an *override* of a function the
+distribution itself defines is still not restored (the count does not move, so no snapshot is asked —
+the same behaviour as before this change, now written down); and the door on this machine settles on the
+quiet window even though the controlled prompt is on the screen, which is the host's own matcher not
+firing on a typed send, not the contract failing to arrive — recorded, not chased, and the tool says
+which of the two happened on every send.
+
+**The gates this round re-ran after the three fixes**, on the same machine and distro as the tables
+above: `bash-session-real` **72/72 on all four legs** (`src`/`lib` planes × `root`/`ruler` users — the
+count moved from 71 because the starve-reporting cell is new), `tool-bash-real` 10/10 and
+`bash-parity-real` 12/12 on both planes, unit 195 (194 pass, 1 skip), node bucket 85/85, win32 51/51,
+docs parity 11/11, profile isolation PASSED, typecheck 209 = baseline, `lint:portability` rc 0. The
+three cells that were red on the outside machine and the two this branch made red on the way are all
+green here: `alias, function, shopt and set options survive a restart` (answers `FN_OK_9`),
+`a function over the cap is named, and the others still come back` (names `dshhugefn(70025)`, keeps
+`SMALL_OK_6`), and `a rebuild triggered by a terminal wait reports what it could not restore` (the body
+of the call that asked for the terminal carries `not restored: functions dshhugefn2(70026)`).

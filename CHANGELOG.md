@@ -344,6 +344,31 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   channel is shaped around), the same on a real pseudo-terminal (`read x; echo GOT=$x`), and the
   refusal's own sentence.
 
+- **An outside adversarial run found three things this machine could not see, and each is now closed.**
+  (1) *The readiness contract depended on the distribution's startup files leaving it alone.* On a
+  distribution shipping `/etc/profile.d/80-systemd-osc-context.sh`, that file runs
+  `PROMPT_COMMAND+=(…)`, bash refuses to export an array, and the interactive shell the relay `exec`s
+  inherits no `PROMPT_COMMAND` at all — measured here in a simulated profile: `env | grep -c
+  '^PROMPT_COMMAND='` goes from `1` to `0` and the `133;D;` marker never reaches the wire, so
+  `wsl_terminal` pays its quiet window on every keystroke and the `DSH_WSL_PTY_SHELL=1` tier never
+  settles. The relay now bridges the contract a second time under a name no startup file knows
+  (`__DSH_READINESS_PROMPT_COMMAND`) and re-asserts it between the login pass and the `exec`, `unset`
+  first — assigning to an array only writes element `[0]` and still exports nothing. Four arms measured:
+  old command + hostile profile `0`/no marker (the report's shape), old + benign `1`/marker (why this
+  machine was green), **new + hostile `1`/marker `prompt=[dsh> ]`**, new + no contract bridged
+  `0`/no marker (a host that injects none still gets its own shell). (2) *The function snapshot's cap
+  was all-or-nothing*, so on a distribution whose own startup functions are 86,954 bytes the whole
+  section — the function the model had just defined included — was dropped, and the journal's own
+  `alias, function, shopt and set options survive a restart` cell went red for the same reason. The cap
+  is now a per-function budget over only the functions the distribution's own files did not define
+  (a rebuilt shell re-sources those), and what does not fit is named. (3) *A rebuild that had something to
+  report was not believed by the cell that checks it*: the note renders as `was restarted and its
+  directory …` when nothing was left out and `was restarted; not restored: …` when something was, and
+  the check matched only the first, so on a reporting machine the claim and the fact were both true and
+  the cell still read them as disagreeing. Both wordings count now, and a starve-triggered rebuild
+  carries what it could not restore into the note of the call that asked for the terminal, instead of
+  losing it with the first attempt.
+
 ## 0.7.5 — 2026-09-30
 
 - **The persistent shell works on DSH Desktop again (issue #40).** The Desktop

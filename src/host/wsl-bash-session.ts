@@ -749,6 +749,10 @@ export class WslBashSession {
    */
   private journalWithFunctions(state: string): string {
     const sections = parseState(state)
+    if (process.env.DSH_WSL_TRACE === '1') {
+      console.error(`[trace] state record: functions section=${String(sections.functions !== undefined)} `
+        + `bodies=${Buffer.byteLength((sections.functions ?? []).join('\n'))} markers=${JSON.stringify((sections.functions ?? []).filter(line => line.startsWith('#dsh-functions-')))}`)
+    }
     if (sections.functions !== undefined) {
       this.functionsBody = sections.functions.join('\n')
       return state
@@ -788,6 +792,10 @@ export class WslBashSession {
     // tens of milliseconds here cannot be seen — and no ordinary call pays it any more.
     await this.settleTail()
     const restore = restoreChunks(this.journal)
+    if (process.env.DSH_WSL_TRACE === '1') {
+      console.error(`[trace] rebuild: chunks=${restore.chunks.length} `
+        + `functions chunk=${String(restore.chunks.some(chunk => chunk.includes('()')))} skipped=${JSON.stringify(restore.skipped)}`)
+    }
     await this.kill()
     this.closeSpills()
     const reaped = await this.reapDetached()
