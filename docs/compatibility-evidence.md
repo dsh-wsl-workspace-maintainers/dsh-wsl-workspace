@@ -2813,7 +2813,7 @@ report-and-continue.
 | `tar -cf /dev/null /usr/bin` | 52 ms | untouched |
 | afterwards: `echo ALIVE_$((6*7))` | 27 ms, `ALIVE_42` | the same shell, still alive |
 
-The gate carries all of these as cells (`bash-session-real`, 51 -> **55 checks**), and each reactive cell
+The gate carries all of these as cells (`bash-session-real`, 51 -> **56 checks**), and each reactive cell
 first reads whether *this* distribution has the premise at all (`ps -o tty= -p $$`) and prints which
 branch it took — on a distro where `/dev/tty` cannot be opened, `read x < /dev/tty` fails at once and the
 cell must not claim a wait was caught. Writing this machine's premise as a universal rule is the mistake
@@ -2939,3 +2939,47 @@ window at settle and keeping the pending record at the head of the buffer remove
 that point, offsets are only ever taken against a buffer that starts where the last consumption ended.
 
 The gate carries all of it: 55 cells on two planes as two users, after this round as before it.
+
+### Round seven: a live model found the case the cells could not (2026-10-06)
+
+The run: this build installed into an isolated `DSH_HOME` (own port, its own web profile, `remove` then
+`add`, with the installed chunk asserted to carry `wait_woken`), one session in the WSL workspace, one
+prompt asking for four real things — report the environment and compute something; run a command that
+waits for the keyboard; run `sudo`; run a quiet command — with the model free to choose every command.
+Provider: his own free token-plan credential, read from `~/.dsh/.credentials.yaml` in-process and never
+written to disk nor printed.
+
+| call the model chose (first run) | wall clock | what came back |
+| --- | --- | --- |
+| `uname -r; grep PRETTY_NAME /etc/os-release; whoami; pwd; echo "13*7 = $((13*7))"` | 593 ms | real distribution data and 91 |
+| `read -r line < /dev/tty; echo "line=[$line]"` | **31 282 ms — timed out, shell rebuilt** | nothing, and no note |
+| `sudo id` | 2 125 ms | sudo's own three lines, plus the root-plane re-run note |
+| `sleep 3; echo "exit=$?"` | 3 021 ms | `exit=0` |
+
+The second call is the finding. Every cell here wrote `sh -c 'read …'`, which blocks a *child*; the walk
+looked only at descendants; a builtin has none. Measured while it happens, the shell's own row is
+`Ss+ pgid==tpgid wchan=wait_woken fd0=/dev/tty` with CPU flat — the same signature one level up — so the
+shell is now in the walk, marked (between commands it waits on a pipe, which must not read as a wait).
+
+The first attempt at freeing it was a guess, and it was measured wrong: `kill -INT` left the call running
+to its deadline, because bash catches the signal and the read syscall restarts. What ships is the reaction
+that works — the shell is stopped like any other wedged process (`CONT`, `TERM`, `KILL`), the session
+rebuilds from its journal, and the tool re-runs the command on a terminal where the read meets
+end-of-file. New cell, 56 total: `a builtin that reads the terminal is ended and re-run, not left to the
+deadline`.
+
+Four more defects were announced by cells while that landed: the stop set named every row in the sample
+(the shell is now always in it, so a child reading its terminal dragged the shell along); the privileged
+path took its stop set from the user-plane rows, where `sudo` shows `wchan=0 tty=-1` — the witness
+confirmed the wait and the stop set was empty, so the call ran to its 25 s deadline; a watchdog-stopped
+call was reported as `aborted`, the caller-cancel shape, which made the live gate abort its own run; and
+one cell's regex was written `/LINE=[]/` — an empty character class that can never match — instead of a
+string test, which is a reminder that a red cell has to be read for whose defect it is before anything is
+changed.
+
+Second run of the same prompt, after the fix: ① 513 ms; ② **3 104 ms**, body `read-exit=1 x=''` plus
+`[the first attempt was ended by restarting the shell … after 606ms …]`; ③ `sudo -n id` 51 ms with
+`sudo: a password is required`; ④ 3 040 ms — and the model's closing message quoted the note and
+explained the difference between the two cases. Usage: two billed requests, 1 490 + 8 379 and
+10 084 + 3 301 tokens (the file also records a first attempt whose 8 192-token cap was spent entirely on
+reasoning and which produced no tool call — the failure his provider config documents).

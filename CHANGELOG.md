@@ -172,6 +172,24 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   [docs/tty-triage.md](docs/tty-triage.md), and every line it names is asserted by a cell in
   `bash-session-real` (55 cells now, on both planes).
 
+- **A live model found the one shape the cells could not: a builtin that reads the terminal blocks the
+  *shell itself*.** The build was driven end to end by a real model on a real token plan — four calls in a
+  WSL workspace, every command chosen by the model — and it picked \`read -r line < /dev/tty\` where every
+  cell in this repository used \`sh -c …\`. A child that blocks is found by walking the shell's
+  descendants; a *builtin* has no child, so nothing was classified and the call died on its 30 s deadline
+  with no note (the model's own summary noticed, and said so). Measured while it happens, the shell's own
+  row is \`Ss+ pgid==tpgid wchan=wait_woken fd0=/dev/tty\` with CPU flat — the same signature, one level up —
+  so the shell is now part of the walk, marked, because between commands it waits on a pipe and must not
+  be read as a wait. Freeing it took a measurement rather than a hope: \`kill -INT\` does **not** work (bash
+  catches it and the read syscall restarts — the call ran to its deadline with the signal delivered), so
+  the shell is stopped like any other wedged process, the session rebuilds from its journal, and the
+  command is re-run on a terminal by the same retry path. Same prompt, second run: that call came back in
+  **3 104 ms** with \`read-exit=1 x=''\` and the note naming the restart, and the model's closing summary
+  quoted it. Three further defects surfaced while landing it, all announced by a cell: the stop set named
+  every row in the sample (which now always contains the shell), the privileged path took its stop set
+  from the unreadable user-plane rows instead of the witness's, and a watchdog-stopped call was reported
+  in the caller-cancel shape — which made the live gate abort its own run.
+
 - **The terminal is given by a reading, not by a list, and the second attempt is announced.** Three sets
   of command names — credential, keyboard, pager — decided whether a call got a pseudo-terminal, and how
   long it was allowed to wait. They are gone: they were the maintenance cost of this layer and the source

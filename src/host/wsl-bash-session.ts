@@ -27,7 +27,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { BOOTSTRAP_COMMAND, dropProtocolEcho, encodeFrame, parseState, readCompletion, readStateRecord, restoreChunks, shellPidOf, stripRecords } from './wsl-bash-protocol.ts'
-import { FIRST_PROBE_MS, LOOKS_BEFORE_SLOWING, MIN_WAIT_MS, PROBE_DONE_SENTINEL, PROBE_EVERY_MS, PROBE_SLOW_MS, confirmsTerminalRead, parseProbe, probeScript, starveOf, stopScript, type StarveKind, type StarveSample } from './wsl-bash-starve.ts'
+import { FIRST_PROBE_MS, LOOKS_BEFORE_SLOWING, MIN_WAIT_MS, PROBE_DONE_SENTINEL, PROBE_EVERY_MS, PROBE_SLOW_MS, confirmsTerminalRead, culpritPids, parseProbe, probeScript, starveOf, stopScript, type StarveKind, type StarveSample } from './wsl-bash-starve.ts'
 
 /** How often the reader looks for a frame's records, in milliseconds. */
 const POLL_MS = 20
@@ -109,6 +109,9 @@ export interface WslBashRun {
   starvedAtMs?: number | undefined
   /** True when the reading that ended the wait came through the root plane rather than the user's own. */
   starvedViaRoot?: boolean | undefined
+  /** True when the process that had to be stopped was the session shell itself (a builtin reading the
+   * terminal), which is interrupted rather than killed so the session survives. */
+  starvedShellInterrupt?: boolean | undefined
   /**
    * True when the watchdog needed to look and every look failed — the `/proc` walk did not answer on
    * this distribution. Nothing was stopped, and the caller has to be told the check is missing rather
@@ -175,6 +178,8 @@ export class WslBashSession {
   private err = Buffer.alloc(0)
   /** True once the frame in flight has written its stderr-end marker (a NUL byte) on fd 2. */
   private errEnded = false
+  /** Set when the blocked process was the shell itself, so the note says the shell was restarted. */
+  private shellInterrupted = false
   private errTruncated = false
   private errSpill: { path: string, fd: number } | undefined
   private errSeen = 0
@@ -243,6 +248,8 @@ export class WslBashSession {
       if (this.disposed) throw new Error('wsl-bash: the session is closed')
       const first = await this.execute(command, timeoutMs, signal, DEFINITION.test(command), ownTerminal)
       if (first.settled) return first.run
+      // A starved frame is not re-executed here: the command was blocked on a terminal, so running it
+      // again in the same kind of shell would block again. The tool retries it on a pseudo-terminal.
       // The frame went out and no record came back. Two different worlds, and the difference that
       // matters is whether the command may have run. A dead child cannot still hold the shell, so
       // replaying there is safe and keeps a crash transparent. A live one may be mid-command, and a
@@ -252,7 +259,7 @@ export class WslBashSession {
       const childGone = this.exited
       const recovery = await this.rebuild()
       const recovered = { restarted: true, ...recovery }
-      if (!childGone || signal?.aborted === true) return { ...first.run, ...recovered }
+      if (!childGone || signal?.aborted === true || first.run.starved !== undefined) return { ...first.run, ...recovered }
       const second = await this.execute(command, timeoutMs, signal, DEFINITION.test(command), ownTerminal)
       return { ...second.run, ...recovered }
     } finally {
@@ -402,6 +409,7 @@ export class WslBashSession {
     if (process.env.DSH_WSL_TRACE === '1') console.error(`[trace] drained shellPid=${this.shellPid} pending=${String(this.pendingState !== undefined)} out=${this.out.length}`)
     // This frame's stderr-end marker has not been seen yet; the settle path waits for it.
     this.errEnded = false
+    this.shellInterrupted = false
     // A spill file belongs to one command. Left open across commands, the second call's answer would
     // carry the first call's `full output` path — measured in `bash-parity-real`, where every probe
     // after a 200 000-line one reported a spill.
@@ -466,7 +474,10 @@ export class WslBashSession {
             stderr: this.takeStderr(frame.payload),
             exitCode: timedOut ? -1 : 1,
             timedOut,
-            aborted: !timedOut,
+            // A frame the watchdog stopped is neither a deadline nor a caller abort: the caller cancelled
+            // nothing, and a builtin that blocked the shell has to reach the tool's retry path (measured:
+            // reporting it as `aborted` made the live gate abort its own run).
+            aborted: !timedOut && watch.stop === undefined,
             restarted: false,
             truncated: this.outTruncated,
             stderrTruncated: this.errTruncated,
@@ -602,6 +613,10 @@ export class WslBashSession {
   private async applyLook(watch: FrameWatch, sample: StarveSample | undefined, elapsed: number): Promise<void> {
     if (sample === undefined || watch.settled === true || watch.stop !== undefined) return
     let kind = starveOf(watch.previous, sample, watch.ownTerminal)
+    // The rows that justify the verdict: the user-plane pass, unless it is the witness that settles it —
+    // there the user-plane rows are the unreadable ones (`sudo` shows `wchan=0 tty=-1`), so stopping "the
+    // pids in the sample" would stop nothing (measured: the call then ran to its 25 s deadline).
+    let culprits = sample
     watch.previous = sample
     if (kind === undefined) return
     // A privileged wait hides its own `/proc` entries, so the user plane can only call it unconfirmable.
@@ -620,19 +635,23 @@ export class WslBashSession {
       if (verdict === true) {
         kind = 'terminal'
         watch.viaRoot = true
+        if (witness !== undefined) culprits = witness
       }
       else if (verdict === false) return
     }
     if (elapsed < MIN_WAIT_MS[kind]) return
-    watch.stop = { kind, atMs: elapsed, pids: sample.rows.map(row => row.pid) }
+    watch.stop = { kind, atMs: elapsed, pids: culpritPids(culprits, kind, watch.ownTerminal) }
     await this.stopJob(watch.stop.pids)
   }
 
   /** The run fields that carry a watchdog stop, or nothing when there was none. */
   private starvedFields(watch: FrameWatch):
-  Pick<WslBashRun, 'starved' | 'starvedAtMs' | 'starvedViaRoot' | 'starveProbeBroken'> {
+  Pick<WslBashRun, 'starved' | 'starvedAtMs' | 'starvedViaRoot' | 'starvedShellInterrupt' | 'starveProbeBroken'> {
     if (watch.stop !== undefined) {
-      return { starved: watch.stop.kind, starvedAtMs: watch.stop.atMs, starvedViaRoot: watch.viaRoot }
+      return {
+        starved: watch.stop.kind, starvedAtMs: watch.stop.atMs, starvedViaRoot: watch.viaRoot,
+        ...(this.shellInterrupted ? { starvedShellInterrupt: true } : {}),
+      }
     }
     // Looked and never got an answer: the check is not running here, which is a fact the caller needs.
     return watch.looks === 0 && watch.failed > 0 ? { starveProbeBroken: true } : {}
@@ -686,17 +705,25 @@ export class WslBashSession {
   private async stopJob(pids: readonly number[]): Promise<void> {
     const env: Record<string, string> = { ...this.spec.env }
     delete env.DSH_WSL_SESSION
-    try {
-      const handle = this.ctx.subprocess.spawn({
-        argv: [...this.spec.reaperArgv, stopScript(pids)],
-        cwd: this.spec.cwd,
-        stdio: { stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' },
-        graceMs: this.spec.graceMs,
-        env,
-      })
-      await handle.done.catch(() => undefined)
-    } catch {
-      // Nothing to report: the frame's own deadline still governs.
+    // A *builtin* reading the terminal blocks the shell itself, and no signal frees it: SIGINT is caught
+    // and the read syscall is restarted (measured — `kill -INT` left the call running to its deadline),
+    // SIGTSTP stops the shell, and only SIGKILL ends it. So the shell is stopped like any other pid and
+    // the session restarts around the call, which is what `starved` tells the tool to work with.
+    if (pids.includes(this.shellPid)) this.shellInterrupted = true
+    const scripts = [stopScript(pids)]
+    for (const script of scripts) {
+      try {
+        const handle = this.ctx.subprocess.spawn({
+          argv: [...this.spec.reaperArgv, script],
+          cwd: this.spec.cwd,
+          stdio: { stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' },
+          graceMs: this.spec.graceMs,
+          env,
+        })
+        await handle.done.catch(() => undefined)
+      } catch {
+        // Nothing to report: the frame's own deadline still governs.
+      }
     }
   }
 

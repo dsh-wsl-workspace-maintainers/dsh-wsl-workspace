@@ -56,7 +56,7 @@ versions are all untested here — the first two would change what the rows abov
   two gates. The notes above are `field-notes`, `behaviour-keyboard-wait`, `behaviour-two-executions`,
   `behaviour-escalated-streams`, `behaviour-overstrike` and `behaviour-no-tty`.
 - `scripts/compatibility/bash-session-real.mjs` — the live cells that assert each line appears when it
-  should and does not when it should not (55 cells, run on two planes on every `checks` frame). Each
+  should and does not when it should not (56 cells, run on two planes on every `checks` frame). Each
   reactive cell first reads whether *this* distribution gives the session a controlling terminal, and
   says which branch it took: the premise is local, and asserting it as universal is how this file has
   been caught out twice.

@@ -10,18 +10,18 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { confirmsTerminalRead, parseProbe, probeScript, retryNote, starveNote, starveOf, stopScript, FIRST_PROBE_MS, LOOKS_BEFORE_SLOWING, MIN_WAIT_MS, PROBE_EVERY_MS, PROBE_SLOW_MS, OWN_TERMINAL_WAIT_MS, UNCONFIRMED_WAIT_MS, type StarveSample } from '../src/host/wsl-bash-starve.ts'
+import { confirmsTerminalRead, culpritPids, parseProbe, probeScript, retryNote, starveNote, starveOf, stopScript, FIRST_PROBE_MS, LOOKS_BEFORE_SLOWING, MIN_WAIT_MS, PROBE_EVERY_MS, PROBE_SLOW_MS, OWN_TERMINAL_WAIT_MS, UNCONFIRMED_WAIT_MS, type StarveSample } from '../src/host/wsl-bash-starve.ts'
 
 /** A sample of one row, as the probe would report it. */
 function sample(...lines: string[]): StarveSample {
   return parseProbe(lines.join('\n'), 2_000)
 }
 
-const TERMINAL_ROW = 'P 18673 18673 18673 S+ w=wait_woken c=1200,300 tty=1 comm=sh'
-const PRIVILEGED_ROW = 'P 18255 18255 18255 S+ w=0 c=900,200 tty=-1 comm=sudo'
-const SLEEP_ROW = 'P 19091 19091 19091 S+ w=hrtimer_nanosleep c=400,100 tty=0 comm=sleep'
-const NETWORK_ROW = 'P 19479 19479 19479 S w=poll_schedule_timeout.constprop.0 c=600,150 tty=0 comm=curl'
-const RUNNING_ROW = 'P 19299 19299 19299 Rl+ w= c=700,18000 tty=0 comm=dd'
+const TERMINAL_ROW = 'P 18673 18673 18673 S+ w=wait_woken c=1200,300 tty=1 comm=sh role=desc'
+const PRIVILEGED_ROW = 'P 18255 18255 18255 S+ w=0 c=900,200 tty=-1 comm=sudo role=desc'
+const SLEEP_ROW = 'P 19091 19091 19091 S+ w=hrtimer_nanosleep c=400,100 tty=0 comm=sleep role=desc'
+const NETWORK_ROW = 'P 19479 19479 19479 S w=poll_schedule_timeout.constprop.0 c=600,150 tty=0 comm=curl role=desc'
+const RUNNING_ROW = 'P 19299 19299 19299 Rl+ w= c=700,18000 tty=0 comm=dd role=desc'
 
 test('the readings parse into the fields the rule uses', () => {
   const rows = sample(TERMINAL_ROW, PRIVILEGED_ROW, SLEEP_ROW).rows
@@ -56,18 +56,18 @@ test('anything gaining CPU rules the answer out, even next to a terminal read', 
   const first = sample(TERMINAL_ROW, SLEEP_ROW)
   const second = sample(
     TERMINAL_ROW,
-    'P 19091 19091 19091 S+ w=hrtimer_nanosleep c=400,9000 tty=0 comm=sleep',
+    'P 19091 19091 19091 S+ w=hrtimer_nanosleep c=400,9000 tty=0 comm=sleep role=desc',
   )
   assert.equal(starveOf(first, second), undefined)
 })
 
 test('a process that is not the terminal’s foreground job is left alone', () => {
   // pgid 20001 inside a terminal whose foreground group is 18673: another user's job, not this call's.
-  assert.equal(starveOf(undefined, sample('P 20001 20001 18673 S+ w=wait_woken c=1,1 tty=1 comm=sh')), undefined)
+  assert.equal(starveOf(undefined, sample('P 20001 20001 18673 S+ w=wait_woken c=1,1 tty=1 comm=sh role=desc')), undefined)
 })
 
 test('polling a terminal counts as a wait only when this tool is the one that made that terminal', () => {
-  const polling = 'P 19999 19999 19999 S w=poll_schedule_timeout.constprop.0 c=700,180 tty=1 comm=vim'
+  const polling = 'P 19999 19999 19999 S w=poll_schedule_timeout.constprop.0 c=700,180 tty=1 comm=vim role=desc'
   // On the ordinary pipe a poll beside a pts is indistinguishable from `ssh` waiting on its socket, so
   // nothing may be stopped for it.
   assert.equal(starveOf(undefined, sample(polling)), undefined)
@@ -90,11 +90,37 @@ test('the wrapper this tool made for its own pty is not read as a wait', () => {
   // Measured: shortening the own-terminal window to 1.5 s stopped a legitimate silent `sleep 3` run
   // under `tty: true`, because `script` — the wrapper this tool put there — polls the pty it created
   // while its child sleeps. The child is the real waiter, and a timer wait is not a keyboard wait.
-  const wrapper = 'P 26455 26455 26455 S+ w=poll_schedule_timeout.constprop.0 c=700,180 tty=1 comm=script'
-  const inner = 'P 26456 26456 26456 S+ w=hrtimer_nanosleep c=700,180 tty=3 comm=sleep'
+  const wrapper = 'P 26455 26455 26455 S+ w=poll_schedule_timeout.constprop.0 c=700,180 tty=1 comm=script role=desc'
+  const inner = 'P 26456 26456 26456 S+ w=hrtimer_nanosleep c=700,180 tty=3 comm=sleep role=desc'
   assert.equal(starveOf(undefined, sample(wrapper), true), undefined, 'the wrapper alone is not a finding')
   assert.equal(starveOf(undefined, sample(wrapper, inner), true), undefined, 'nor when its child sleeps on a timer')
   assert.equal(starveOf(undefined, sample(wrapper), false), undefined, 'and never on the plain pipe')
+})
+
+test("a builtin reading the terminal is caught on the shell's own row", () => {
+  // A real model chose `read -r line < /dev/tty` where this plugin's cells used `sh -c …`: a builtin
+  // blocks the shell itself, so there is no child to find. Measured while it happened: the shell row
+  // is `Ss+ wchan=wait_woken fd0=/dev/tty` with CPU flat.
+  const shell = 'P 12 12 12 Ss+ w=wait_woken c=82120900,3098300 tty=1 comm=bash role=shell'
+  assert.equal(starveOf(undefined, sample(shell)), 'terminal')
+  // Between commands the same row waits on a pipe, which is not a finding — and it never counts as
+  // the weaker readings either, because those are about a command's own process.
+  const idle = 'P 12 12 12 Ss+ w=poll_schedule_timeout.constprop.0 c=1,2 tty=0 comm=bash role=shell'
+  assert.equal(starveOf(undefined, sample(idle)), undefined)
+  assert.equal(starveOf(undefined, sample(idle), true), undefined, 'a shell poll is not an own-terminal wait')
+})
+
+
+test('a stop names the rows that justify it, not the shell that is always in the walk', () => {
+  // The sample always contains the shell now; a child blocking on its terminal must not drag the shell
+  // into the stop set (measured: it did, and the note then claimed the shell had been restarted).
+  const shellRow = 'P 12 12 12 Ss+ w=do_wait c=1,2 tty=0 comm=bash role=shell'
+  const childRow = 'P 44 44 44 S+ w=wait_woken c=5,6 tty=1 comm=sh role=desc'
+  const both = sample(shellRow, childRow)
+  assert.deepEqual(culpritPids(both, 'terminal'), [44], 'only the child')
+  const blockedShell = sample('P 12 12 12 Ss+ w=wait_woken c=5,6 tty=1 comm=bash role=shell')
+  assert.deepEqual(culpritPids(blockedShell, 'terminal'), [12], 'the shell, when it is the one waiting')
+  assert.deepEqual(culpritPids(both, 'terminal').includes(12), false, 'and never the shell for a child')
 })
 
 test('the root plane can confirm a read the process hides from its own user, or rule it out', () => {
@@ -122,8 +148,9 @@ test('the probe walks descendants of the shell it was given and prints a complet
   assert.match(script, /\/proc\/\$pid\/wchan/)
   assert.match(script, /\/proc\/\$pid\/schedstat/)
   assert.match(script, /DSH_PROBE_DONE/)
-  // The shell itself is skipped: its state is "waiting for the next frame", which is not a finding.
-  assert.match(script, /\[ "\$pid" = "\$root" \] && continue/)
+  // The shell's own row is INCLUDED and marked: a builtin that reads the terminal blocks the shell
+  // itself, and the walk has to see it (measured: `stat=Ss+ wchan=wait_woken fd0=/dev/tty`).
+  assert.match(script, /role=shell/)
   // Counting only `pts/` links was measured to miss a program reading `/dev/tty` — the shell reports
   // that descriptor as `/dev/tty`, not as the pts it resolves to, and the cell died on its deadline.
   assert.match(script, /grep -c -e pts\/ -e \/dev\/tty/)

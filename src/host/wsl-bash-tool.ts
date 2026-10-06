@@ -247,7 +247,7 @@ function toForeground(run: WslBashRun, timeoutMs: number, escalated: boolean, be
   // body: a command that was stopped and run again answers differently from one that ran once.
   const notes: string[] = [...before]
   if (run.starved !== undefined) {
-    notes.push(starveNote(run.starved, run.starvedAtMs ?? timeoutMs, run.starvedViaRoot === true))
+    notes.push(starveNote(run.starved, run.starvedAtMs ?? timeoutMs, run.starvedViaRoot === true, run.starvedShellInterrupt === true))
   }
   if (run.timedOut) {
     // The check that would have caught a keyboard wait did not run here. Said out loud, because the
@@ -544,11 +544,14 @@ export function apply(ctx: Context, config?: Config): void {
       // with its own three lines in 9.4 s of a 25 s call (2026-10-05) after having sat on the pipe for
       // the whole deadline before. `tty: false` vetoes this, because a caller that only wanted the plain
       // pipe must be able to insist on it.
-      if (!escalated && !vetoTty && run.starved !== undefined && !run.aborted && !run.restarted) {
-        const first = { kind: run.starved, atMs: run.starvedAtMs ?? 0, viaRoot: run.starvedViaRoot === true }
+      // `run.restarted` is deliberately not part of this: a starved call whose shell had to be restarted
+      // (a builtin that read the terminal blocked the shell itself) still wants the pseudo-terminal
+      // retry — the command never did anything but wait.
+      if (!escalated && !vetoTty && run.starved !== undefined && !run.aborted) {
+        const first = { kind: run.starved, atMs: run.starvedAtMs ?? 0, viaRoot: run.starvedViaRoot === true, shellInterrupted: run.starvedShellInterrupt === true }
         logging?.debug?.(`wsl-bash: stopped a command waiting for input (${first.kind}${first.viaRoot ? ' via the root plane' : ''} at ${first.atMs}ms) and re-running it on a pseudo-terminal`)
         escalated = true
-        before.push(retryNote(first.kind, first.atMs, first.viaRoot))
+        before.push(retryNote(first.kind, first.atMs, first.viaRoot, first.shellInterrupted))
         command = wrap(wrapForTty(args.command))
         run = await session.run(command, timeoutMs, exec.signal, true)
       }

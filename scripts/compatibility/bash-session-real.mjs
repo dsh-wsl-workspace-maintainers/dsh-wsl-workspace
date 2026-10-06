@@ -262,6 +262,18 @@ try {
     !hasCtty || (!/run once more on a pseudo-terminal/.test(vetoed.rendered)
       && !vetoed.text.includes('GOT=') && /waiting for keyboard input/.test(vetoed.rendered)),
   JSON.stringify({ hasCtty, ms: vetoed.ms, exit: vetoed.value?.exitCode, text: vetoed.text.trim().slice(0, 20) }))
+  // The shape a real model chose where this plugin's own cells used `sh -c …`: a *builtin* that reads
+  // the terminal blocks the session shell itself, so there is no child process to find. Measured while
+  // it happened (2026-10-06): the shell's own row is `Ss+ wchan=wait_woken fd0=/dev/tty` with CPU flat,
+  // and before the walk included that row the call merely timed out at 30 s and rebuilt the shell.
+  const builtinRead = await call(`read -r line < /dev/tty; echo LINE=[$line]`, { timeoutMs: 20_000 })
+  check('a builtin that reads the terminal is ended and re-run, not left to the deadline',
+    !hasCtty || (builtinRead.value?.timedOut === false && builtinRead.text.includes('LINE=[]')
+      && /ended by restarting the shell/.test(builtinRead.rendered)),
+  JSON.stringify({ hasCtty, ms: builtinRead.ms, exit: builtinRead.value?.exitCode,
+    timedOut: builtinRead.value?.timedOut, text: builtinRead.text.trim().slice(0, 20),
+    note: /ended by restarting the shell/.test(builtinRead.rendered) }))
+
   const pty = await call('stty size; tty', { timeoutMs: 8_000, tty: true })
   const [sizeLine = '', ttyLine = ''] = pty.text.trim().split('\n')
   check('the escalated pty has a real size and name', sizeLine.trim() === '24 80' && ttyLine.startsWith('/dev/pts/'),
@@ -591,7 +603,7 @@ try {
     `the control harness failed before comparing: ${String(error?.message ?? error).slice(0, 120)}`)
 }
 
-const EXPECTED_CHECKS = 55
+const EXPECTED_CHECKS = 56
 const passed = results.filter(r => r.pass).length
 console.log(`${passed}/${results.length} checks passed (plane=${plane()}, distro=${distro}, user=${username}, cwd=${sessionCwd})`)
 if (results.length !== EXPECTED_CHECKS) {

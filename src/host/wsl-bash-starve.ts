@@ -51,6 +51,15 @@ export interface StarveRow {
   ttyFds: number
   /** `comm`, the executable's short name — used only to skip this tool's own wrapper, never to guess. */
   comm: string
+  /**
+   * True for the session shell itself.
+   *
+   * A *builtin* that reads the terminal (a bare `read -r line < /dev/tty`) blocks the shell rather than a
+   * child, so the walk has to include it — measured while it happens: `stat=Ss+ wchan=wait_woken
+   * fd0=/dev/tty`, CPU flat, i.e. the same signature as a child, on the shell's own row. A real model
+   * found this by choosing that command where this plugin's own cells had used `sh -c …`.
+   */
+  shell: boolean
 }
 
 /** What one probe pass collected. */
@@ -146,12 +155,13 @@ export function probeScript(rootPid: number): string {
     + `case $next in '') break ;; esac; keep="$keep $next"; front=$next; depth=$((depth+1)); `
     + 'done; '
     + 'for pid in $keep; do '
-    + `[ "$pid" = "$root" ] && continue; [ -r /proc/$pid/stat ] || continue; `
+    + `[ -r /proc/$pid/stat ] || continue; `
     + 'set -- $(ps -o pid=,pgid=,tpgid=,stat=,comm= -p $pid); '
     + 'wchan=$(cat /proc/$pid/wchan 2>/dev/null); '
     + `cpu=$(cut -d' ' -f1,2 /proc/$pid/schedstat 2>/dev/null | tr ' ' ','); `
     + `if ls /proc/$pid/fd >/dev/null 2>&1; then ttys=$(ls -l /proc/$pid/fd 2>/dev/null | grep -c -e pts/ -e /dev/tty); else ttys=-1; fi; `
-    + `echo "P $1 $2 $3 $4 w=$wchan c=$cpu tty=$ttys comm=$5"; `
+    + `role=desc; [ "$pid" = "$root" ] && role=shell; `
+    + `echo "P $1 $2 $3 $4 w=$wchan c=$cpu tty=$ttys comm=$5 role=$role"; `
     + `done; echo ${PROBE_DONE_SENTINEL}`
 }
 
@@ -165,7 +175,7 @@ export function parseProbe(text: string, atMs: number): StarveSample {
   const rows: StarveRow[] = []
   const field = (groups: RegExpExecArray, index: number): string => groups[index] ?? ''
   for (const line of text.split(/\r?\n/)) {
-    const match = /^P (\d+) (\d+) (-?\d+) (\S+) w=(\S*) c=([\d,]*) tty=(-?\d+) comm=(.*)$/.exec(line.trim())
+    const match = /^P (\d+) (\d+) (-?\d+) (\S+) w=(\S*) c=([\d,]*) tty=(-?\d+) comm=(.*?) role=(\S+)$/.exec(line.trim())
     if (match === null) continue
     const [utime = '0', stime = '0'] = field(match, 6).split(',')
     rows.push({
@@ -179,6 +189,7 @@ export function parseProbe(text: string, atMs: number): StarveSample {
       wchan: field(match, 5) === '' ? 'running' : field(match, 5),
       ttyFds: Number(field(match, 7)),
       comm: field(match, 8),
+      shell: field(match, 9) === 'shell',
     })
   }
   return { atMs, rows }
@@ -218,12 +229,41 @@ export function starveOf(previous: StarveSample | undefined, current: StarveSamp
     const isForegroundJob = row.tpgid >= 0 && row.pgid === row.tpgid
     if (!isForegroundJob) continue
     if (row.ttyFds > 0 && row.wchan === 'wait_woken') return 'terminal'
+    // The weaker readings are about a *command's* process: the shell's own row sits in `do_wait` or a
+    // pipe poll between commands and would otherwise be read as a poll beside a terminal.
+    if (row.shell) continue
     if (ownTerminal && row.ttyFds > 0
       && (row.wchan === 'poll_schedule_timeout' || row.wchan === 'poll_schedule_timeout.constprop.0'
         || row.wchan === 'do_epoll_wait' || row.wchan === 'ep_poll')) weaker = 'own-terminal'
     if (row.wchan === '0' && row.ttyFds < 0) weaker = 'opaque'
   }
   return weaker
+}
+
+/**
+ * The processes that justify a verdict, so a stop names them and not every row in the sample.
+ *
+ * The shell has been part of the walk since a builtin reading the terminal was measured to block it,
+ * which means a sample now always contains at least that row: stopping "the pids the probe reported"
+ * would take the shell down for a child that is merely reading its own terminal.
+ * @param sample - the sample the verdict came from.
+ * @param kind - the verdict.
+ * @param ownTerminal - whether the call was given a pty of its own (the weaker reading needs it).
+ * @returns the pids responsible, in the order the probe found them.
+ */
+export function culpritPids(sample: StarveSample, kind: StarveKind, ownTerminal = false): number[] {
+  return sample.rows.filter(row => {
+    if (!row.state.startsWith('S') && !row.state.startsWith('T')) return false
+    if (ownTerminal && row.comm === 'script') return false
+    if (row.tpgid < 0 || row.pgid !== row.tpgid) return false
+    if (kind === 'terminal') return row.ttyFds > 0 && row.wchan === 'wait_woken'
+    if (kind === 'own-terminal') {
+      return !row.shell && ownTerminal && row.ttyFds > 0
+        && (row.wchan === 'poll_schedule_timeout' || row.wchan === 'poll_schedule_timeout.constprop.0'
+          || row.wchan === 'do_epoll_wait' || row.wchan === 'ep_poll')
+    }
+    return !row.shell && row.wchan === '0' && row.ttyFds < 0
+  }).map(row => row.pid)
 }
 
 /**
@@ -243,6 +283,7 @@ export function stopScript(pids: readonly number[]): string {
     + `sleep 0.3; for p in ${list}; do kill -KILL $p 2>/dev/null; done; echo DSH_STOPPED ${list}`
 }
 
+
 /**
  * The sentence that says a command ran twice, and why.
  *
@@ -254,13 +295,13 @@ export function stopScript(pids: readonly number[]): string {
  * @param atMs - how long the first attempt had been silent when it was stopped.
  * @returns the note to put in the body of the retried call.
  */
-export function retryNote(kind: StarveKind, atMs: number, viaRoot = false): string {
+export function retryNote(kind: StarveKind, atMs: number, viaRoot = false, shellInterrupted = false): string {
   const why = kind === 'opaque'
     ? 'no output and no CPU, with its `/proc` entries unreadable (it runs with privileges this tool cannot see inside)'
     : viaRoot
       ? 'no output and no CPU, asleep in the terminal\'s foreground job — read through the distribution\'s root rights, because this process hides its own `/proc` entries from its user'
       : 'no output and no CPU, asleep in the terminal\'s foreground job with a terminal among its descriptors'
-  return `[the first attempt was stopped after ${atMs}ms because it was waiting for keyboard input this shell cannot supply (${why}). The command was then run once more on a pseudo-terminal of its own, so anything it had already done before that prompt has now been done twice — the body below is the second attempt]`
+  return `[the first attempt was ${shellInterrupted ? 'ended by restarting the shell (the blocked process was the shell itself, which no signal frees)' : 'stopped'} after ${atMs}ms because it was waiting for keyboard input this shell cannot supply (${why}). The command was then run once more on a pseudo-terminal of its own, so anything it had already done before that prompt has now been done twice — the body below is the second attempt]`
 }
 
 /**
@@ -293,13 +334,16 @@ export function confirmsTerminalRead(witness: StarveSample | undefined): boolean
  *   directly, which happens for a privileged program whose own `/proc` entries are hidden.
  * @returns the note to put in the body.
  */
-export function starveNote(kind: StarveKind, atMs: number, viaRoot = false): string {
+export function starveNote(kind: StarveKind, atMs: number, viaRoot = false, shellInterrupted = false): string {
   const doors = 'run it with `tty: true` to give it a terminal, or ask a person to run it in the right sidebar\'s terminal tab, where a keyboard is attached'
   if (kind === 'terminal') {
+    const what = shellInterrupted
+      ? 'the process waiting was the shell itself (a builtin that read the terminal), which no signal frees, so the shell was restarted with its state replayed'
+      : 'it was stopped so the shell stays usable'
     const how = viaRoot
       ? 'a probe with the distribution\'s root rights read the wait this process hides from its own user (`/proc/<pid>/wchan` = `wait_woken`, a terminal among its descriptors)'
       : 'it was asleep in the terminal\'s foreground job with `/proc/<pid>/wchan` = `wait_woken` and a terminal among its descriptors'
-    return `[this command was waiting for keyboard input nobody is able to type into this shell: ${how}. It was stopped so the shell stays usable — ${doors}]`
+    return `[this command was waiting for keyboard input nobody is able to type into this shell: ${how}. ${what === undefined ? '' : ''}${what} — ${doors}]`
   }
   if (kind === 'own-terminal') {
     return `[this command was waiting for input on the pseudo-terminal this call gave it: after ${atMs}ms it was still asleep in that terminal's foreground job, polling a terminal nothing can type into, with no output and no CPU. It was stopped so the shell stays usable — ${doors}]`
