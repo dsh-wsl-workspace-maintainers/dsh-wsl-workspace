@@ -3222,7 +3222,9 @@ of the call that asked for the terminal, instead of losing it with the first att
 note renders as `was restarted and its directory …` when nothing was left out and `was restarted; not
 restored: …` when something was, and the check matched only the first form, so on a reporting machine
 the claim and the fact were both true and the cell still read them as disagreeing. Both forms count
-now, and the count that guards a short run moved with them: `EXPECTED_CHECKS` is 72.
+now, and the guard on a short run moved off a hand-kept number in the same round: the driver counts its
+own `check(` sites in its source and names each one that never reported, so a truncated arm reads as 76
+sites with 28 named rather than as a total nobody can explain.
 
 **What this round does not claim.** The four-arm table simulates the offending profile rather than
 running on a distribution that ships it, so `conpty-relay` on a 26.04-class machine is still unproven
@@ -3243,3 +3245,113 @@ green here: `alias, function, shopt and set options survive a restart` (answers 
 `a function over the cap is named, and the others still come back` (names `dshhugefn(70025)`, keeps
 `SMALL_OK_6`), and `a rebuild triggered by a terminal wait reports what it could not restore` (the body
 of the call that asked for the terminal carries `not restored: functions dshhugefn2(70026)`).
+
+## Round twelve: the same gates run on both WSL kernels, and the note stops lying about the one it cannot read (2026-10-07)
+
+Issue #52 asked whether a kernel this machine does not have could be gated at all. It can: the
+`real-WSL hard gates` job is a matrix over `wslVersion: [1, 2]`, provisioned by `Vampire/setup-wsl` and
+pinned by the job's own step, so the same 73 cells run against a WSL1 Ubuntu-24.04 and a WSL2 one in
+every frame. Four frames were needed to get there, and each one taught something different.
+
+**Frame 37494104075 (`b4282f9`) — the arm was red because of the apparatus, not the product.** WSL1
+reached `39/46` and then stopped: after the six keyboard cells each burned the deadline they asked for
+(measured in that log: 23 721 ms, 23 668 ms, 20 664 ms, 23 717 ms, 63 716 ms), the **one** `AbortSignal`
+shared by the whole file at 180 000 ms expired, every later call threw `tool call aborted`, and 28 check
+sites went unreported. The new source-derived guard named them instead of reporting a number to trust.
+Two things followed: every call now gets its own budget from its own `timeoutMs` (the way the host gives
+each tool call its own cancellation), and the keyboard cells print the watchdog's reading rather than a
+`tail` of the body, which is what had left the question open for a round.
+
+**What WSL1 actually answers, read off the runner rather than guessed.** The rows for the same two
+commands, in the body of the calls that reached their deadlines:
+
+| the call is | WSL1 (CI, Ubuntu-24.04 root) | WSL2 (CI, same distro) |
+| --- | --- | --- |
+| `sh -c 'read x < /dev/tty'` | `shell:S w=not-reported 1tty bg; sh:S w=not-reported 1tty bg` | `shell:Ss w=do_wait sc=61 1tty bg; sh:S+ w=wait_woken sc=0 1tty fg` |
+| `sleep 3` | `shell:S w=not-reported 1tty bg; sleep:S w=not-reported 0tty bg` | `shell:Ss w=do_wait sc=61 1tty bg; sleep:S+ w=hrtimer_nanosleep sc=230 0tty fg` |
+
+So on WSL1 `/proc/<pid>/wchan` and `/proc/<pid>/syscall` both come back **empty for every process,
+asleep or running**, no process reports itself as the terminal's foreground job, and the fd table does
+show a terminal for the process that opened one (`1tty`, and `2tty` for the shell reading it as a
+builtin) while a `sleep` shows none. That last column is the one remaining discriminator there is — see
+the open question at the end of this section.
+
+**The note was making a false statement, and the fix is in the rendering.** An empty `wchan` had one
+meaning in the parser ("the process was running"), which on WSL2 is right — state `R`, nowhere asleep —
+and on WSL1 printed `running` about a process plainly blocked on a terminal. `describeRows` now separates
+the three facts a blank field can stand for: `w=running` (state `R`), `w=not-reported` (asleep, and this
+kernel gives no location), `w=0` (a location this reader may not look inside, e.g. another user's
+`sudo`). The deadline clause names the fields it read, in the body the model sees:
+
+```
+[the check for a command waiting on a keyboard looked and read (/proc/<pid>/wchan, /proc/<pid>/syscall,
+ its fd table): shell:S w=not-reported 1tty bg; sh:S w=not-reported 1tty bg]
+```
+
+**The cells that assume a stop now branch on the kernel, and the branch is self-anchoring.** Six cells
+were written as though this machine's WSL were the rule. Each one asks the reading first — *did this
+kernel hand the tool anything a rule could act on* — and asserts accordingly: where it did, the call
+must be stopped early and announced (`branch:"reading-acts"`); where it did not, the call must reach its
+deadline **and** carry the reading it took (`branch:"reading-declares"`). A row counts as something to
+act on only when all three facts are present at once — the process is the terminal's foreground job, it
+is asleep in a *read* (the `wchan` name, or syscall number `0` where the kernel gives no name), and a
+terminal is among its descriptors. That is the same evidence set the product uses, re-read from the body
+rather than trusted from the code, so a kernel that starts reporting a wait reddens the cells that were
+blessing a deadline instead of staying quiet about it. `sleep 4` remains the false-kill control on both
+arms.
+
+**Frame 37498236233 (`0866946`) — a red of mine that pre-dated the WSL arms.** The artifact-plane job
+failed its own first step: `RED — lib/ in HEAD is not what a build of HEAD's src/ produces`. I had moved
+three `src/` files and left the committed bundle behind. Rebuilt (`npm run build`, 29 files, `verify-lib`
+OK) and committed as `2d34f06`, with the claim checked on the bytes rather than on the build log:
+`lib/wsl-bash-tool-DJwrYT5R.js` contains `not-reported` and the clause's own `its fd table`.
+
+**Frame 37498745955 (`2d34f06`) — 72/73 on WSL1, one cell left, and it was the cell that still assumed a
+stop.** `a rebuild triggered by a terminal wait reports what it could not restore` wanted the reason
+sentence of a *stopped* call (`waiting for a keyboard`), while a declared call says `waiting on a
+keyboard looked and read …`. The report half — `not restored: functions dshhugefn2(70026)` — arrived
+intact on both planes. `287f283` makes the trigger half follow `canAct`, and keeps requiring the loss
+report whichever trigger fired.
+
+**Frame 37500642619 (`287f283`) is green on all four jobs** — created 2026-10-06T17:04:05Z, finished
+17:16:17Z (北京时价 10-07 01:04 → 01:16), 12 分 12 秒:
+
+```
+gates on the committed artifact plane (ubuntu) :: success
+node buckets against the pinned host tree (ubuntu) :: success
+real-WSL hard gates (windows + WSL2 Ubuntu) :: success
+real-WSL hard gates (windows + WSL1 Ubuntu) :: success
+```
+
+and on both kernels, on both planes: `bash-session-real` **73/73** (76 sites, every one accounted for),
+`bash-parity-real` 12/12, `tool-bash-real` 10/10. The 9P fixture premise moved the way it was designed
+to: on WSL2's lib plane the share had gone away between passes and the driver logged
+`relay-real: the fixture share was not mounted; created-on-demand (DSH_MADE)` and passed, instead of
+dying with a `spawn node.exe ENOENT` about a binary that exists.
+
+**The same gates on this machine** (Ubuntu 22.04, WSL2, `ruler`): `bash-session-real` 73/73 on the `src`
+plane and 73/73 on the `lib` plane, `node --check` on both drivers, unit 186 tests (185 pass, 1 skip)
+with `check-unit-closure` OK over 17 bucket files, `typecheck-gate` 209 = baseline, `docs-parity` 11/11,
+`test:win32` 48/48. Those 48 are worth one sentence: in this scratch worktree `test:win32` first read
+46/48, and the two reds were the tree's own location — `os.tmpdir()` on this machine is `D:\Temp`, so the
+fs-policy fixture's "outside the workspace" directory sits *inside* the area the policy allows by design.
+With `TMP` pointed out of `D:\Temp` the same bucket is 48/48. Nothing in the branch was wrong; the gate's
+premise is "the checkout is not under the platform temp area", which holds on every CI runner.
+
+**The open question this round leaves for a decision, not for a cell.** WSL1 does report a terminal in
+the descriptors of a process that opened one, and does not for a `sleep`. A rule could therefore stop
+`asleep + no CPU + no bytes + a terminal among the descriptors` on that kernel too, at the unconfirmed
+window (1 500 ms) rather than the confirmed one, and a keyboard wait there would answer in about two
+seconds instead of its whole deadline — which today is 23 676 ms for a 20 000 ms ask, plus 11 683 ms for
+the 8 000 ms one. The cost is the class WSL1 cannot see into: any program that holds `/dev/tty` *while
+waiting on something else* — `ssh` partway through an authentication that is also polling its socket,
+`gpg` waiting on its agent — would be stopped after 1.5 s of silence, on a kernel that cannot show it is
+not reading the keyboard. That is a guess about a process the tool is going to kill, so it is not
+implemented here, and the body says what it saw instead. Flipping it later is one rule branch plus these
+six cells moving from `reading-declares` back to `reading-acts`; nothing about the protocol changes.
+
+**What this round does not claim.** Whether WSL1 answers `tpgid` as `-1` or simply as a different number
+is not settled — both spellings render distinctly now (`no-tpgid` / `bg`), and every WSL1 row read this
+frame printed `bg` for processes that were in fact foreground, which is itself the finding. The
+`1tty` column above is measured from the deadline clause of real calls, not from a probe driven by hand.
+Nothing here was re-run on his Desktop, and the eleven-release matrix has not been re-run on this tip.

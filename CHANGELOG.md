@@ -125,7 +125,11 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   that prompt has now been done twice"), because an unannounced second execution is the defect this
   ticket already caught once; and if the `/proc` walk never answers, the body says the check could not
   run instead of leaving a silent deadline — a premise that has gone away is not allowed to look like a
-  verdict. `tty: true` asks for a terminal up front and `tty: false` vetoes the second attempt; the
+  verdict. And when the walk does answer but this kernel reports no sleep location — which is what the
+  WSL1 runner does, `wchan` and `/proc/<pid>/syscall` empty for every process, no foreground job named —
+  the deadline body prints the rows it read and says so (`w=not-reported`, beside `w=running` for a
+  process on the CPU and `w=0` for one it may not look inside), instead of leaving "timed out" to be read
+  as "examined and found ordinary". `tty: true` asks for a terminal up front and `tty: false` vetoes the second attempt; the
   pager and live-display behaviours that the class lists existed to encode are simply what the pipe does
   (`man` prints the page, `top: failed tty get` refuses in 687 ms), and the sheet of which symptom
   belongs to which layer is [docs/tty-triage.md](docs/tty-triage.md).
