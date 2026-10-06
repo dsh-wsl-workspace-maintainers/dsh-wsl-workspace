@@ -272,6 +272,79 @@ function listWslDir(distro: string, linuxPath: string): WslDirListingWire {
 /** Cached self-description for the dialog's help panel. */
 let selfDescription: { version: string; releases: { id: string; status: string }[] } | undefined
 
+/** One variant this boot could not publish, with the cause the boot line carried. */
+export interface VariantFailure { id: string; source: string; reason: string }
+
+/**
+ * How the last boot's variant generation ended. `state` starts at `pending`, not
+ * undefined, so the dialog can tell "the previous boot was partial" from "this
+ * boot has not answered yet" — the two need different sentences.
+ */
+export interface VariantOutcome {
+  state: 'pending' | 'ok' | 'partial' | 'failed'
+  produced: number
+  sources: number
+  failed: VariantFailure[]
+  truncated: number
+  generation: number
+  at: number
+  /** A boot-level cause, for a failure with no per-variant attribution. */
+  error?: string
+}
+
+/**
+ * Bounded because the host process is long-lived: a roster that fails every apply
+ * must not grow this record without end. `truncated` carries what the cap dropped,
+ * so the dialog can say so rather than quietly under-report.
+ */
+const MAX_VARIANT_FAILURES = 16
+const MAX_VARIANT_REASON_CHARS = 300
+
+/**
+ * The boot counter. Incremented once per effect run and once per dispose, so a
+ * reader can tell a stale outcome from this boot's without trusting `at` alone.
+ */
+let variantGeneration = 0
+
+/** The outcome the `variantStatus` method serves. Boot lines stay the log's copy; this is the route's. */
+let variantOutcome: VariantOutcome = {
+  state: 'pending',
+  produced: 0,
+  sources: 0,
+  failed: [],
+  truncated: 0,
+  generation: 0,
+  at: 0,
+}
+
+/**
+ * Record how this boot's generation ended, in the shape the route serves.
+ *
+ * The reason is truncated BY CODE POINT: `String.prototype.slice` cuts by code
+ * unit, so a reason ending in an astral character (an emoji lifted out of a
+ * filesystem error, say) would be cut through the middle of its surrogate pair
+ * and the route would answer invalid UTF-8. `src/host/wsl-search.ts` has the same
+ * trap already paid for.
+ */
+function writeVariantOutcome(
+  next: Omit<VariantOutcome, 'failed' | 'truncated' | 'at'> & { failed: VariantFailure[] },
+): void {
+  const kept = next.failed.slice(0, MAX_VARIANT_FAILURES)
+  variantOutcome = {
+    state: next.state,
+    produced: next.produced,
+    sources: next.sources,
+    failed: kept.map(failure => ({
+      id: failure.id,
+      source: failure.source,
+      reason: Array.from(failure.reason).slice(0, MAX_VARIANT_REASON_CHARS).join(''),
+    })),
+    truncated: next.failed.length - kept.length,
+    generation: next.generation,
+    at: Math.floor(Date.now() / 1000),
+  }
+}
+
 /**
  * Read this plugin's own `package.json` for the dialog's help panel: the
  * published version and the declared `dsh.compatibility.dshReleases` matrix.
@@ -368,6 +441,14 @@ async function dispatch(method: string, params: Record<string, unknown>): Promis
         setWorkspaceUsername(path, username)
       }
       return null
+    }
+    case 'variantStatus': {
+      // The generation outcome as a module fact, so a failure that only ever
+      // reached `console.error` (which DSH Desktop does not persist) can reach
+      // the dialog. The bare object, like `listDistros`/`describe`: there is no
+      // second envelope for a caller to unwrap. A host without this case answers
+      // `{ok:false}`, which the client already falls back from.
+      return variantOutcome
     }
     default:
       throw new Error(`unknown method "${method}"`)
@@ -721,15 +802,43 @@ async function waitForSubprocess(ctx: Context): Promise<SubprocessProbeFace | un
   return undefined
 }
 
-/** Materialize one WSL variant per healthy source preset. */
+/**
+ * Materialize one WSL variant per healthy source preset.
+ *
+ * The outcome is recorded even when the roster itself cannot be read: a boot that
+ * produced nothing must be able to say why, and `n/m` is unknowable then, so the
+ * counts stay 0 rather than being invented.
+ * @param agentPresets - the roster face.
+ * @param dshHome - the DSH home the variants live under.
+ * @param paths - this installation's built provider files.
+ * @param persistentShell - whether the world may mount the host PTY stack.
+ * @param track - hand a registration's disposer to the effect that owns it.
+ * @param generation - this boot's counter, stamped on the outcome so a reader can
+ *                     tell it from the previous boot's.
+ */
 async function materializeVariants(
   agentPresets: AgentPresetsService,
   dshHome: string,
   paths: { shell: string; fs: string; relay: string; node: string; sandbox: string; search: string; jobs: string; bashTool: string; terminalTool: string; shellMode: 'session' | 'pty' },
   persistentShell: boolean,
   track: (dispose: unknown) => void,
+  generation: number,
 ): Promise<void> {
-  const presets = await agentPresets.list()
+  const presets = await agentPresets.list().catch((error: unknown) => {
+    // An unreadable roster is a boot-level failure: no source was counted, so no
+    // count is reported. The cause rides along in `error` for the dialog's boot
+    // line, and the throw is rethrown unchanged — the caller's own handling stays
+    // the authority on what an unreadable roster means.
+    writeVariantOutcome({
+      state: 'failed',
+      produced: 0,
+      sources: 0,
+      failed: [],
+      generation,
+    })
+    variantOutcome = { ...variantOutcome, error: messageOf(error) }
+    throw error
+  })
   const userRoot = join(dshHome, '.agent-presets')
   const generated = new Set<string>()
   // A broken roster entry is not this generator's to interpret, and a `wsl-*` entry
@@ -741,7 +850,9 @@ async function materializeVariants(
   // contract `tests/host-materialize.mjs` pins for the directory channel: when the
   // source directory vanishes mid-update, the complete variant beside it must stay.
   // Before #47 this held by accident — the abort skipped the sweep entirely.
-  const retained = new Set<string>()
+  // A Map rather than a Set because the route has to name the failure and its cause:
+  // the values carry both, and `.size`/`.has` mean the sweep below is unchanged.
+  const retained = new Map<string, VariantFailure>()
   for (const preset of sources) {
     const variantId = variantIdFor(preset.id)
     try {
@@ -753,10 +864,19 @@ async function materializeVariants(
       // with the sweep below unrun, so the leftovers the report read as the symptom
       // outlived the generation. A failure is one variant's now, reported with its
       // own cause.
-      retained.add(variantId)
+      retained.set(variantId, { id: variantId, source: preset.id, reason: messageOf(error) })
       console.error(`dsh-wsl-workspace: WSL variant ${variantId} was not published — ${messageOf(error)}`)
     }
   }
+  // The log line says nothing about WHICH variant failed, and on DSH Desktop stdout
+  // is not persisted — so the reason also becomes a route-readable fact (#52).
+  writeVariantOutcome({
+    state: retained.size === 0 ? 'ok' : produced > 0 ? 'partial' : 'failed',
+    produced,
+    sources: sources.length,
+    failed: [...retained.values()],
+    generation,
+  })
   // The outcome is on the log, not only the route being alive. A healthy frame says
   // it without a trouble-word, because the compatibility gate greps this plugin's
   // own boot lines for one; `n/n` is what that gate counts.
@@ -926,6 +1046,9 @@ export function apply(ctx: Context, config: Config): void {
       // replace (`Duplicate agent preset: wsl-<mode>`).
       let stopped = false
       const disposers: (() => Promise<void>)[] = []
+      // Claimed before the first await so the catch below can tell this boot's
+      // failure from the previous boot's outcome.
+      const myGeneration = ++variantGeneration
       const track = (dispose: unknown): void => {
         if (typeof dispose !== 'function') return
         const retire = dispose as () => Promise<void>
@@ -1012,15 +1135,42 @@ export function apply(ctx: Context, config: Config): void {
           bashTool: bashToolPath,
           terminalTool: terminalToolPath,
           shellMode,
-        }, persistentShell, track)
+        }, persistentShell, track, myGeneration)
       })().catch((error) => {
         // Variant generation is best-effort over a live roster: a missing or
         // unreadable source preset must not take the whole plugin down, but
         // the failure is surfaced loudly rather than hidden.
+        // Only a failure this boot actually produced is recorded: `materializeVariants`
+        // has already written a boot-level `failed` outcome for a roster it could not
+        // read, and overwriting it here would lose that cause for a duplicate line.
+        if (variantOutcome.generation !== myGeneration) {
+          writeVariantOutcome({
+            state: 'failed',
+            produced: variantOutcome.produced,
+            sources: variantOutcome.sources,
+            failed: variantOutcome.failed,
+            generation: myGeneration,
+          })
+          variantOutcome = { ...variantOutcome, error: messageOf(error) }
+        }
         console.error(`dsh-wsl-workspace: WSL preset-variant generation failed: ${messageOf(error)}`)
       })
       return () => {
         stopped = true
+        // Back to `pending` rather than to the last outcome: a retired effect's
+        // partial belongs to a generation that is gone, and serving it would let the
+        // dialog read the old answer as this boot's. The increment is what makes it
+        // detectable as stale.
+        variantGeneration += 1
+        variantOutcome = {
+          state: 'pending',
+          produced: 0,
+          sources: 0,
+          failed: [],
+          truncated: 0,
+          generation: variantGeneration,
+          at: Math.floor(Date.now() / 1000),
+        }
         for (const retire of disposers.splice(0, disposers.length)) {
           void Promise.resolve(retire()).catch(() => {})
         }
