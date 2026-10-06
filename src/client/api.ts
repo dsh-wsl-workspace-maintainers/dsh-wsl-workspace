@@ -38,6 +38,7 @@ function errorMessage(value: unknown): string {
 }
 
 /**
+/**
  * How long one call may take before it is abandoned.
  *
  * Without a ceiling a request that never settles is indistinguishable from a slow one, and the
@@ -49,13 +50,36 @@ function errorMessage(value: unknown): string {
 const CALL_TIMEOUT_MS = 30_000
 
 /**
+ * The text of a refusal. A host that answers `{ok:false}` without a usable
+ * `error` (a proxy inventing an envelope, a future host shape) must still
+ * produce a sentence: `new Error(undefined)` renders as the word "undefined",
+ * which tells the reader nothing about what went wrong.
+ * @param error - whatever the envelope carried in `error`.
+ * @param method - the Host method name, used when the envelope had no reason.
+ * @returns the refusal text, never empty.
+ */
+function refusalText(error: unknown, method: string): string {
+  if (typeof error === 'string' && error !== '') return error
+  if (error === undefined || error === null) return `wsl-workspace ${method} was refused without a reason`
+  if (typeof error === 'object') {
+    const message = (error as { message?: unknown }).message
+    if (typeof message === 'string' && message !== '') return message
+  }
+  return `wsl-workspace ${method} was refused: ${errorMessage(error)}`
+}
+
+/**
  * Perform one POST call and unwrap the envelope.
  *
- * Two failure shapes are answered in words rather than in shape. **`response.ok` is checked before
- * the body is read**: a 500 from a proxy answers HTML, and parsing it would report "non-JSON" —
- * naming the symptom and hiding the status that says what happened. **The fetch carries a timeout**,
- * so a request that never settles reports that instead of leaving the caller waiting on a promise
- * that cannot resolve (issue #44 §6, `T8`).
+ * Three failure shapes are answered in words rather than in shape. **`response.ok` is checked before
+ * the body is trusted**: a 500 from a proxy answers HTML, and parsing it would report "non-JSON" —
+ * naming the symptom and hiding the status that says what happened. The status leads even when the
+ * body IS readable, because an `ok:true` on a 404 is exactly the hole this closes; the envelope's own
+ * `error` is appended as detail when there is one, and never allowed to replace the status.
+ * **The fetch carries a timeout**, so a request that never settles reports that instead of leaving the
+ * caller waiting on a promise that cannot resolve (issue #44 §6, `T8`). **An `ok:true` with no
+ * `value` is refused too**: returning `undefined` as a value would push the discovery into every
+ * caller, none of which can tell it apart from an empty answer.
  * @param method - the Host method name.
  * @param params - the method payload.
  * @returns the unwrapped value, or throws an Error on transport, timeout, non-2xx, or `ok:false`.
@@ -83,10 +107,25 @@ async function call<T>(method: string, params: Record<string, unknown> = {}): Pr
     throw new Error(`wsl-workspace request failed: ${errorMessage(error)}`)
   }
   if (!response.ok) {
-    // Named before the body is read, because reading it is what used to lose the status. The status
-    // line is included and the body is not: an HTML error page quoted at a user is worse than no
-    // detail at all.
-    throw new Error(`wsl-workspace: ${method} answered HTTP ${response.status} ${response.statusText}`.trimEnd())
+    // Named before the body is trusted, and never lost to it: a proxy answering an HTML error page
+    // fails to parse, and that is precisely the case where the status is the only fact available. So
+    // the body is read inside a guard, and the status leads the sentence either way — an envelope is
+    // consulted only for its detail here, never for its verdict, because an `ok:true` on a 404 is
+    // exactly the hole this closes. The parsed value is itself treated as optional: a non-2xx is
+    // the one case where something OTHER than this plugin's route answered, and `JSON.parse('null')`
+    // and `JSON.parse('"…"')` both succeed while carrying no `ok` to read.
+    let detail = ''
+    try {
+      const body: unknown = await response.json()
+      const answered = typeof body === 'object' && body !== null
+        ? body as { ok?: unknown; error?: unknown }
+        : undefined
+      if (answered?.ok === false) detail = `: ${refusalText(answered.error, method)}`
+    } catch {
+      // Not JSON at all. The status below is the whole answer, and quoting an HTML page at a user
+      // would be worse than the number alone.
+    }
+    throw new Error(`wsl-workspace: ${method} answered HTTP ${response.status}${detail}`)
   }
   let envelope: Envelope<T>
   try {
@@ -95,7 +134,8 @@ async function call<T>(method: string, params: Record<string, unknown> = {}): Pr
     // A non-JSON body on a 2xx means a proxy/loader answered instead of the Host route.
     throw new Error(`wsl-workspace answered non-JSON on 2xx (${response.status}) — ${ENDPOINT}`)
   }
-  if (!envelope.ok) throw new Error(envelope.error)
+  if (!envelope.ok) throw new Error(refusalText(envelope.error, method))
+  if (!('value' in envelope)) throw new Error(`wsl-workspace ${method} answered ok without a value`)
   return envelope.value
 }
 
@@ -200,4 +240,57 @@ export interface WslSelfDescription {
  */
 export async function describe(): Promise<WslSelfDescription> {
   return call<WslSelfDescription>('describe', {})
+}
+
+/** One variant this boot could not publish, with the cause the host recorded. */
+export interface WslVariantFailure {
+  /** The variant id that was not published (`wsl-code`, …). */
+  id: string
+  /** The source preset the variant is generated from. */
+  source: string
+  /** Why it failed, as the host recorded it. */
+  reason: string
+}
+
+/**
+ * How the last boot's variant generation ended.
+ *
+ * The host owns this because the reason used to reach only its stdout, which
+ * DSH Desktop does not persist: the user saw "no healthy wsl preset" and never
+ * learned which variant failed or why. `state` starts at `pending` rather than
+ * being absent, so "this boot has not answered yet" is distinguishable from
+ * "this boot was partial" — they need different sentences.
+ */
+export interface WslVariantOutcome {
+  state: 'pending' | 'ok' | 'partial' | 'failed'
+  /** How many variants were published. */
+  produced: number
+  /** How many sources were read. */
+  sources: number
+  /** The variants that were not published, with their causes. */
+  failed: WslVariantFailure[]
+  /** How many failures the host's own cap dropped from `failed`. */
+  truncated: number
+  /**
+   * Incremented once per host effect apply and once per dispose, so a reader
+   * can tell a stale outcome from this boot's without trusting `at` alone. A
+   * value SMALLER than one already seen is a read that lost its race.
+   */
+  generation: number
+  /** When the host recorded it, in epoch milliseconds. */
+  at: number
+  /** A boot-level cause, for a failure with no per-variant attribution. */
+  error?: string
+}
+
+/**
+ * Read how this boot's variant generation ended.
+ *
+ * A host without this case answers `{ok:false, error:'unknown method
+ * "variantStatus"'}` — the rejection IS the signal that the roster is the only
+ * source available, so callers must treat it as a fallback rather than a fault.
+ * @returns the host's outcome record.
+ */
+export async function variantStatus(): Promise<WslVariantOutcome> {
+  return call<WslVariantOutcome>('variantStatus', {})
 }

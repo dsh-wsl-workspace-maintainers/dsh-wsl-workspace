@@ -38,8 +38,11 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
  */
 const TEST_DEADLINE_MS = 60
 
-function fixture({ legacy = false, late = false, startService = legacy ? 'legacy' : 'ui', sidebarRight = false, records = [], apiHttpStatus = null, apiHangs = false } = {}) {
+function fixture({ legacy = false, late = false, startService = legacy ? 'legacy' : 'ui', sidebarRight = false, records = [], roster, variantStatus = 'absent', apiHttpStatus = null, apiHangs = false } = {}) {
   let plugin, dialog, subscriber, tick;
+  // The host's `variantStatus` answer, mutable so a test can move it between two reads: a generation
+  // counter that goes BACKWARDS is the stale read the client has to ignore.
+  let outcome = variantStatus;
   const effects = [], calls = [], opened = [], pending = [];
   const apiSignals = [];
   const summary = legacy
@@ -50,7 +53,10 @@ function fixture({ legacy = false, late = false, startService = legacy ? 'legacy
     if (legacy) summary.agentPreset = value;
     else summary.projectionValues = { agentPreset: value };
   };
-  const presets = ['standard', 'code', 'ptc', 'minimal', 'cordis', 'custom']
+  // `roster` replaces the derived list when a test needs a roster that a real boot could produce: a
+  // variant that could not be GENERATED never reaches the roster at all, so the failure has to be
+  // modelled as an absent entry rather than a broken one. `[]` is a generation still running.
+  const presets = roster ?? ['standard', 'code', 'ptc', 'minimal', 'cordis', 'custom']
     .flatMap(id => [{ id, isDefault: id === 'standard' }, { id: `wsl-${id}` }]);
   const services = {
     sessions: {
@@ -140,6 +146,11 @@ function fixture({ legacy = false, late = false, startService = legacy ? 'legacy
     //    half a minute for it. Everything else — the class, `aborted`, the `abort` event, the
     //    `reason` — is the real thing, so `instanceof AbortSignal` still holds and the branch under
     //    test is the branch the product runs.
+    //
+    // The #52 branch had reached for `AbortController` + `setTimeout` here, because its own `call()`
+    // was built from those. This one is built from `AbortSignal.timeout`, so only the class is needed
+    // — a global handed in for machinery the source no longer uses is a global that hides the day the
+    // machinery changes.
     AbortSignal: new Proxy(AbortSignal, {
       get: (target, key) => key === 'timeout'
         ? ms => target.timeout(Math.min(ms, TEST_DEADLINE_MS))
@@ -150,7 +161,9 @@ function fixture({ legacy = false, late = false, startService = legacy ? 'legacy
     //
     // `init.signal` is recorded and honoured rather than ignored: the deadline the product attaches
     // to a call is a claim until something drives it, and a fake that drops the argument cannot tell
-    // a call that carries a deadline from one that carries none.
+    // a call that carries a deadline from one that carries none. `status` is present because the
+    // client reads it: the status leads every refusal, so a body claiming `{ok:true}` on a 404 must
+    // not be mistaken for a value.
     fetch: async (_url, init) => {
       apiSignals.push(init.signal);
       if (apiHangs) {
@@ -196,7 +209,23 @@ function fixture({ legacy = false, late = false, startService = legacy ? 'legacy
         };
       }
       const method = JSON.parse(init.body).method;
-      return { ok: true, json: async () => ({ ok: true, value: method === 'listWorkspaceRecords' ? records : [] }) };
+      if (method === 'variantStatus') {
+        // An old host has no such case in its switch, so the route answers
+        // `{ok:false, error:'unknown method "variantStatus"'}` — which the client has to read as
+        // "this host predates the outcome", and not as a failure.
+        return {
+          ok: true,
+          status: 200,
+          json: async () => outcome === 'absent'
+            ? { ok: false, error: 'unknown method "variantStatus"' }
+            : { ok: true, value: outcome },
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true, value: method === 'listWorkspaceRecords' ? records : [] }),
+      };
     },
   });
   plugin.apply(ctx);
@@ -209,6 +238,7 @@ function fixture({ legacy = false, late = false, startService = legacy ? 'legacy
     creates: () => calls.filter(c => c[0] === 'create').length,
     starts: () => calls.filter(c => c[0] === 'start').map(c => c[1]),
     apiSignals: () => apiSignals,
+    setVariantStatus: value => { outcome = value; },
   };
 }
 
@@ -422,5 +452,123 @@ test('a release without a right Sidebar loads, and the hook simply does not inst
   assert.equal(f.pending.length, 1);
   assert.equal(f.services.sidebarRight, undefined);
   assert.deepEqual(f.selected(), ['wsl-standard']);
+  f.dispose();
+});
+// Issue #52: why a `wsl-*` variant failed to generate used to reach the DSH
+// Desktop user as one flat sentence — "no healthy wsl preset" — because the
+// reason only ever went to the host's stdout, which Desktop does not persist.
+// The host now serves that outcome as a module fact (`variantStatus`), and
+// these cases pin what the dialog does with it: name the variant, carry the
+// host's reason.
+//
+// The fixture's `t` is the identity, so a dictionary key comes back as itself —
+// which is what lets a case assert on the KEY (which branch spoke) separately
+// from the detail text the client composes around it (the evidence).
+
+/** A `partial` outcome: most variants published, `wsl-code` did not. */
+const partialOutcome = (generation = 3) => ({
+  state: 'partial',
+  produced: 5,
+  sources: 6,
+  failed: [{
+    id: 'wsl-code',
+    source: 'modes/code/agent-preset.yaml',
+    reason: 'Cannot find module \'js-yaml\'',
+  }],
+  truncated: 0,
+  generation,
+  at: 1767225600000,
+});
+
+test('the dialog names the failed variant and the host\'s own reason', async () => {
+  // The assertion that makes a generic sentence fail: BOTH the variant id and
+  // the host's reason text must appear verbatim. "No healthy wsl preset" names
+  // neither, and a reworded reason is not the reason.
+  //
+  // The roster is the shape this failure actually produces: a variant that
+  // could not be GENERATED never reaches the roster, so the roster carries no
+  // `wsl-*` entry at all and the host's outcome is the only evidence there is.
+  // That is why the pre-#52 client answered the flat "no healthy wsl preset"
+  // sentence here — the reason existed, on the host's stdout, unreadable.
+  const f = fixture({
+    legacy: false,
+    roster: [{ id: 'standard', isDefault: true }],
+    variantStatus: partialOutcome(),
+  });
+  await flush();
+  const message = await f.dialog.checkPreset();
+  assert.equal(typeof message, 'string');
+  assert.ok(message.includes('wsl-code'), `the message must name the variant, got: ${message}`);
+  assert.ok(message.includes('Cannot find module \'js-yaml\''),
+    `the message must carry the host's reason verbatim, got: ${message}`);
+  // Neither the sentence this case exists to replace, nor a bare key: both
+  // would leave the user with the variant and the reason still unknown.
+  assert.notEqual(message, 'error.presetMissing');
+  assert.notEqual(message, 'error.presetBroken');
+  f.dispose();
+});
+
+test('a healthy boot shows no preset error at all', async () => {
+  // `state:'ok'` is the whole generation having published, and the roster is
+  // healthy too, so neither layer has anything to report. The dialog must stay
+  // silent rather than invent a warning.
+  const f = fixture({
+    legacy: false,
+    variantStatus: { state: 'ok', produced: 6, sources: 6, failed: [], truncated: 0, generation: 4, at: 1767225600000 },
+  });
+  await flush();
+  assert.equal(await f.dialog.checkPreset(), undefined);
+  f.dispose();
+});
+
+test('an empty roster is a generation still running, not a missing plugin', async () => {
+  // The window this issue lives in: the open flow checks the preset while the
+  // profile is still booting, so a roster with nothing published yet is the
+  // NORMAL state — not a deployment without the plugin. Reporting the missing
+  // plugin here sends the user to install something they already have.
+  const f = fixture({ legacy: false, roster: [] });
+  await flush();
+  assert.equal(await f.dialog.checkPreset(), 'error.presetPending');
+  f.dispose();
+});
+
+test('a host without the outcome still answers from the roster, as before', async () => {
+  // An old host answers `{ok:false, error:'unknown method "variantStatus"'}`
+  // (pinned by tests/route-envelope.mjs), so the client must fall back to the
+  // roster and reach the SAME verdicts it reached before the outcome existed:
+  // silent when a `wsl-*` variant is healthy, and silent when one healthy
+  // variant sits beside a broken one.
+  for (const roster of [
+    undefined,
+    [
+      { id: 'standard', isDefault: true },
+      { id: 'wsl-standard' },
+      { id: 'wsl-code', broken: 'preset file is not readable' },
+    ],
+  ]) {
+    const f = fixture({ legacy: false, roster, variantStatus: 'absent' });
+    await flush();
+    assert.equal(await f.dialog.checkPreset(), undefined);
+    f.dispose();
+  }
+});
+
+test('an outcome older than one already read is not shown', async () => {
+  // `generation` increments per host effect apply and per dispose, so a SMALLER
+  // value is a read that lost its race with a re-apply. Reporting it would
+  // describe a failure from a boot that is already over.
+  // The roster holds no `wsl-*` entry, so the outcome is the only evidence —
+  // which is what makes the generation counter the deciding fact here.
+  const f = fixture({
+    legacy: false,
+    roster: [{ id: 'standard', isDefault: true }],
+    variantStatus: partialOutcome(9),
+  });
+  await flush();
+  const first = await f.dialog.checkPreset();
+  assert.ok(first.includes('wsl-code'), `the fresh outcome is reported, got: ${first}`);
+  f.setVariantStatus(partialOutcome(8));
+  assert.equal(await f.dialog.checkPreset(), undefined,
+    'a stale generation must not reach the dialog');
   f.dispose();
 });
