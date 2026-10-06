@@ -34,13 +34,23 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
  * @param options.variantStatus - what the host route answers for the
  *   `variantStatus` method: a VariantOutcome object, or `'absent'` to model an
  *   OLD host that has no such case and answers `{ok:false}`.
+ * @param options.route - override one method's whole HTTP answer: a
+ *   `(method) => { status, body } | undefined`. `status` defaults to 200, and
+ *   `body` is what `response.json()` resolves to — a function models a body
+ *   that throws while parsing, a STRING is parsed as JSON text (so `null` and
+ *   `'"a string"'` are the wire shapes they look like), anything else is
+ *   handed over as the parsed value. Returning undefined falls through to the
+ *   fixture's default answer for that method.
  */
-function fixture({ legacy = false, late = false, startService = legacy ? 'legacy' : 'ui', sidebarRight = false, records = [], roster, variantStatus = 'absent' } = {}) {
+function fixture({ legacy = false, late = false, startService = legacy ? 'legacy' : 'ui', sidebarRight = false, records = [], roster, variantStatus = 'absent', route } = {}) {
   let plugin, dialog, subscriber, tick;
   // The host's `variantStatus` answer, mutable so a test can move it between
   // two reads (a generation counter that goes BACKWARDS is the stale read).
   let outcome = variantStatus;
   const effects = [], calls = [], opened = [], pending = [];
+  // The abort signal handed to each fetch and the delay of each budget timer,
+  // so the timeout guard is assertable without waiting a real 20 seconds out.
+  const signals = [], budgets = [];
   const summary = legacy
     ? { blank: true, cwd: '\\\\wsl.localhost\\Ubuntu\\tmp\\fixture', agentPreset: 'standard' }
     : { blank: true, cwd: '\\\\wsl.localhost\\Ubuntu\\tmp\\fixture', projectionValues: { agentPreset: 'standard' } };
@@ -133,7 +143,10 @@ function fixture({ legacy = false, late = false, startService = legacy ? 'legacy
     // ones: a budget that never fires is not what is under test here, and a
     // fake clock would have to be wound by hand on every case.
     AbortController,
-    setTimeout,
+    // The bundle's ONLY `setTimeout` is the per-call budget, so recording its
+    // delay pins the budget without waiting it out. It still forwards to the
+    // host timer, so the clearTimeout in the bundle's `finally` keeps behaving.
+    setTimeout: (fn, delay) => { budgets.push(delay); return setTimeout(fn, delay); },
     clearTimeout,
     // The plugin's host API calls: the workspace record read and the variant
     // outcome have shapes under test, and every other route answers an empty
@@ -141,20 +154,40 @@ function fixture({ legacy = false, late = false, startService = legacy ? 'legacy
     // carrying `{ok:true}` must not be mistaken for a value.
     fetch: async (_url, init) => {
       const method = JSON.parse(init.body).method;
-      const status = 200;
+      signals.push(init.signal);
+      // A case that overrides this method's answer wins outright: the guards
+      // under test are about what the client does with a hostile status/body.
+      const override = route?.(method);
+      if (override !== undefined) {
+        const status = override.status ?? 200;
+        const { body } = override;
+        return {
+          // `Response.ok` is derived from the status in a real fetch, so a 404
+          // carrying `{ok:true}` is modelled the only way it can occur: the
+          // status says 404 while the BODY claims success.
+          ok: status >= 200 && status < 300,
+          status,
+          json: async () => {
+            if (typeof body === 'function') return body();
+            // A STRING is the wire text, so `null` and `'"a string"'` are the
+            // parses they look like — both succeed, neither is an envelope.
+            return typeof body === 'string' ? JSON.parse(body) : body;
+          },
+        };
+      }
       if (method === 'variantStatus') {
         // An old host has no such case in its switch, so the route answers
         // `{ok:false, error:'unknown method "variantStatus"'}`.
-        return { ok: true, status, json: async () => outcome === 'absent'
+        return { ok: true, status: 200, json: async () => outcome === 'absent'
           ? { ok: false, error: 'unknown method "variantStatus"' }
           : { ok: true, value: outcome } };
       }
-      return { ok: true, status, json: async () => ({ ok: true, value: method === 'listWorkspaceRecords' ? records : [] }) };
+      return { ok: true, status: 200, json: async () => ({ ok: true, value: method === 'listWorkspaceRecords' ? records : [] }) };
     },
   });
   plugin.apply(ctx);
   return {
-    calls, services, dialog, mount, summary, setPreset, opened, pending,
+    calls, services, dialog, mount, summary, setPreset, opened, pending, signals, budgets,
     emit: () => subscriber?.(),
     tick: () => tick?.(),
     setVariantStatus: value => { outcome = value; },
@@ -460,5 +493,170 @@ test('an outcome older than one already read is not shown', async () => {
   f.setVariantStatus(partialOutcome(8));
   assert.equal(await f.dialog.checkPreset(), undefined,
     'a stale generation must not reach the dialog');
+  f.dispose();
+});
+
+// Issue #44 T8b: the silent client failure. `call()` in src/client/api.ts grew
+// four guards — read `response.ok`, name the status; a refusal with no reason
+// still gets a sentence; every call is bounded by an AbortController; and an
+// `ok:true` carrying no `value` is refused. The hole they close: a route that
+// is NOT mounted answers 404 with a body some other handler produced, and the
+// old code never read the status — so it unwrapped `{ok:true, value:42}` off a
+// 404 and handed the caller `42` as its distro list. The user saw an empty
+// picker and nothing else.
+//
+// These run against the SHIPPED bundle, so what is asserted is the artifact the
+// browser actually loads, not the sources it was built from.
+
+test('a 404 carrying ok:true is a refusal, not a distro list', async () => {
+  // The core assertion of #44 T8b. `value` is a plausible-looking array so the
+  // pre-#44 client's `return envelope.value` would have RESOLVED rather than
+  // thrown: the bug was not a crash, it was a wrong answer delivered silently.
+  const f = fixture({
+    legacy: false,
+    route: method => method === 'listDistros'
+      ? { status: 404, body: { ok: true, value: ['Ubuntu', 'Debian'] } }
+      : undefined,
+  });
+  await flush();
+  await assert.rejects(() => f.dialog.listDistros(), error => {
+    // The Error is built INSIDE the vm sandbox, so `instanceof Error` is false
+    // across the realm boundary — the message is what a caller reads.
+    assert.equal(typeof error.message, 'string');
+    assert.match(error.message, /404/, `the message must name the status, got: ${error.message}`);
+    return true;
+  });
+  f.dispose();
+});
+
+test('a non-2xx whose body is JSON null names the status, not a TypeError', async () => {
+  // `JSON.parse('null')` SUCCEEDS, so the body is `null` and reading `.ok` off
+  // it throws `TypeError: Cannot read properties of null`. A TypeError names
+  // neither the status nor the method, so the caller cannot tell a dead route
+  // from a broken client — which is the failure mode this case forbids.
+  const f = fixture({
+    legacy: false,
+    route: method => method === 'listDistros' ? { status: 502, body: 'null' } : undefined,
+  });
+  await flush();
+  await assert.rejects(() => f.dialog.listDistros(), error => {
+    assert.ok(!(error instanceof TypeError), `a TypeError is not a usable refusal: ${error}`);
+    assert.match(error.message, /502/, `the message must name the status, got: ${error.message}`);
+    return true;
+  });
+  f.dispose();
+});
+
+test('a non-2xx whose body parses to a bare string is still refused', async () => {
+  // `JSON.parse('"just a string"')` also succeeds and is not an envelope
+  // either; `.ok` on a string is `undefined` (falsy), which would otherwise
+  // walk into the refusal path with no reason to report.
+  const f = fixture({
+    legacy: false,
+    route: method => method === 'listDistros' ? { status: 500, body: '"just a string"' } : undefined,
+  });
+  await flush();
+  await assert.rejects(() => f.dialog.listDistros(), error => {
+    assert.ok(!(error instanceof TypeError), `a TypeError is not a usable refusal: ${error}`);
+    assert.match(error.message, /500/, `the message must name the status, got: ${error.message}`);
+    return true;
+  });
+  f.dispose();
+});
+
+test('a refusal carrying no reason still reads as a sentence', async () => {
+  // `new Error(undefined)` renders as the word "undefined", which tells the
+  // reader nothing. This is the shape a proxy inventing an envelope produces.
+  const f = fixture({
+    legacy: false,
+    route: method => method === 'listDistros' ? { status: 200, body: { ok: false, error: undefined } } : undefined,
+  });
+  await flush();
+  await assert.rejects(() => f.dialog.listDistros(), error => {
+    assert.ok(typeof error.message === 'string' && error.message.length > 0);
+    assert.doesNotMatch(error.message, /undefined/, `the message must not be the word "undefined"`);
+    assert.match(error.message, /refused without a reason/,
+      `the message must say the refusal had no reason, got: ${error.message}`);
+    return true;
+  });
+  f.dispose();
+});
+
+test('a refusal whose reason is an object carries that reason', async () => {
+  // An Error serialized through JSON arrives as `{message}`, and the reason it
+  // holds is the only diagnostic the user gets — flattening it to "[object
+  // Object]" would throw away the cause.
+  const f = fixture({
+    legacy: false,
+    route: method => method === 'listDistros'
+      ? { status: 200, body: { ok: false, error: { message: 'nested reason' } } }
+      : undefined,
+  });
+  await flush();
+  await assert.rejects(() => f.dialog.listDistros(), /nested reason/);
+  f.dispose();
+});
+
+test('ok:true with no value is refused rather than returned as undefined', async () => {
+  // Returning `undefined` here is the quiet failure in its purest form: every
+  // caller treats a missing value as an empty list and carries on, so a broken
+  // route looks exactly like a host with no WSL distros installed.
+  const f = fixture({
+    legacy: false,
+    route: method => method === 'listDistros' ? { status: 200, body: { ok: true } } : undefined,
+  });
+  await flush();
+  await assert.rejects(() => f.dialog.listDistros(), error => {
+    assert.equal(typeof error.message, 'string');
+    assert.match(error.message, /without a value/);
+    return true;
+  });
+  f.dispose();
+});
+
+test('a body that is not JSON at all is refused with the status', async () => {
+  // A proxy or a SPA index.html answering in place of the route: `json()`
+  // throws, and the client must name the status rather than surface a raw
+  // SyntaxError the user cannot act on.
+  const f = fixture({
+    legacy: false,
+    route: method => method === 'listDistros'
+      ? { status: 200, body: () => { throw new SyntaxError('Unexpected token < in JSON at position 0'); } }
+      : undefined,
+  });
+  await flush();
+  await assert.rejects(() => f.dialog.listDistros(), error => {
+    assert.equal(typeof error.message, 'string');
+    assert.doesNotMatch(error.message, /SyntaxError|Unexpected token/,
+      `the raw parse failure is not a usable refusal, got: ${error.message}`);
+    return true;
+  });
+  f.dispose();
+});
+
+test('every call is bounded, and the filesystem walks get the longer budget', async () => {
+  // A call that never answers would leave the dialog's spinner up for the life
+  // of the page. The budgets are asserted from the recorded timer delays and
+  // the recorded abort signals — never by waiting them out.
+  const f = fixture({ legacy: false });
+  await flush();
+  // `apply()` makes its own calls during the first flush (the workspace-record
+  // read), so the budget ledger is cleared to pin exactly the two calls here.
+  f.budgets.length = 0;
+  f.signals.length = 0;
+  // A directory level crosses the 9P share entry by entry, and the observed
+  // cost of a large one exceeds the interactive default: a timeout there would
+  // be a lie about a call still making progress.
+  await f.dialog.listDir('Ubuntu', '/home/mille');
+  await f.dialog.listDistros();
+  assert.deepEqual(f.budgets, [60_000, 20_000],
+    'listDir walks the filesystem and gets 60s; the interactive default is 20s');
+  // The signal is the proof the budget is wired to the request at all: without
+  // it the timer would fire into nothing and the call would hang forever.
+  assert.equal(f.signals.length, 2);
+  for (const signal of f.signals) {
+    assert.ok(signal, 'every fetch must carry the AbortController signal');
+    assert.equal(signal.aborted, false, 'the budget must not have fired during a call that answered');
+  }
   f.dispose();
 });
