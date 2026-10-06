@@ -506,6 +506,107 @@ assert(typeof outcome.at === 'number' && outcome.at >= 0,
 // bytes, and the retired ones are still swept. This is the `Set` -> `Map` change under test.
 assert(existsSync(join(prefabVariant, 'agent.cordis.yml')), 'the retained variant is still on disk')
 assert(!existsSync(join(home, '.agent-presets', 'wsl-ghost')), 'and the sweep still ran for the others')
+
+// ── #52: the failure record is BOUNDED, and says what it dropped ───────────
+// The host process is long-lived, so `failed` is a record that must not grow without end: a
+// roster where every apply fails would otherwise append to it forever. `MAX_VARIANT_FAILURES`
+// (src/index.ts:307) caps it at 16 and `truncated` carries what the cap dropped, so the dialog
+// can say "and 2 more" rather than quietly under-report.
+//
+// The assertion at :500 above only proves the cap is NOT reached (`truncated === 0`), which is
+// half the contract: it says nothing about what happens when it IS. So the roster is widened
+// until it overflows. Seventeen sources are added and every one of them fails the same way
+// `third-party-local` already does — a `path` under a directory that does not exist, so
+// `materializeOne`'s `cpSync` throws ENOENT (src/index.ts:970). One emoji-bearing path is
+// among them to pin the OTHER cap, `MAX_VARIANT_REASON_CHARS`.
+//
+// The arithmetic, which is the point: 1 pre-existing failure + 17 added = 18 total, the cap
+// keeps 16, and `truncated` must be the 2 that were dropped — asserted as an EQUALITY against
+// the fixture's own arithmetic, not as `>= 1`, so a `truncated` that under- or over-reports
+// fails here instead of passing a loose bound.
+const PRE_EXISTING_FAILURES = 1
+const ADDED_FAILURES = 17
+const TOTAL_FAILURES = PRE_EXISTING_FAILURES + ADDED_FAILURES
+const CAP = 16
+// A reason longer than the 300-char cap in CODE POINTS, built from an emoji so a code-unit
+// slice would cut a surrogate pair in half. 280 emoji plus the ENOENT prefix is ~353 points,
+// comfortably over the cap on any host. The path itself is the fixture: a filesystem error
+// carries the path it failed on, so the emoji reaches the reason without a stub anywhere.
+const OVERLONG_EMOJI = '\u{1F600}'.repeat(280)
+for (let index = 0; index < ADDED_FAILURES; index += 1) {
+  const id = `overflow-${String(index).padStart(2, '0')}`
+  const dir = index === 0 ? `no-${OVERLONG_EMOJI}` : `no-such-source-${index}`
+  sources[id] = { path: join(home, dir, 'agent.cordis.yml'), text: STANDARD_SRC }
+}
+apply(fakeCtx, { route: '/wsl-workspace/api' })
+// Poll rather than sleep a fixed span: 18 sources each attempt a real `cpSync`, and the settle
+// time is the host's, so a constant here would be a guess the assertion could race.
+const boundedDeadline = Date.now() + 30_000
+while (Date.now() < boundedDeadline) {
+  const probe = await askVariantStatus()
+  if (probe?.failed?.length === CAP && probe?.truncated > 0) break
+  await new Promise(resolve => setTimeout(resolve, 100))
+}
+const bounded = await askVariantStatus()
+
+// The premise, asserted before any claim about the cap: the roster really did overflow, and the
+// outcome really is this boot's. Without it `failed.length === 16` could be satisfied by a
+// fixture that never reached the cap at all, or by a stale outcome from the previous apply.
+assert(bounded?.truncated > 0 && typeof bounded?.generation === 'number',
+  `the widened roster really did overflow the cap (got failed=${bounded?.failed?.length} truncated=${bounded?.truncated})`)
+assert(bounded.sources === Object.keys(sources).length,
+  `the generator saw every source the roster published (${bounded?.sources} vs ${Object.keys(sources).length})`)
+
+// 1. Exactly the cap — not 17 (no cap at all) and not 15 (an off-by-one that drops a record the
+// dialog could have shown).
+assert(bounded.failed.length === CAP,
+  `the failure record is capped at exactly ${CAP}, neither one under nor one over (got ${bounded.failed.length})`)
+// 2. `truncated` IS the dropped count, as an equality. `kept + dropped === total` is the whole
+// claim: a `truncated` computed from anything else (a constant, a re-count, the post-slice
+// length) breaks it. `>= 1` would pass on any of those.
+assert(bounded.failed.length + bounded.truncated === TOTAL_FAILURES,
+  `kept + truncated === the ${TOTAL_FAILURES} failures this roster produced `
+    + `(${bounded.failed.length} + ${bounded.truncated} != ${TOTAL_FAILURES})`)
+// 3. Truncation is a DISPLAY cap, not a verdict: six sources still produced, so the state stays
+// 'partial' whether the record kept 16 failures or 2. If a future change let the cap decide the
+// state, a full overflow would read as a total loss and the dialog would over-report.
+assert(bounded.state === 'partial' && bounded.produced > 0,
+  `the cap did not change the state verdict: still 'partial' with ${bounded.produced} produced (got ${JSON.stringify(bounded.state)})`)
+
+// ── MAX_VARIANT_REASON_CHARS: the cap counts CODE POINTS, not code units ───
+// `String.prototype.slice` cuts by code unit, so a reason ending inside an astral character
+// would be cut through the middle of its surrogate pair and the route would answer invalid
+// UTF-8 — the dialog would render a replacement character, or the JSON would not survive the
+// trip. `src/index.ts:347` uses `Array.from(...).slice(...)` for exactly this, and
+// `src/host/wsl-search.ts:885` has the same trap already paid for.
+//
+// The discriminator here is parity-independent on purpose. Whether a 300-unit boundary happens
+// to land between two surrogate pairs or inside one depends on the length of the ENOENT prefix
+// this host produced, so an assertion of the form "no lone surrogate" can pass on a mutant
+// that slices by units. The assertion below cannot: slicing by units would leave ~150 emoji
+// (≈186 code points) rather than 300, so the COUNT is the check, and the surrogate scan is
+// kept as the reason the count matters.
+const overlong = bounded.failed.find(failure => failure.source === 'overflow-00')
+assert(overlong !== undefined,
+  'the over-long reason survived into the kept record (it is one of the first 16 failures)')
+const reasonPoints = Array.from(overlong.reason).length
+assert(reasonPoints === 300,
+  `the reason is capped at 300 CODE POINTS, which a code-unit slice could not produce `
+    + `(got ${reasonPoints} points, ${overlong.reason.length} units; a unit slice would yield ~186 points)`)
+// The premise that the cap actually engaged: the reason really was longer, so this is a
+// truncation and not a coincidence. The untruncated reason is the ENOENT message verbatim.
+const untruncatedPoints = Array.from(
+  `ENOENT: no such file or directory, lstat '${join(home, `no-${OVERLONG_EMOJI}`, 'agent.cordis.yml')}'`,
+).length
+assert(untruncatedPoints > 300,
+  `the fixture's reason really was over the cap before truncation (${untruncatedPoints} points)`)
+// And the reason the count matters: no half surrogate pair survives, so the string the route
+// serves is valid UTF-8 and round-trips through a byte encode unchanged.
+assert(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(overlong.reason),
+  'no lone surrogate half survives the cut, so the served reason is valid UTF-8')
+assert(Buffer.from(overlong.reason, 'utf8').toString('utf8') === overlong.reason,
+  'the served reason round-trips through UTF-8 unchanged (a split pair would not)')
+
 outcomeServer.close()
 
 rmSync(home, { recursive: true, force: true })
