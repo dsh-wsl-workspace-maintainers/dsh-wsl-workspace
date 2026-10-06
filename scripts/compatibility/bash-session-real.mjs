@@ -847,11 +847,29 @@ try {
     `the control harness failed before comparing: ${String(error?.message ?? error).slice(0, 120)}`)
 }
 
-const EXPECTED_CHECKS = 73
+// Every `check(` site in this file, read out of this file. The count in the summary used to be a
+// number typed by whoever added a cell, so a run that reached 46 of them on the WSL1 frame reported
+// "expected 73" and named nothing — the reader had to diff two logs to learn that a whole stretch of
+// cells never ran. Now the audit is derived: a site with no matching verdict is listed by name.
+const sites = [...readFileSync(new URL(import.meta.url), 'utf8')
+  .matchAll(/^[ \t]*(?:await[ \t]+)?check\([ \t]*(?:'([^']+)'|"([^"]+)"|`([^`]+)`)/gm)]
+  .map(match => (match[1] ?? match[2] ?? match[3] ?? '').trim())
+  .filter(name => name !== '')
+/** Compare a site with a verdict: a `${dynamic}` label matches on the literal part it starts with. */
+const norm = text => text.replace(/\$\{[^}]*\}/g, '').replace(/\s+/g, ' ').trim().slice(0, 28)
+// Two sites exist only to report a failure from inside a `catch`, so a green run never reaches them
+// and the audit must not count what it cannot see. Anything else that goes unreported is a red below.
+const CATCH_ONLY = ['every call returned', 'the keyboard door ran'].map(norm)
+const ranKeys = [...new Set(results.map(entry => norm(entry.name)))]
+const missing = [...new Set(sites.map(norm))]
+  .filter(key => key !== '' && !CATCH_ONLY.includes(key)
+    && !ranKeys.some(name => name === key || name.startsWith(key)))
 const passed = results.filter(r => r.pass).length
-console.log(`${passed}/${results.length} checks passed (plane=${plane()}, distro=${distro}, user=${username}, cwd=${sessionCwd})`)
-if (results.length !== EXPECTED_CHECKS) {
-  console.error(`bash-session-real: RED — ran ${results.length} checks, expected ${EXPECTED_CHECKS}; a short run must not report green`)
+console.log(`${passed}/${results.length} checks passed, ${sites.length} check sites in this file `
+  + `(plane=${plane()}, distro=${distro}, user=${username}, cwd=${sessionCwd})`)
+if (missing.length > 0) {
+  console.error(`bash-session-real: RED — ${missing.length} check site(s) below never ran; a short run must not report green:`)
+  for (const name of missing.slice(0, 40)) console.error(`  not run: ${name}`)
   process.exitCode = 1
 } else if (passed !== results.length) {
   console.error('bash-session-real: RED — at least one check failed')
