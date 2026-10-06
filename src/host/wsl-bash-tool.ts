@@ -26,6 +26,7 @@ import { isValidWslUsername, joinUnc, parseWslUnc, windowsToMntPath } from '../s
 import { getWindowsWorkspace, getWorkspaceUsername } from '../shared/wsl-credentials.ts'
 import { defaultDistroSync } from '../shared/wsl.ts'
 import { bridgeEnv } from '../shared/wsl-env.ts'
+import { STDIN_CAP_BYTES, stdinRefusal } from '../shared/wsl-stdin.ts'
 import { SESSION_ARGV } from './wsl-bash-protocol.ts'
 import { WslBashSession, type WslBashRun, type WslBashSessionSpec, type WslBashSpawnHost } from './wsl-bash-session.ts'
 import { startBackgroundJob } from './wsl-jobs.ts'
@@ -109,29 +110,9 @@ interface BashArgs {
 }
 
 /**
- * The ceiling on one call's `stdin`, and the reason it is where it is.
- *
- * The text travels inside the frame line (base64, like the command), so its cost is the frame's cost,
- * and that was measured on this machine (2026-10-05, `D:\Temp\issue51-s0`): a 64 kB command answers in
- * ~3.8 s and a 256 kB one in ~59 s, because a piped bash reads the line as fast as the pipe delivers
- * it. Half the measured 64 kB point is the ceiling — a command plus its input at the frame size
- * nobody has measured past should still feel like a tool call — and a larger input is refused by name
- * rather than truncated, because a program fed half its input fails in ways that look like the
- * program's fault.
+ * The ceiling on one call's `stdin`, and the refusal it earns when exceeded, both live in
+ * `src/shared/wsl-stdin.ts` — see the note there for why a test must not need this module.
  */
-export const STDIN_CAP_BYTES = 32 * 1024
-
-/**
- * Whether a call's `stdin` is beyond what the frame can carry.
- * @param stdin - the caller's input, if any.
- * @returns the sentence to throw for the tool, or undefined when the input fits.
- */
-export function stdinRefusal(stdin: string | undefined): string | undefined {
-  if (stdin === undefined) return undefined
-  const bytes = Buffer.byteLength(stdin, 'utf8')
-  if (bytes <= STDIN_CAP_BYTES) return undefined
-  return `wsl-bash: stdin is ${bytes} bytes, over the ${STDIN_CAP_BYTES}-byte ceiling. The input travels in the same line as the command, and a frame's cost grows with its length (measured: a 64 kB frame answers in ~3.8 s, 256 kB in ~59 s). Write the data to a file first and redirect the command\'s stdin from it (\`command < file\`) — nothing was truncated and nothing ran`
-}
 
 /** Environment facts that must reach the distribution. */
 const BRIDGED_KEYS = ['DSH_HOME', 'DSH_SESSION_ID', 'DSH_WSL_DISTRO', 'DSH_WSL_USER', 'DSH_WSL_SESSION', 'NO_COLOR', 'TERM', 'PAGER', 'GIT_PAGER']

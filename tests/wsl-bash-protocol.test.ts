@@ -14,7 +14,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import { BOOTSTRAP_COMMAND, RECORD_TAG, SESSION_ARGV, SNAPSHOT_HELPER, STATE_TAG, dropProtocolEcho, encodeFrame, newNonce, readFrame, restoreChunks, restoreScript, stripRecords } from '../src/host/wsl-bash-protocol.ts'
-import { STDIN_CAP_BYTES, stdinRefusal } from '../src/host/wsl-bash-tool.ts'
+import { STDIN_CAP_BYTES, stdinRefusal } from '../src/shared/wsl-stdin.ts'
 
 const NUL = String.fromCharCode(0)
 
