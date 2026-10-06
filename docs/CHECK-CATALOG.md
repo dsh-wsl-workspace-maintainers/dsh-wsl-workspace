@@ -82,8 +82,11 @@ Vampire/setup-wsl (`fail-fast: false`, and the log artifact carries the version:
 73/73 on each, `bash-parity-real` 12/12, `tool-bash-real` 10/10. What differs is what each kernel will
 tell the tool: WSL1 answers `/proc/<pid>/wchan` **and** `/proc/<pid>/syscall` empty for every process and
 names no foreground job, so a keyboard wait there cannot be confirmed and is left to the deadline the call
-asked for, with the body printing the rows it read; WSL2 answers `wait_woken`/`hrtimer_nanosleep` with
-syscall numbers and the real `tpgid`, and the same wait is stopped at ~0.6 s and re-run. The six reactive
+asked for, with the body printing the rows it read; WSL2 fills the names and the numbers where the kernel
+reports them (CI reads `sleep:S+ w=hrtimer_nanosleep sc=230 0tty fg` and `shell:Ss w=do_wait sc=61 1tty
+bg`), the terminal's own read carries the `wait_woken` name measured on the production session on
+2026-10-05, and the foreground job is named there too, so the same wait is stopped at ~0.6 s and re-run.
+The six reactive
 cells branch on which of those two the reading supports (`branch:"reading-acts"` /
 `branch:"reading-declares"`) and print the rows either way, so a kernel that begins to report a wait
 reddens the cell that let it burn a deadline. Before that frame five of those cells were simply red on

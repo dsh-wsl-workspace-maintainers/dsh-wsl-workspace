@@ -161,12 +161,13 @@ function witnessIn(rendered) {
   const text = clause(rendered)
   if (text === '' || text.startsWith('could not run')) return false
   // Rows are `name:state w=<wchan>[ sc=<n>] <Ntty|fd-unreadable> <fg|bg|no-tpgid>`, `; `-separated.
-  // A row counts when all three of the facts a rule needs are there: it is the terminal's foreground
-  // job, it is asleep in a *read* (the `wchan` name, or the syscall number where the name is not
-  // available), and a terminal is among its descriptors. Anything narrower would bless a stop the tool
-  // could not justify, and anything looser would let `curl` on a socket read as a keyboard.
+  // A row counts when all three of the facts the product's confirmed reading uses are there: it is the
+  // terminal's foreground job, `/proc/<pid>/wchan` names the terminal's read, and a terminal is among
+  // its descriptors. Deliberately the *same* three and not a wider set — if this predicate let in
+  // evidence the rule does not act on, the cell would demand a stop the tool has no basis for and the
+  // red would be a fault of the gate, not of the product.
   return text.split('; ').some(row => /\bfg$/.test(row)
-    && (/\bw=wait_woken\b/.test(row) || /\bsc=0\b/.test(row)) && /\b[1-9]\d*tty\b/.test(row))
+    && /\bw=wait_woken\b/.test(row) && /\b[1-9]\d*tty\b/.test(row))
 }
 
 /** How many processes in the distribution have this exact command line.

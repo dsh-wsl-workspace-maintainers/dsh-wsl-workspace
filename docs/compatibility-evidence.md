@@ -3262,13 +3262,23 @@ Two things followed: every call now gets its own budget from its own `timeoutMs`
 each tool call its own cancellation), and the keyboard cells print the watchdog's reading rather than a
 `tail` of the body, which is what had left the question open for a round.
 
-**What WSL1 actually answers, read off the runner rather than guessed.** The rows for the same two
-commands, in the body of the calls that reached their deadlines:
+**What the two kernels actually answer, and where each value was read.** The rows for the same two
+commands. Every WSL1 cell below is verbatim from the deadline bodies in `cii-1` / `cih-1`; on WSL2 a call
+that is *stopped* carries no reading clause at all (the rows are only printed when a call reaches its
+deadline), so that arm's read row comes from the 2026-10-05 measurement of the production session
+(`D:\Temp\issue51-s0\v1c-table.txt`) and the sleep row from the same frames' deadlines:
 
-| the call is | WSL1 (CI, Ubuntu-24.04 root) | WSL2 (CI, same distro) |
+| the call is | WSL1 (CI, Ubuntu-24.04 root) | WSL2 (same distro) |
 | --- | --- | --- |
-| `sh -c 'read x < /dev/tty'` | `shell:S w=not-reported 1tty bg; sh:S w=not-reported 1tty bg` | `shell:Ss w=do_wait sc=61 1tty bg; sh:S+ w=wait_woken sc=0 1tty fg` |
-| `sleep 3` | `shell:S w=not-reported 1tty bg; sleep:S w=not-reported 0tty bg` | `shell:Ss w=do_wait sc=61 1tty bg; sleep:S+ w=hrtimer_nanosleep sc=230 0tty fg` |
+| `sh -c 'read x < /dev/tty'` | `shell:S w=not-reported 1tty bg; sh:S w=not-reported 1tty bg` | `sh:S+ w=wait_woken 1tty fg`, the fd reported as `/dev/tty` — measured 2026-10-05; its `sc=` value is **not** printed by any frame (see the note under this table) |
+| `sleep 3` | `shell:S w=not-reported 1tty bg; sleep:S w=not-reported 0tty bg` (frames 37494104075, 37502997936) | `shell:Ss w=do_wait sc=61 1tty bg; sleep:S+ w=hrtimer_nanosleep sc=230 0tty fg` (frame 37502997936, both planes) |
+
+The one number that is *inferred* rather than read: on x86-64 `read` is syscall `0`, so a WSL2 keyboard
+read would print `sc=0`. That mapping is supported by the two values CI does print — `61` is `wait4`,
+which is what a shell between commands is in, and `230` is `clock_nanosleep`, which is a `sleep` — but the
+read row itself has never been printed, because confirming the wait stops the call before any deadline
+body exists. Nothing in the rule depends on `sc=0`: the confirmed reading on WSL2 is `wchan` plus the
+terminal fd, and the syscall number is only ever a second witness where the name is missing.
 
 So on WSL1 `/proc/<pid>/wchan` and `/proc/<pid>/syscall` both come back **empty for every process,
 asleep or running**, no process reports itself as the terminal's foreground job, and the fd table does
