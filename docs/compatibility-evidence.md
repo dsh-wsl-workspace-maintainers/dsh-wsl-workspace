@@ -2983,3 +2983,35 @@ Second run of the same prompt, after the fix: ① 513 ms; ② **3 104 ms**, body
 explained the difference between the two cases. Usage: two billed requests, 1 490 + 8 379 and
 10 084 + 3 301 tokens (the file also records a first attempt whose 8 192-token cap was spent entirely on
 reasoning and which produced no tool call — the failure his provider config documents).
+
+### Round eight: the same eight-step task on three transports (2026-10-06)
+
+"Normal dsh on WSL" is not a hypothetical: it is the host's own PTY tier — `dsh-terminal-bash` plus
+`dsh-tool-bash-persistent`, pointed at this plugin's relay — which is what existed before this plugin
+wrote its own shell, and the tier issue #51 was filed against. So the comparison is measurable:
+one task, eight steps (make a directory, write a file, edit it, generate 200 lines, count them, tar
+them, run a language runtime, clean up), each step one call, on three transports.
+
+| arm | what it is | total | worst step | steps that never settled |
+| --- | --- | --- | --- | --- |
+| A | this plugin's `bash` (pipe session) | **390 ms** | 232 ms | **0/8** |
+| B | the host's PTY tier — "dsh using WSL normally" | **86 785 ms** | 23 787 ms | **3/8** |
+| C | a real terminal, typed into (`script -qec "bash -i"`) | **282 ms** | 120 ms | 0/8 |
+
+Per step, arm B: `mkdir … && cd … && pwd` 23 787 ms **never settled**; `printf … > f.txt; wc -l` 20 265 ms
+**never settled**; `sed -i …` 4 141 ms; `for i in $(seq 1 200) …` 23 709 ms **never settled`; `grep -c .` 4 115 ms;
+`tar` 3 565 ms; `node -e` 3 610 ms; clean-up 3 593 ms. The three that never settled were bounded by this
+driver at 20 s per step; in the product they run to the host tool's own `timeoutMs` (300 s by default),
+which is the 303.8 s measured in the reporter's Desktop session.
+
+Arm A's steps: 25-51 ms each, with `node -e` the slowest at 232 ms (a runtime starting, not the
+transport). Arm C: 13-38 ms each, the 200-line loop the slowest at 120 ms.
+
+Three things this does and does not say. (1) On a task like this one, arm A and a person's own terminal
+cost the same order of magnitude — 8-50 ms per step against 13-38 ms — because neither waits for a
+terminal to be scraped. (2) Arm B is not slow, it is *unreliable*: half its steps took the host's
+idle-silence path (3.5-4.1 s) and the other three never completed at all inside 20 s. (3) Arm C's
+typing time is the driver's, not a person's, and it ran its steps from `/mnt/d/…` while the others ran
+in `~` — same commands, a different mount.
+
+Report files: `D:\Temp\issue51-s0\three-arms-report.txt`, `speed-report.txt`, `terminal-report.txt`.
