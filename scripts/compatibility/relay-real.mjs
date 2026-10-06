@@ -31,9 +31,9 @@ const reEsc = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
  * C:\hostedtoolcache\windows\node\24.21.0\x64\node.exe ENOENT` — a message about a program that
  * exists, because Windows reports an unreachable `cwd` as an ENOENT on the child. The real fact is
  * that `\\wsl.localhost\<distro>\…` stops answering while the instance is being idled out between
- * the two passes, which the job's bounded keep-warm (`sleep 900`) does not cover once both planes
- * have run. Say the premise, and say it before spawning, so the frame reads as an environment
- * verdict rather than as a missing interpreter.
+ * the two passes, which the job's bounded keep-warm did not cover once both planes run (it is now a
+ * 2400 s keeper, longer than the job's own bound). Say the premise, and say it before spawning, so the
+ * frame reads as an environment verdict rather than as a missing interpreter.
  */
 function requireShare() {
   if (!existsSync(workspace)) {

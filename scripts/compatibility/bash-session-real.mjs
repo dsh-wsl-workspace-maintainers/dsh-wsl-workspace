@@ -360,10 +360,13 @@ try {
   // says only "timed out" there reads as though the wait had been examined and found ordinary — which
   // is precisely the claim this layer must not make about a kernel it cannot read.
   const looked = await call('sleep 3', { timeoutMs: 1_500 })
+  // The clause is printed at the front of the detail on purpose: the tail-150 form that first carried
+  // it was cut off in the WSL1 frame's log, which left "did the reading run there" unanswered for a
+  // round even though the cell had passed.
+  const lookedClause = /\[the check for a command waiting on a keyboard (looked and read: [^\]]*|could not run[^\]]*)\]/.exec(looked.rendered)
   check('a timed-out call carries the reading it took',
-    looked.value?.timedOut === true
-      && /\[the check for a command waiting on a keyboard looked and read: /.test(looked.rendered),
-  JSON.stringify(looked.rendered.slice(-150)))
+    looked.value?.timedOut === true && lookedClause !== null,
+  JSON.stringify(lookedClause ? lookedClause[1].slice(0, 150) : looked.rendered.slice(-150)))
   // The `tty: false` veto is asserted offline instead (`tests/wsl-bash-tty.test.ts`): it is a decision,
   // and the only live discriminator would be a program that hangs on a real terminal, which would make
   // the cell's cost the very defect it is measuring.

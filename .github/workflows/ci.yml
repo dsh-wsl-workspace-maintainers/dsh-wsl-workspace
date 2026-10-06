@@ -150,7 +150,11 @@ jobs:
       - name: fixture preparation (bounded keep-warm so the 9P share stays visible)
         run: |
           mkdir -p /c/tmp
-          wsl.exe -d Ubuntu-24.04 -- bash -c 'mkdir -p /tmp/dsh-wsl-relay-ws /tmp/dsh-wsl-compat /root/symprobe/ws && (nohup sleep 900 >/dev/null 2>&1 & echo kept-alive)'
+          # The keeper has to outlast BOTH planes. The 9P share stops answering when the distribution
+          # idles out, and a Windows spawn into `\\wsl.localhost\…` reports that as
+          # `spawn <program> ENOENT` — which is how the WSL2 arm's second pass came to look like a
+          # missing node binary. 2400 s covers this job's own 35-minute bound.
+          wsl.exe -d Ubuntu-24.04 -- bash -c 'mkdir -p /tmp/dsh-wsl-relay-ws /tmp/dsh-wsl-compat /root/symprobe/ws && (nohup bash -c "for i in \$(seq 1 40); do sleep 60; done" >/dev/null 2>&1 & echo kept-alive)'
       - name: preflight diagnostics (always collected before the gates)
         run: |
           mkdir -p logs
