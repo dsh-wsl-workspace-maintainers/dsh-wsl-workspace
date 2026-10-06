@@ -470,9 +470,18 @@ export function apply(ctx: ClientContext): void {
     }
     maybeBind()
     const unsubscribe = sessions.list.subscribe(() => maybeBind())
-    // Variants are generated at host boot; a page loaded before that would
-    // never see them without a periodic refresh.
-    const timer = window.setInterval(refreshRoster, 60_000)
+    // Variants are generated at host boot, and a workspace registered later
+    // adds a drive key; a page loaded before either would never see them
+    // without a periodic refresh. `refreshWorkspaces` belongs in this timer and
+    // not only in its one-shot call below: a `/mnt/<drive>` workspace created
+    // by the dialog registers its drive key with the HOST, and only this read
+    // brings it back into `wslWindowsPaths` — so a workspace whose drive key
+    // never arrived here can never be recognized as WSL, and its sessions stay
+    // unbound to the variant for the life of the page.
+    const timer = window.setInterval(() => {
+      refreshRoster()
+      refreshWorkspaces()
+    }, 60_000)
     return () => {
       unsubscribe()
       window.clearInterval(timer)
