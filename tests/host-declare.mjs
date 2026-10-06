@@ -16,7 +16,7 @@
 
 import { mkdirSync, mkdtempSync, existsSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 
@@ -165,6 +165,40 @@ const assert = (condition, label) => {
   console.log(`ok: ${label}`)
 }
 
+/**
+ * Assert an interpreter path by SHAPE, not by equality with `process.execPath`.
+ *
+ * This is a deliberate relaxation, and the reason is that the equality it
+ * replaced is false on the platform this plugin actually ships to. On DSH Desktop
+ * `process.execPath` is the Electron executable, and the PTY backend starts
+ * `shellPath` directly — an Electron binary under a ConPTY writes nothing at all,
+ * which is exactly issue #40's "PTY shell exited during startup". So the plugin
+ * substitutes the relay's real node interpreter there (`src/index.ts:1064-1068`,
+ * `src/shared/relay-node.ts`), and `shellPath` is that interpreter, not
+ * `process.execPath`. Asserting equality here pinned the CI runner's answer, where
+ * no relay resolution happens and the two coincide; it would have reddened on the
+ * Desktop for being correct.
+ *
+ * What the shape still rules out, and why each one matters:
+ *   - not a `file://` URL: config values are not module specifiers. The PTY
+ *     backend spawns this string, and a URL there is not a path to spawn.
+ *   - absolute: a relative interpreter resolves against whatever cwd the host
+ *     happened to boot in.
+ *   - no backslash: the declaration is YAML, and every path in it is normalised to
+ *     forward slashes so one spelling works in both tiers.
+ *   - exists: the strongest of the four. A path shape can be perfectly correct and
+ *     name nothing, which is the failure the Desktop substitution exists to avoid.
+ * @param value - the declared `shellPath`.
+ * @param label - what this row is, for the assertion message.
+ */
+const assertNativeShellPath = (value, label) => {
+  assert(typeof value === 'string' && value.length > 0, `${label} is a non-empty string`)
+  assert(!value.startsWith('file://'), `${label} is not rewritten to a file: URL`)
+  assert(isAbsolute(value), `${label} is an absolute path (got ${JSON.stringify(value)})`)
+  assert(!value.includes('\\'), `${label} carries no unescaped backslash (got ${JSON.stringify(value)})`)
+  assert(existsSync(value), `${label} points at a real interpreter file (got ${JSON.stringify(value)})`)
+}
+
 // Generation is a fire-and-forget effect that first probes the platform's
 // terminal stack, so wait for the publish rather than assuming a delay.
 const deadline = Date.now() + 15_000
@@ -236,14 +270,14 @@ if (SESSION_TIER) {
   assert(doorTool !== undefined && doorTool.name.startsWith('file://'), 'the door tool is a file: URL')
   assert(existsSync(fileURLToPath(doorTool.name)), 'and it points at a real built file')
   const doorBackend = door.config.find(row => row.id === 'terminal-wsl')
-  assert(doorBackend.config.shellPath === process.execPath.replace(/\\/g, '/'), 'the door\'s interpreter stays a native path')
+  assertNativeShellPath(doorBackend.config.shellPath, 'the door\'s interpreter stays a native path')
   assert(doorBackend.config.shellArgs[0].endsWith('/lib/wsl-relay.js'), 'the door runs this installation\'s relay')
   assert(!world.config.some(row => row.id === 'persistent-shell'), 'no host PTY group is declared in the session tier')
 } else {
 const shellGroup = world.config.find(row => row.id === 'persistent-shell')
 assert(shellGroup !== undefined, 'the world mounts its own persistent shell')
 const terminal = shellGroup.config.find(row => row.id === 'terminal-wsl')
-assert(terminal.config.shellPath === process.execPath.replace(/\\/g, '/'), 'the interpreter stays a native path')
+assertNativeShellPath(terminal.config.shellPath, 'the interpreter stays a native path')
 assert(terminal.config.shellArgs[0].endsWith('/lib/wsl-relay.js'), 'the relay stays a native path')
 assert(!terminal.config.shellArgs[0].startsWith('file://'), 'the relay is not rewritten to a file: URL')
 assert(terminal.config.backendType === 'wsl', 'the persistent shell uses the WSL backend')

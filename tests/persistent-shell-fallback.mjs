@@ -41,6 +41,14 @@ const require = createRequire(import.meta.url)
 // tier's mount decision. The session tier decides on a different seam (`spawn`, and a command that
 // must answer), so pinning the tier here keeps those assertions about the thing they test. The
 // session tier's own decision table is an open gap, recorded in docs/CHECK-CATALOG.md.
+//
+// KNOWN GAP, deliberately not closed this round: overriding `process.platform` to
+// 'win32' at :55 also erases the ONLY way to reach `supportsPersistentShell`'s
+// first return — the `process.platform !== 'win32'` early out. So `probed: false`
+// from the platform branch is exercised nowhere in this file; the `probed: false`
+// asserted below is the *seam* branch's, which is a different return with the same
+// field. Covering the platform one needs a second run with the override removed,
+// which would then skip every win32 assertion above. Recorded rather than faked.
 process.env.DSH_WSL_PTY_SHELL = '1'
 
 const { apply, isTerminalInspectionUnsupported } = require('../lib/index.js')
