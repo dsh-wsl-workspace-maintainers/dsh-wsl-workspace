@@ -743,15 +743,20 @@ function readinessCwd(): string {
  * spawn failure instead, which is the "supported" answer.
  * @param ctx - plugin context; the `subprocess` service is looked up with `get`
  *   and waited for briefly, because the world is generated during profile boot.
- * @returns whether the persistent shell may be mounted, and the service face the
- *   readiness stage probes with (undefined when there was nothing to probe).
+ * @returns whether the persistent shell may be mounted, the service face the
+ *   readiness stage probes with (undefined when there was nothing to probe), and
+ *   whether anything was probed at all. `ok: true` answers "supported", and two
+ *   of the four returns reach it without asking the host anything — a non-win32
+ *   platform, or a host that never offered a `spawnTerminal` seam. Those two
+ *   return `probed: false`, which `ok` cannot express: its true value is the
+ *   same whether the probe passed or never ran.
  */
-async function supportsPersistentShell(ctx: Context): Promise<{ ok: boolean; subprocess: SubprocessProbeFace | undefined }> {
+async function supportsPersistentShell(ctx: Context): Promise<{ ok: boolean; subprocess: SubprocessProbeFace | undefined; probed: boolean }> {
   // POSIX hosts have an inspector on every declared release, and a WSL world is
   // Windows-only anyway.
-  if (process.platform !== 'win32') return { ok: true, subprocess: undefined }
+  if (process.platform !== 'win32') return { ok: true, subprocess: undefined, probed: false }
   const subprocess = await waitForSubprocess(ctx)
-  if (subprocess?.spawnTerminal === undefined) return { ok: true, subprocess }
+  if (subprocess?.spawnTerminal === undefined) return { ok: true, subprocess, probed: false }
   try {
     const handle = await subprocess.spawnTerminal({
       argv: ['dsh-wsl-workspace-pty-probe-does-not-exist'],
@@ -763,9 +768,11 @@ async function supportsPersistentShell(ctx: Context): Promise<{ ok: boolean; sub
     // Unexpectedly alive: this host starts a PTY for a missing program, so the
     // terminal stack works. Take the probe process down again.
     await handle?.terminate?.()
-    return { ok: true, subprocess }
+    return { ok: true, subprocess, probed: true }
   } catch (error) {
-    return { ok: !isTerminalInspectionUnsupported(error), subprocess }
+    // A rejection IS a probe result: this host was asked and it answered. Which
+    // answer it gave is what `ok` already carries.
+    return { ok: !isTerminalInspectionUnsupported(error), subprocess, probed: true }
   }
 }
 
@@ -1118,17 +1125,25 @@ export function apply(ctx: Context, config: Config): void {
             }
           }
         } else if (persistentShell && process.platform === 'win32') {
+          // `probed: false` reached this branch, which means the host was never
+          // asked whether its terminal stack works: either the platform check
+          // answered for it, or the `subprocess` service carried no
+          // `spawnTerminal` seam to ask through. `ok: true` cannot report that —
+          // it reads exactly like a probe that passed — so the boot log carries
+          // it here, folded into the existing lines beside the `unverifiable`
+          // wording rather than as a line of its own.
+          const unprobed = probe.probed ? '' : ' (the terminal-stack probe never ran on this host)'
           const readiness = await probePersistentShellReadiness(probe.subprocess, {
             relayPath,
             nodePath: relay?.path ?? process.execPath,
           }, readinessCwd())
           if (!readiness.ready) {
             persistentShell = false
-            console.warn(`dsh-wsl-workspace: persistent shell: not mounted, readiness probe failed — ${readiness.detail}`)
+            console.warn(`dsh-wsl-workspace: persistent shell: not mounted, readiness probe failed — ${readiness.detail}${unprobed}`)
           } else if (readiness.unverifiable === true) {
-            console.warn(`dsh-wsl-workspace: persistent shell: mounted unverified — ${readiness.detail}`)
+            console.warn(`dsh-wsl-workspace: persistent shell: mounted unverified — ${readiness.detail}${unprobed}`)
           } else {
-            console.log(`dsh-wsl-workspace: persistent shell: readiness probe passed — ${readiness.detail}`)
+            console.log(`dsh-wsl-workspace: persistent shell: readiness probe passed — ${readiness.detail}${unprobed}`)
           }
         }
         await materializeVariants(agentPresets, dshHome, {

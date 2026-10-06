@@ -96,12 +96,22 @@ const SOURCE = `# standard-like
 const INSPECTION_MESSAGE = 'subprocess-local: terminal inspection is unsupported on platform win32'
 
 /**
+ * The text the PTY branch appends when `supportsPersistentShell` returned
+ * `probed: false` — a `{ok: true}` that no terminal inspection backs. `probed` is
+ * internal to that function, so the boot log is the only place a caller can read
+ * it; that is what makes it a real field rather than a dead one, and it is what
+ * these assertions read.
+ */
+const NEVER_PROBED = 'the terminal-stack probe never ran on this host'
+
+/**
  * Run `apply()` once against a fresh fake roster and return the world the plugin
  * published, plus when it settled.
  * @param subprocess - the `subprocess` service the fake context returns for the
  *   probe (absent ⇒ `undefined`; reject / resolve ⇒ a `spawnTerminal` face).
- * @returns the generated WSL world's row ids and backendType values, and the
- *   wall-clock milliseconds from the `apply()` call to the declaration landing.
+ * @returns the generated WSL world's row ids and backendType values, the
+ *   wall-clock milliseconds from the `apply()` call to the declaration landing,
+ *   and the boot lines the plugin logged while generating it.
  */
 async function runOnce(subprocess) {
   const home = mkdtempSync(join(tmpdir(), 'dsh-wsl-fallback-'))
@@ -139,6 +149,17 @@ async function runOnce(subprocess) {
     },
   }
 
+  // Generation is fire-and-forget and every branch it takes writes at least one
+  // boot line, so the console is captured for the whole window: `probed` reaches
+  // a reader only through that text, and a driver that cannot see it cannot pin
+  // it. Both original methods are restored in the same place the disposers run,
+  // including on the throw path the exit handler above already covers.
+  const logged = []
+  const realLog = console.log
+  const realWarn = console.warn
+  console.log = (...args) => { logged.push(args.join(' ')) }
+  console.warn = (...args) => { logged.push(args.join(' ')) }
+
   const started = Date.now()
   apply(fakeCtx, { route: '/wsl-workspace/api' })
 
@@ -153,6 +174,8 @@ async function runOnce(subprocess) {
   const elapsed = Date.now() - started
 
   for (const dispose of disposers) dispose()
+  console.log = realLog
+  console.warn = realWarn
   process.env.DSH_HOME = previousHome
   rmSync(home, { recursive: true, force: true })
 
@@ -183,6 +206,9 @@ async function runOnce(subprocess) {
     ids,
     backendTypes,
     elapsed,
+    logged,
+    /** Whether this world's boot log says the terminal-stack probe never ran. */
+    probed: !logged.some((line) => line.includes(NEVER_PROBED)),
   }
 }
 
@@ -232,7 +258,15 @@ assert(!resolved.ids.has('tool-bash'), '(3) positive control: the persistent bas
 // :559,604`), so an absent service must still mount the world AND settle within
 // the documented wait. A regression that lets this wait block profile boot — an
 // unbounded poll, say — trips the timing half here.
+// The mount is unchanged; what is new is that it is no longer the whole claim.
+// `ok: true` here rests on no inspection at all, and the world says so in its
+// own log (`probed: false`) — asserted below rather than assumed, so a plugin
+// that started reporting the absence as a probe that passed would go red.
 assert(absent.ids.has(PTY_SHELL_ROW), '(4) absent subprocess service still mounts the persistent shell')
+assert(
+  absent.probed === false,
+  '(4) ...and that mount is reported as unprobed, not as a probe that passed',
+)
 assert(
   absent.elapsed > 1_000 && absent.elapsed < 3_000,
   `(4) the absent-service wait is bounded to the ~2s poll, not shorter and not blocking (${absent.elapsed}ms)`,
@@ -290,6 +324,16 @@ assert(
   resolved.ids.has(PTY_SHELL_ROW) === absent.ids.has(PTY_SHELL_ROW)
   && resolved.elapsed < absent.elapsed,
   `(6) resolve vs absent share a world but differ in wait (${resolved.elapsed}ms vs ${absent.elapsed}ms)`,
+)
+// #44T2: `ok: true` cannot tell "probed and passed" from "never probed", and the
+// two worlds above prove it — same world, same mount. `probed` is the field that
+// separates them, so it is pinned in both directions: the absent world declares
+// no probe, and the resolved world — which really did ask spawnTerminal — does
+// not get falsely labelled as unprobed. The second half matters as much as the
+// first: a `probed` that were always `false` would satisfy a one-sided check.
+assert(
+  absent.probed === false && resolved.probed === true,
+  `(6) probed separates the same-world pair: absent is unprobed, resolved really probed`,
 )
 
 if (failures > 0) {
