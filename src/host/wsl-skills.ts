@@ -296,6 +296,21 @@ async function probeDirectory(distro: string, dir: string, depth: number, io: Ws
   return { roots, children, links }
 }
 
+/** The result of one discovery walk: the roots it published and what its link budget could not afford. */
+interface DiscoveryResult {
+  /** The skill directories the walk found, bounded by depth, visited-set and root budget. */
+  readonly roots: SkillRoot[]
+  /**
+   * How many links this walk queued for distribution resolution but never handed
+   * to `resolveLinks` because {@link MAX_LINK_RESOLUTIONS} was exhausted. Zero on
+   * a walk that stayed within budget (or one whose substrate resolves links
+   * itself, where no resolution was ever requested). Counted at the point the
+   * budget is spent rather than derived from a running total afterwards, so the
+   * figure cannot drift from what the call site actually did.
+   */
+  readonly linksDropped: number
+}
+
 /**
  * Scan a WSL workspace root for nested skill directories.
  *
@@ -306,12 +321,14 @@ async function probeDirectory(distro: string, dir: string, depth: number, io: Ws
  * @param distro - the WSL distribution name.
  * @param linuxRoot - the workspace's absolute Linux path.
  * @param io - filesystem face.
- * @returns discovered skill directories, bounded by depth and budget.
+ * @returns the discovered skill directories (bounded by depth and budget) and
+ *   the count of links the link budget forced it to leave unresolved.
  */
-async function discoverSkillRoots(distro: string, linuxRoot: string, io: WslSkillIo): Promise<SkillRoot[]> {
+async function discoverSkillRoots(distro: string, linuxRoot: string, io: WslSkillIo): Promise<DiscoveryResult> {
   const roots: SkillRoot[] = []
   const visited = new Set<string>()
   let linksResolved = 0
+  let linksDropped = 0
   // BFS layers so the budget prunes the widest, most redundant levels first
   // (shallow skill dirs matter most): [path, depth] pairs.
   let frontier: [string, number][] = [[linuxRoot, 0]]
@@ -323,7 +340,7 @@ async function discoverSkillRoots(distro: string, linuxRoot: string, io: WslSkil
       visited.add(item[0])
       layer.push(item)
     }
-    if (layer.length === 0) return roots
+    if (layer.length === 0) return { roots, linksDropped }
     const probes = new Array<DirectoryProbe | undefined>(layer.length)
     let next = 0
     await Promise.all(Array.from({ length: Math.min(WALK_CONCURRENCY, layer.length) }, async () => {
@@ -347,27 +364,36 @@ async function discoverSkillRoots(distro: string, linuxRoot: string, io: WslSkil
     }
     // The budget ran out inside this layer: stop where the walk stops, without
     // paying for this layer's link resolution either.
-    if (visited.size >= MAX_VISITED_DIRECTORIES) return roots
-    if (links.length > 0 && io.resolveLinks !== undefined && linksResolved < MAX_LINK_RESOLUTIONS) {
-      const batch = links.slice(0, MAX_LINK_RESOLUTIONS - linksResolved)
-      linksResolved += batch.length
-      const resolved = await io.resolveLinks(batch.map(([path]) => joinUnc(distro, path)))
-      for (let index = 0; index < batch.length; index += 1) {
-        const real = resolved[index]
-        if (real === undefined) continue
-        // The walk continues at the link's real path, which also collapses a
-        // project reachable both directly and through a link onto one visit.
-        try {
-          const info = await io.stat(real)
-          if (info.isDirectory()) nextLayer.push([uncToLinux(real), batch[index]![1]])
-        } catch {
-          // The distribution resolved a target this share still cannot stat.
+    if (visited.size >= MAX_VISITED_DIRECTORIES) return { roots, linksDropped }
+    if (links.length > 0 && io.resolveLinks !== undefined) {
+      const remaining = MAX_LINK_RESOLUTIONS - linksResolved
+      const batch = links.slice(0, Math.max(0, remaining))
+      // Whatever this layer queued beyond the remaining budget never reaches the
+      // distribution. It used to vanish with no trace: the cap was documented but
+      // the shortfall was not, so a catalog truncated at exactly 32 links was
+      // indistinguishable from a complete one. Count it here, where the slice
+      // happens, so the number is the amount this guard actually withheld.
+      if (batch.length < links.length) linksDropped += links.length - batch.length
+      if (batch.length > 0) {
+        linksResolved += batch.length
+        const resolved = await io.resolveLinks(batch.map(([path]) => joinUnc(distro, path)))
+        for (let index = 0; index < batch.length; index += 1) {
+          const real = resolved[index]
+          if (real === undefined) continue
+          // The walk continues at the link's real path, which also collapses a
+          // project reachable both directly and through a link onto one visit.
+          try {
+            const info = await io.stat(real)
+            if (info.isDirectory()) nextLayer.push([uncToLinux(real), batch[index]![1]])
+          } catch {
+            // The distribution resolved a target this share still cannot stat.
+          }
         }
       }
     }
     frontier = nextLayer
   }
-  return roots
+  return { roots, linksDropped }
 }
 
 /** The two project skill markers, with the source and rank each publishes. */
@@ -681,7 +707,22 @@ export class WslSkillsProvider {
       this.cache.set(cacheKey, cached)
       return [...cached]
     }
-    const roots = await discoverSkillRoots(unc.distro, scanRoot, this.io)
+    const { roots, linksDropped } = await discoverSkillRoots(unc.distro, scanRoot, this.io)
+    // The catalog a caller receives is only ever the survivors of the walk's
+    // caps, and until this point none of them said so. The link budget is the one
+    // that became easy to hit (every directory link costs a unit since the walk
+    // started handing unresolvable directory links to the distribution), so a
+    // monorepo aggregating 30+ linked packages could be served a catalog missing
+    // every skill past the 32nd with nothing to distinguish it from a complete
+    // one. Reported once per lookup, not once per dropped link, and at warn
+    // because it means the answer is known to be partial.
+    if (linksDropped > 0) {
+      console.warn(
+        `dsh-wsl-workspace: skills: link budget (${MAX_LINK_RESOLUTIONS}) exhausted; `
+        + `${linksDropped} link${linksDropped === 1 ? '' : 's'} under ${scanRoot} were not resolved, `
+        + 'so skills reached only through them are missing from this catalog',
+      )
+    }
     const candidates: WslSkillCandidate[] = []
     const seenSkills = new Set<string>()
     // The catalog's shape (roots, entry names, kinds and one modification stamp
@@ -787,7 +828,10 @@ export class WslSkillsProvider {
       const walk = detector.polls % this.walkEveryPolls === 0
       let signature: string
       try {
-        signature = await this.shape(distro, walk ? await discoverSkillRoots(distro, scanRoot, this.io) : detector.roots)
+        signature = await this.shape(
+          distro,
+          walk ? (await discoverSkillRoots(distro, scanRoot, this.io)).roots : detector.roots,
+        )
       } catch {
         // A transient read failure keeps the last known shape and retries.
         return

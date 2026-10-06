@@ -642,6 +642,45 @@ test('caps how many links one lookup hands to the distribution', async () => {
   assert.equal(requested, 32)
 })
 
+test('reports exactly how many links the budget forced it to leave unresolved', async () => {
+  // Same 70-link shape as the cap test above: one layer, 70 links queued, 32
+  // resolved. The walk used to drop the other 38 in silence, so a caller could
+  // not tell a complete catalog from a truncated one. The reported figure must
+  // equal queued-minus-resolved exactly — an off-by-one would be worse than the
+  // silence it replaced.
+  const root = tree()
+  dir(root, ['home', 'mille', 'repro-ws-root'])
+  const LINKS = 70
+  for (let i = 0; i < LINKS; i += 1) {
+    dir(root, ['srv', 'targets', `t${i}`, '.dsh', 'skills'])
+    file(root, ['srv', 'targets', `t${i}`, '.dsh', 'skills', `s${i}.md`], SKILL_MD(`s${i}`, `Linked skill ${i}`))
+    linkDir(root, ['home', 'mille', 'repro-ws-root', `link-${String(i).padStart(2, '0')}`], ['srv', 'targets', `t${i}`])
+  }
+  const base = createIo(root, { distributionFallback: true })
+  let resolved = 0
+  const io: WslSkillIo = {
+    ...base,
+    resolveLinks: async (paths) => {
+      resolved += paths.length
+      return base.resolveLinks!(paths)
+    },
+  }
+  const warnings: string[] = []
+  const originalWarn = console.warn
+  console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')) }
+  try {
+    const provider = new WslSkillsProvider(control(), io)
+    await provider.list({ cwd: CWD_WORKSPACE_ROOT })
+  } finally {
+    console.warn = originalWarn
+  }
+  assert.equal(resolved, 32)
+  // One warning per lookup, not one per dropped link.
+  assert.equal(warnings.length, 1)
+  // The exact shortfall, not merely "some signal": 70 queued − 32 resolved.
+  assert.match(warnings[0] ?? '', new RegExp(`\\b${String(LINKS - resolved)}\\b`))
+})
+
 test('never asks the distribution for link targets when no lookup needs it', async () => {
   // A plain workspace with no links: the fallback must stay off the hot path.
   const root = tree()
