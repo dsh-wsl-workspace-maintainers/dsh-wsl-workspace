@@ -287,6 +287,13 @@ export interface VariantOutcome {
   failed: VariantFailure[]
   truncated: number
   generation: number
+  /**
+   * When this outcome was recorded, in epoch MILLISECONDS — the unit of every
+   * other clock in this plugin (`startedAt`, the readiness probe's `Date.now()
+   * - started`). A bare timestamp in the JS ecosystem reads as milliseconds, so
+   * a client rendering "4 minutes ago" compares `Date.now() - at` directly; this
+   * field was seconds once, which made that subtraction wrong by 1000×.
+   */
   at: number
   /** A boot-level cause, for a failure with no per-variant attribution. */
   error?: string
@@ -341,7 +348,7 @@ function writeVariantOutcome(
     })),
     truncated: next.failed.length - kept.length,
     generation: next.generation,
-    at: Math.floor(Date.now() / 1000),
+    at: Date.now(),
   }
 }
 
@@ -1169,7 +1176,7 @@ export function apply(ctx: Context, config: Config): void {
           failed: [],
           truncated: 0,
           generation: variantGeneration,
-          at: Math.floor(Date.now() / 1000),
+          at: Date.now(),
         }
         for (const retire of disposers.splice(0, disposers.length)) {
           void Promise.resolve(retire()).catch(() => {})
