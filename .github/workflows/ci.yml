@@ -32,6 +32,12 @@ jobs:
         run: npm run verify
       - name: pure-node unit bucket
         run: npm run test:unit
+      # The claims the unit bucket cannot hold: a declared red the product has not been changed to
+      # satisfy would make `test:unit` permanently red. This step runs them with the arithmetic that
+      # makes a declared red safe — an undeclared failure and a declared red that turned green are
+      # both red — so the two defects it carries stay visible instead of becoming a shrug.
+      - name: documentation claims (panel vs build, declared reds accounted for)
+        run: npm run test:docs-claims
       - name: rebuild must reproduce the committed lib/ byte-for-byte
         run: |
           npm run build

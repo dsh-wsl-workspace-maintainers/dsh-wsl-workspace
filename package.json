@@ -20,7 +20,7 @@
     "verify:lib-sync": "node scripts/verify-lib-sync.mjs",
     "verify:plane": "node scripts/verify-plane-log.mjs",
     "ci:pinned": "node ci/install-pinned.mjs",
-    "test:unit": "node --experimental-strip-types --test tests/variants.test.ts tests/paths.test.ts tests/references.test.ts tests/locales.test.ts tests/readme-compat.test.mjs tests/wsl-output-decode.test.ts tests/default-distro-parity.test.ts tests/deliberate-reds.test.mjs tests/client-classnames.test.ts tests/support/fake-child-process.test.mjs tests/wsl-env.test.ts tests/wsl-bash-protocol.test.ts tests/wsl-bash-starve.test.ts tests/wsl-bash-tty.test.ts tests/pty-readiness.test.mjs scripts/check-portable-spelling.test.mjs && node scripts/check-unit-closure.mjs",
+    "test:unit": "node --experimental-strip-types --test tests/variants.test.ts tests/paths.test.ts tests/references.test.ts tests/locales.test.ts tests/readme-compat.test.mjs tests/wsl-output-decode.test.ts tests/default-distro-parity.test.ts tests/deliberate-reds.test.mjs tests/client-classnames.test.ts tests/support/fake-child-process.test.mjs tests/wsl-env.test.ts tests/wsl-bash-protocol.test.ts tests/wsl-bash-starve.test.ts tests/wsl-bash-tty.test.ts tests/pty-readiness.test.mjs scripts/check-portable-spelling.test.mjs tests/parity-claims.test.mjs tests/docs-debt.test.mjs && node scripts/check-unit-closure.mjs",
 
     "lint:portability": "node scripts/check-portable-spelling.mjs",
     "lint:portability:strict": "node scripts/check-portable-spelling.mjs --strict",
@@ -34,6 +34,7 @@
     "test:compat": "bash scripts/verify-dsh-compat.sh",
     "test:repro": "node --experimental-strip-types scripts/repro-e2e.mjs",
     "test:docs": "node scripts/check-docs-parity.mjs",
+    "test:docs-claims": "node --experimental-strip-types scripts/run-docs-claims.mjs",
     "prepack": "npm run build",
     "prepublishOnly": "node scripts/verify-install.mjs && node scripts/verify-lib-sync.mjs"
   },
