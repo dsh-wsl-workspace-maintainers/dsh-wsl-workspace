@@ -527,3 +527,192 @@ export function offeredJobChannels(file = 'src/host/wsl-jobs.ts') {
     runResult: [...runResultMembers].sort(),
   }
 }
+
+// ── the tool-contract derivation ───────────────────────────────────────────────────────────
+//
+// A tool's `description` is not documentation. It is **the only thing the model reads** before
+// choosing arguments, so a sentence in it is an instruction, and an instruction naming an argument
+// the schema does not accept is worse than no sentence: the model is told to do something that
+// cannot be done.
+//
+// That is a handoff surface of exactly the kind this branch is built around — *does the far side
+// accept what I told it?* — with the model as the far side. Nothing in this repository covered it:
+// `tests/locales.test.ts` checked the panel against the code, and the tool descriptions were never
+// compared to anything.
+//
+// Three sets, all derived, none of them written down here:
+//   · **declared** — the parameters the tool's schema accepts;
+//   · **handled** — the parameters the implementation actually reads, so a declared parameter nobody
+//     reads shows up as accepted-and-ignored;
+//   · **instructed** — the parameter names the `description` tells the model to pass.
+//
+// Written with the TypeScript parser because the same two hazards apply as for the reachability
+// derivations: `src/shell.ts:279`'s regex-in-template defeats a hand-rolled scanner, and a
+// hand-written list of "parameters that matter" would be this repository's second copy of a schema
+// that already exists in the source.
+
+/** Tools whose description lives in a `defineTool({...})` call, and the file each lives in. */
+const TOOL_SOURCES = [
+  'src/host/wsl-bash-tool.ts',
+  'src/host/wsl-jobs.ts',
+  'src/host/wsl-terminal-tool.ts',
+  'src/host/wsl-search.ts',
+]
+
+/**
+ * Parameter names a `description` instructs the model to pass.
+ *
+ * Two shapes, because the sources use both: a bare backticked name (`` `tty: true` `` is one token
+ * with a value, `` `bash_background` `` is a bare tool name) and a `name: value` pair in prose.
+ * Everything that is not identifier-shaped is dropped rather than guessed at — a mention that cannot
+ * be read as a name is not an instruction we can check, and pretending otherwise would make this
+ * derivation report findings it cannot support.
+ */
+export function describedParameterNames(description) {
+  // Cross-references are **removed** rather than filtered after the fact, so that what is scanned is
+  // exactly the set of names this tool instructs and nothing else. Measured case: `bash_background`'s
+  // description says "It is the same producer the `bash` tool's `run_in_background: true` argument
+  // uses" — a true statement about *another* tool's parameter, not a demand that this tool accept
+  // one. Filtering per mention meant re-testing a context window at every hit, and it kept letting a
+  // name through; deleting the span cannot.
+  const withoutCrossReferences = description
+    .replace(/`([a-z][a-z0-9_]{2,})`?\s*(?:tool|command)?\s*[\u2019']s\s*`([a-z][a-z0-9_]{2,})(?::[^`]*)?`/gi, ' ')
+    .replace(/`([a-z][a-z0-9_]{2,})`?\s+(?:tool|command)[\u2019']s?\s+`([a-z][a-z0-9_]{2,})(?::[^`]*)?`/gi, ' ')
+
+  const names = new Set()
+  for (const match of withoutCrossReferences.matchAll(/`([a-z][a-z0-9_]{2,})(?::[^`]*)?`/g)) {
+    names.add(match[1])
+  }
+  for (const match of withoutCrossReferences.matchAll(/\b([a-z][a-z0-9_]{2,})\s*:\s*(?:true|false|'[^']*'|"[^"]*"|an?\b|the\b)/g)) {
+    names.add(match[1])
+  }
+  return [...names].sort()
+}
+
+/**
+ * One file's tools: their names, the parameters their schemas accept, the ones the implementation
+ * reads, and the ones their descriptions instruct.
+ *
+ * `handled` is collected from the whole file rather than per tool, which is a real limitation and is
+ * stated in the report: a file that defines two tools would attribute one's implementation reads to
+ * both. Every tool here currently lives in its own file, and the report says how many files were
+ * scanned so a future violation of that is visible rather than silent.
+ */
+export function toolContracts(files = TOOL_SOURCES) {
+  const ts = typescript()
+  const out = []
+  for (const file of files) {
+    const source = read(file)
+    const sf = ts.createSourceFile('probe.ts', source, ts.ScriptTarget.ESNext, true)
+
+    const toolNames = new Set()
+    const handled = new Set()
+    const perTool = []
+
+    // `const TOOL_NAME = 'bash'` first, so a tool object whose `name:` is the **shorthand**
+    // `name: TOOL_NAME` can be resolved. Measured: all of `bash`, `bash_background` and
+    // `wsl_terminal` name themselves that way, and a parser reading only string literals reported
+    // them as `(unnamed)` — which reads as "no tool here", not as "cannot tell".
+    const constStrings = new Map()
+    for (const statement of sf.statements) {
+      if (!ts.isVariableStatement(statement)) continue
+      for (const declaration of statement.declarationList.declarations) {
+        if (ts.isIdentifier(declaration.name) && declaration.initializer
+          && ts.isStringLiteral(declaration.initializer)) {
+          constStrings.set(declaration.name.text, declaration.initializer.text)
+        }
+      }
+    }
+    const nameOf = property => {
+      if (ts.isShorthandPropertyAssignment(property) && ts.isIdentifier(property.name)) {
+        return constStrings.get(property.name.text)
+      }
+      if (ts.isPropertyAssignment(property) && ts.isIdentifier(property.name)) {
+        const key = property.name.text
+        if (key !== 'name') return undefined
+        if (ts.isStringLiteral(property.initializer)) return property.initializer.text
+        if (ts.isIdentifier(property.initializer)) return constStrings.get(property.initializer.text)
+      }
+      return undefined
+    }
+
+    // `args.workdir` / `input.pattern` — the two conventions this repository uses for a tool's
+    // parameter object, read anywhere in the file. **Not** scoped to the tool object:
+    // `bash_background` reads `args.workdir` at line 224 and declares it at line 269, so a scan
+    // limited to the tool literal reports a parameter as accepted-and-ignored when it is read fifty
+    // lines earlier. The limitation is real and the gate prints it: a third naming convention would
+    // be invisible here, because "which identifier holds the parameters" is a convention rather than
+    // something the source states.
+    const PARAM_OBJECT_NAMES = new Set(['args', 'input'])
+    const scanHandled = node => {
+      if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)
+        && PARAM_OBJECT_NAMES.has(node.expression.text)) {
+        handled.add(node.name.text)
+      }
+      ts.forEachChild(node, scanHandled)
+    }
+
+    // One record **per tool object**, because a file may define more than one: `wsl-search.ts`
+    // carries both `grep` and `glob`, and a single `description` per file meant whichever came last
+    // was reported for both — which read as "grep instructs nothing".
+    const collectTool = node => {
+      const declared = new Set()
+      let description = ''
+      let name = ''
+      const read = inner => {
+        const propertyName = nameOf(inner)
+        if (propertyName !== undefined) name = propertyName
+        if (ts.isPropertyAssignment(inner) && ts.isIdentifier(inner.name)) {
+          if (inner.name.text === 'description' && inner.initializer
+            && (ts.isStringLiteral(inner.initializer) || ts.isNoSubstitutionTemplateLiteral(inner.initializer))) {
+            description = inner.initializer.text
+          }
+          if (inner.name.text === 'parameters' && ts.isObjectLiteralExpression(inner.initializer)) {
+            for (const property of inner.initializer.properties) {
+              const key = property.name
+              if (key !== undefined && (ts.isIdentifier(key) || ts.isStringLiteral(key))) declared.add(key.text)
+            }
+            // Not descending: every parameter carries a `description` of its own, and descending
+            // would overwrite the tool's with whichever came last. Measured on `wsl-bash-tool.ts`:
+            // the tool's description is 1499 characters and the last one in the file is 183.
+            return
+          }
+        }
+        ts.forEachChild(inner, read)
+      }
+      read(node)
+      if (name !== '') toolNames.add(name)
+      if (declared.size > 0) {
+        perTool.push({
+          tool: name === '' ? '(unnamed)' : name,
+          declared: [...declared].sort(),
+          instructed: description === '' ? [] : describedParameterNames(description),
+        })
+      }
+    }
+
+    const visit = node => {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)
+        && /_NAME$/.test(node.name.text) && node.initializer
+        && (ts.isStringLiteral(node.initializer) || ts.isNoSubstitutionTemplateLiteral(node.initializer))) {
+        toolNames.add(node.initializer.text)
+      }
+      if (ts.isObjectLiteralExpression(node)
+        && node.properties.some(property => ts.isPropertyAssignment(property)
+          && ts.isIdentifier(property.name) && property.name.text === 'parameters')) {
+        collectTool(node)
+      }
+      scanHandled(node)
+      ts.forEachChild(node, visit)
+    }
+    visit(sf)
+
+    out.push({
+      file,
+      tools: [...toolNames].sort(),
+      handled: [...handled].sort(),
+      perTool,
+    })
+  }
+  return out
+}
