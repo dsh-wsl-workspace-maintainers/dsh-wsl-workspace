@@ -131,6 +131,39 @@ try {
 
   probe('webServerPort', () => String(ctx.get('webServer')?.port))
 
+  // ── the property: every service the sources reach for, in the realm that will run them ────
+  //
+  // `plan.requirements` is derived by the parent from `src/**.ts`, not from here, so the list cannot
+  // be quietly narrowed to whatever this particular boot happened to provide. Each entry says which
+  // module wants the service and how it asks for it.
+  //
+  // Four levels, weakest to strongest, and the difference between them is the whole point:
+  //   1 `declaredInject` echoed — the plugin saying it wants something is not evidence it got it;
+  //   2 the row has a fiber at all;
+  //   3 the row reached ACTIVE;
+  //   4 `ctx.get(name)` resolves in that row's own realm.
+  // A property written against level 1 would pass today with the plugin doing nothing, which is why
+  // this checks level 4 and prints the others beside it.
+  probe('requirements', () => JSON.stringify((plan.requirements ?? []).map(requirement => {
+    const resolved = ctx.get(requirement.service)
+    const fromRoot = resolved !== undefined
+    return {
+      service: requirement.service,
+      module: requirement.module,
+      how: requirement.how,
+      resolvedAtRoot: fromRoot ? typeof resolved : 'ABSENT',
+      // `undefined` is the failure and `null` means "not a service name at all" — conflating them
+      // would let a typo in the derivation read as an absent service.
+      reachable: resolved !== undefined,
+    }
+  })))
+
+  // The union of every `inject` this plugin's sources declare, so a bare read that nothing declares
+  // anywhere can be named as such rather than showing up as an unexplained absence.
+  probe('declaredSurface', () => JSON.stringify(plan.declaredInject ?? []))
+
+  probe('ownRowInject', () => JSON.stringify(byId.get('dsh-wsl-workspace')?.declaredInject ?? []))
+
   try { await ctx.fiber.dispose?.() } catch { /* the host is going away regardless */ }
   try { shutdown.interrupt(0) } catch { /* ditto */ }
 } catch (error) {

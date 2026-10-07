@@ -16,6 +16,7 @@
  */
 
 import { readFileSync, readdirSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { join } from 'node:path'
 
 /** The repository root, from this file's own location (`tests/parity/`). */
@@ -224,7 +225,17 @@ export function objectBody(file, key) {
  * brace that is real code. Keeping the length means an index found in the stripped text is the same
  * index in the original.
  */
-function stripStringsAndComments(source) {
+/**
+ * Blank out every string literal and comment, **preserving offsets** — the reason this exists rather
+ * than a strip-everything pass: `objectBody` brace-matches by index afterwards.
+ *
+ * Exported because the host-contract derivations need the same discipline. Measured on this
+ * repository: an un-stripped scan of `src/**.ts` for `ctx.<name>` reports eight hits that are
+ * documentation — `src/fs.ts:2`, `src/host/wsl-jobs.ts:5`, `src/host/wsl-search.ts:5` and
+ * `src/host/wsl-bash-tool.ts:88` are all prose or a shell example, not code. A property test built on
+ * the raw text would assert against the comment.
+ */
+export function stripStringsAndComments(source) {
   const out = [...source]
   let i = 0
   const blank = (from, to) => { for (let k = from; k < to; k++) if (out[k] !== '\n') out[k] = ' ' }
@@ -270,4 +281,130 @@ export function packageVersion() {
     throw new Error('parity/derive: package.json has no version string')
   }
   return parsed.version
+}
+
+// ── host-contract derivations ────────────────────────────────────────────────────────────────
+//
+// These read the plugin's **sources**, not the built artifact, per the same rule
+// `check-host-prompt-parity.mjs:66` states: a gate that can be fed a rebuilt bundle is not a gate.
+// But unlike the number derivations above, they cannot use regexes, and the reason is measured
+// rather than theoretical.
+//
+// `stripStringsAndComments` is a hand-rolled scanner, and this repository breaks it.
+// `src/shell.ts:279` is:
+//
+//     ? `cd '${linuxCwd.replace(/'/g, `'\\''`)}' && ${spec.command}`
+//
+// A regex literal containing a quote, inside a template literal, inside another quoted string. The
+// scanner reads that `'` as the start of a string, and the damage cascades: on the current file it
+// turns 544 lines into 188 and **deletes `this.ctx.subprocess` at line 441** — the exact line whose
+// reachability is the point. A derivation built on it would have reported one bare context read in
+// the whole tree instead of two, and the missing one is the load-bearing one.
+//
+// So these use the TypeScript parser, which is already a devDependency (`typecheck-gate.mjs`
+// requires it, and `check-unit-closure.mjs` only rejects `@deepseek-ai/*` imports, which a
+// compiler is not).
+
+/** Members of `Context` / `Fiber` that are framework API rather than an injected service. */
+const CORDIS_API = new Set([
+  'get', 'set', 'provide', 'plugin', 'effect', 'on', 'off', 'emit', 'registry', 'extend', 'bind',
+  'setInterval', 'setTimeout', 'logger', 'config', 'env', 'baseUrl', 'scope', 'start', 'stop',
+  'entry', 'ctx', 'inject', 'runtime', 'uid', 'state', 'parent', 'toString', 'inspect', 'root',
+  'internal', 'builtins', 'name', 'envData', 'call', 'apply',
+])
+
+let tsModule = null
+function typescript() {
+  if (tsModule === null) {
+    // Through `createRequire` rather than a static import so the compiler is only loaded when one of
+    // the host-contract derivations is actually called — the number claims above run in the unit
+    // bucket on every `test:unit`, and nothing there should pay for a parser.
+    tsModule = createRequire(import.meta.url)('typescript')
+  }
+  return tsModule
+}
+
+/** The `inject` a module declares, as the host will read it: `export const` or `static`. */
+export function declaredInject(file) {
+  const ts = typescript()
+  const source = read(file)
+  const sf = ts.createSourceFile('probe.ts', source, ts.ScriptTarget.ESNext, true)
+  let found = null
+  const visit = node => {
+    if (found !== null) return
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === 'inject') {
+      const names = []
+      if (node.initializer && ts.isArrayLiteralExpression(node.initializer)) {
+        for (const element of node.initializer.elements) {
+          if (ts.isStringLiteral(element) || ts.isNoSubstitutionTemplateLiteral(element)) names.push(element.text)
+        }
+      }
+      found = names
+      return
+    }
+    if (ts.isPropertyDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === 'inject'
+      && node.initializer && ts.isArrayLiteralExpression(node.initializer)) {
+      const names = []
+      for (const element of node.initializer.elements) {
+        if (ts.isStringLiteral(element) || ts.isNoSubstitutionTemplateLiteral(element)) names.push(element.text)
+      }
+      found = names
+      return
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sf)
+  return found
+}
+
+/**
+ * Every `ctx.<name>` / `this.ctx.<name>` read that is not framework API, with the line it is on.
+ *
+ * Returns a sorted, de-duplicated list because the caller asserts on the *set*: a service read in
+ * three places is one reachability requirement, and reporting it three times would make the failure
+ * count a measure of the code's length rather than of the wiring.
+ */
+export function bareContextReads(file) {
+  const ts = typescript()
+  const source = read(file)
+  const sf = ts.createSourceFile('probe.ts', source, ts.ScriptTarget.ESNext, true)
+  const found = new Map()
+  const visit = node => {
+    if (ts.isPropertyAccessExpression(node)) {
+      const target = node.expression
+      const viaThis = ts.isPropertyAccessExpression(target)
+        && target.expression.kind === ts.SyntaxKind.ThisKeyword
+        && target.name.text === 'ctx'
+      const viaBare = ts.isIdentifier(target) && target.text === 'ctx'
+      if ((viaThis || viaBare) && !CORDIS_API.has(node.name.text)) {
+        const line = sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1
+        if (!found.has(node.name.text)) found.set(node.name.text, line)
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sf)
+  return [...found.entries()].map(([name, line]) => ({ name, line })).sort((a, b) => a.name.localeCompare(b.name))
+}
+
+/** Every service name read through `ctx.get('name')` — the guarded form, listed for contrast. */
+export function dynamicContextReads(file) {
+  const ts = typescript()
+  const source = read(file)
+  const sf = ts.createSourceFile('probe.ts', source, ts.ScriptTarget.ESNext, true)
+  const found = new Map()
+  const visit = node => {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
+      && ts.isIdentifier(node.expression.expression) && node.expression.expression.text === 'ctx'
+      && node.expression.name.text === 'get' && node.arguments.length >= 1
+      && ts.isStringLiteral(node.arguments[0])) {
+      const name = node.arguments[0].text
+      if (!CORDIS_API.has(name) && !found.has(name)) {
+        found.set(name, sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1)
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sf)
+  return [...found.entries()].map(([name, line]) => ({ name, line })).sort((a, b) => a.name.localeCompare(b.name))
 }

@@ -20,9 +20,10 @@
  */
 
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { bareContextReads, declaredInject } from './parity/derive.mjs'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const CHILD = join(repoRoot, 'tests', 'support', 'boot-child.mjs')
@@ -127,6 +128,83 @@ function writeOverlay(home, rows, pluginEntry) {
   return file
 }
 
+/**
+ * Every service this plugin's sources reach for, and how they reach for it.
+ *
+ * Derived from `src/**.ts` rather than read out of the boot, because a list taken from the boot can
+ * only ever name what the boot happened to provide. Two shapes, and the distinction is the whole
+ * subject of the property:
+ *
+ *   · **declared** — `export const inject = ['subprocess']` or `static inject = ['…']`. The host
+ *     reads this and is expected to give the plugin the service.
+ *   · **bare** — `this.ctx.subprocess.spawn(…)` with no `ctx.get` guard. This is the shape that
+ *     produced `cannot get property "subprocess" without inject`: nothing catches it, so if the
+ *     service is missing the plugin throws at the moment it is used rather than declining to load.
+ *
+ * A bare read whose service no module in the tree declares is unreachable by construction, and that
+ * is reported as its own failure rather than as an absence nobody can explain.
+ *
+ * The parser is TypeScript's, because the hand-rolled scanner cannot survive `src/shell.ts:279` —
+ * see the derivation's own comment for the measurement.
+ */
+function deriveRequirements() {
+  const declared = []
+  const requirements = []
+  const bareModules = new Map()
+
+  for (const file of pluginSources()) {
+    // `read()` takes a repository-relative path and joins it onto the repo root; handing it an
+    // absolute path makes it look for `<repo>/D:/…`, which fails loudly rather than quietly.
+    const relative = file.slice(repoRoot.length + 1).replaceAll('\\', '/')
+const inject = declaredInject(relative)
+    if (inject !== null) {
+      declared.push(...inject)
+      for (const service of inject) {
+        requirements.push({ service, module: relative, how: `declared in inject (${relative})` })
+      }
+    }
+    for (const read of bareContextReads(relative)) {
+        const list = bareModules.get(read.name) ?? []
+        list.push(relative)
+        bareModules.set(read.name, list)
+      }
+  }
+
+  // Every bare read is also a requirement: the question the property asks is whether it resolves,
+  // not whether someone remembered to declare it.
+  for (const [service, modules] of bareModules) {
+    requirements.push({
+      service,
+      module: [...new Set(modules)].sort().join(', '),
+      how: `read bare (no ctx.get guard) in ${[...new Set(modules)].length} module(s)`,
+    })
+  }
+
+  return { requirements, declaredInject: [...new Set(declared)].sort() }
+}
+
+function pluginSources() {
+  const out = []
+  // `src/client/**` is excluded, and the reason is printed rather than assumed. Those modules run in
+  // the **client** runtime: `src/client/index.ts` declares `inject = ['slots', 'locale', 'sessions',
+  // 'workspaces']`, and every one of those is provided by `dsh-client-runtime`, which this host boot
+  // does not load. Asking a host-only boot whether they resolve produces six failures that say
+  // nothing about the host — and a property that reports a question it never asked is worse than no
+  // property, because it trains the reader to ignore red. Excluding them is the house rule applied
+  // properly: "not compared" must be *declared*, never silently skipped.
+  const walk = dir => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) {
+        if (full.replaceAll('\\', '/').endsWith('src/client')) continue
+        walk(full)
+      } else if (entry.name.endsWith('.ts')) out.push(full)
+    }
+  }
+  walk(join(repoRoot, 'src'))
+  return out.sort()
+}
+
 function runChild(env, plan) {
   return new Promise(resolvePromise => {
     const child = spawn(process.execPath, ['--experimental-strip-types', CHILD, JSON.stringify(plan)], {
@@ -164,7 +242,10 @@ if (!existsSync(pluginEntry.name.replace('file:///', '').replaceAll('/', '\\')))
 writeManifest(home, PROFILE, HOST_ROWS.map(([, name]) => name))
 const overlay = writeOverlay(home, HOST_ROWS, pluginEntry)
 
-const outcome = await runChild({ DSH_HOME: home }, { profile: PROFILE, patchFiles: [overlay] })
+const { requirements, declaredInject: declaredSurface } = deriveRequirements()
+const outcome = await runChild({ DSH_HOME: home }, {
+  profile: PROFILE, patchFiles: [overlay], requirements, declaredInject: declaredSurface,
+})
 rmSync(home, { recursive: true, force: true })
 
 const marker = (outcome.stdout ?? '').split('\n').find(line => line.startsWith('##BOOT##'))
@@ -226,11 +307,42 @@ console.log('  Rows marked ` ~` are waiting for a service this gate did not ask 
 console.log('  a fiber at all. Neither is a verdict on the plugin — this step only establishes that the')
 console.log('  substrate is real. The properties that read these states come after.')
 
+// ── the property ────────────────────────────────────────────────────────────────────────────
+//
+// One question, asked against the realm that will actually run the code: **can every service this
+// plugin's sources reach for be resolved?** Not "did it declare them" — the loader echoes a
+// declaration back verbatim, so that check would pass with the plugin doing nothing at all.
+
+const resolvedServices = JSON.parse(probes.requirements.value)
+const bareReads = resolvedServices.filter(entry => entry.how.startsWith('read bare'))
+const unreachable = resolvedServices.filter(entry => !entry.reachable)
+
+console.log(`  the plugin's own row declares: ${probes.ownRowInject.value}`)
+console.log(`  ${'─'.repeat(70)}`)
+console.log('  every service the sources reach for, resolved in the booted host:')
+for (const entry of resolvedServices) {
+  console.log(`  ${entry.reachable ? 'ok  ' : 'FAIL'} ${entry.service.padEnd(15)} ${entry.resolvedAtRoot.padEnd(9)} ${entry.how}`)
+}
+console.log(`  ${'─'.repeat(70)}`)
+console.log(`  ${bareReads.length} of them are read bare, with no ctx.get guard:`)
+for (const entry of bareReads) console.log(`    ${entry.service} — ${entry.module}`)
+console.log('    A bare read throws at the moment of use if the service is missing, rather than')
+console.log('    declining to load. That is the shape that produced the harshest runtime errors, and')
+console.log('    it is invisible to a fake, which has no realms to be missing in.')
+console.log('  Not compared: `src/client/**`. Those modules run in the client runtime and declare')
+console.log('    `slots` / `locale` / `sessions` / `workspaces`, which this host boot does not load — so')
+console.log('    asking it would be asking a question it was never given. Stated, not skipped.')
+if (unreachable.length > 0) {
+  console.error(`\n  ${unreachable.length} service(s) the sources reach for are NOT resolvable:`)
+  for (const entry of unreachable) console.error(`    ${entry.service} — ${entry.how}`)
+}
+
 const failed = checks.filter(([, ok]) => !ok)
-if (failed.length > 0) {
-  console.error(`\nhost-boot: RED — ${failed.length} positive control(s) failed. The substrate did not`)
-  console.error('  look like the pinned host, so nothing downstream can be trusted.')
+if (failed.length > 0 || unreachable.length > 0) {
+  console.error(`\nhost-boot: RED — ${failed.length} positive control(s) failed, ${unreachable.length} service(s) unreachable.`)
+  if (failed.length > 0) console.error('  The substrate did not look like the pinned host, so nothing downstream can be trusted.')
+  if (unreachable.length > 0) console.error('  A service the sources reach for did not resolve in the realm that will run it.')
   process.exit(1)
 }
-console.log('\nhost-boot: GREEN — 7/7 positive controls; the substrate is the pinned host.')
+console.log(`\nhost-boot: GREEN — 7/7 positive controls, ${resolvedServices.length} service(s) reachable.`)
 process.exit(0)
