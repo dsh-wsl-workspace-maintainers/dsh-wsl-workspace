@@ -15,7 +15,7 @@
  * having found no drift.
  */
 
-import { readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 
@@ -23,6 +23,18 @@ import { join } from 'node:path'
 export const repoRoot = join(import.meta.dirname, '..', '..')
 
 /** Read a repository-relative file as UTF-8. Throws if it is not there. */
+/**
+ * Whether a derivation's subject exists on **this** baseline.
+ *
+ * A gate that reads a file another branch has not introduced yet cannot evaluate its claim, and the
+ * two easy answers are both wrong: reporting failure accuses the code of a defect it does not have, and
+ * reporting success is the false green this repository keeps removing. So the question is asked
+ * explicitly and the answer is printed — "not applicable here" is a third state, beside red and green.
+ */
+export function subjectExists(relative) {
+  return existsSync(join(repoRoot, relative))
+}
+
 export function read(relative) {
   try {
     return readFileSync(join(repoRoot, relative), 'utf8')

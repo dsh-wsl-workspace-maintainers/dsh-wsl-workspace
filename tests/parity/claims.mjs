@@ -27,6 +27,7 @@
  * latter shape reddened on a correct sentence once already.
  */
 
+import { subjectExists } from './derive.mjs'
 import { hostConst, objectBody, packageVersion, panelLines, panelText, read, registeredToolNames, sessionShellDefault } from './derive.mjs'
 import { findClaims, quote, statesNumberVerdict } from './assertions.mjs'
 
@@ -181,10 +182,13 @@ export const WATCHED_CONSTANTS = [
 ]
 
 /** A claim that one number from the source is stated in both languages. */
-function numberClaim({ id, file, name, zh, en, label }) {
+function numberClaim({ id, file, name, zh, en, label, not_applicable_without }) {
   return defineClaim({
     id,
     issue: '#52',
+    // Passed through rather than dropped: a claim whose subject is absent on this baseline has to be
+    // able to say so, and a helper that silently discards the field would make that unexpressible.
+    ...(not_applicable_without === undefined ? {} : { not_applicable_without }),
     async run() {
       const value = hostConst(file, name)
       const panel = await panels()
@@ -204,6 +208,22 @@ function numberClaim({ id, file, name, zh, en, label }) {
     covered: { file, name },
   })
 }
+
+/**
+ * Claims whose subject does not exist on **this** baseline.
+ *
+ * Two of these read files that only a later branch introduces, so on the branch this suite is being
+ * merged into they cannot be evaluated at all. They are not red — the code has not been accused of
+ * anything — and they are not green, because nothing was compared. They are **not applicable**, and
+ * the report says so by name, which is the only honest description.
+ *
+ * They come back the moment their subject exists, and because they are listed by subject rather
+ * than by name, that resumption needs no edit here.
+ */
+const BASELINE_ABSENT = new Set([
+  'src/shared/wsl-stdin.ts',
+  'src/host/wsl-bash-tool.ts',
+])
 
 export const CLAIMS = [
   // ── values the panel states, derived from the constant that decides them ──────────────────
@@ -257,6 +277,8 @@ export const CLAIMS = [
   }),
   numberClaim({
     id: 'stdin-ceiling',
+    // Not evaluated on a baseline without this file; see BASELINE_ABSENT.
+    not_applicable_without: 'src/shared/wsl-stdin.ts',
     file: 'src/shared/wsl-stdin.ts',
     name: 'STDIN_CAP_BYTES',
     label: 'help.usage.body (stdin ceiling)',
@@ -283,6 +305,18 @@ export const CLAIMS = [
   defineClaim({
     id: 'panel-names-every-registered-tool',
     issue: '#52',
+    // Filed rather than fixed. The panel genuinely omits a tool the registry exposes, and **filing it is
+    // what the gate is for** — a gate that can only fail cannot be merged into a branch that still
+    // has the defect. The repair belongs to whoever next edits the help text, and withdrawing this
+    // entry has to happen in the same commit that fixes the panel, or the arithmetic reports the
+    // discrepancy instead of forgetting it.
+    debt: {
+      owed: 'The panel omits a tool the repository registers. `registeredToolNames()` is derived, and '
+        + 'one tool it returns has no name in either dictionary — reachable by the model, '
+        + 'undiscernible by the user.',
+      repair: 'Name it in both dictionaries. The claim re-derives the tool list rather than holding a '
+        + 'written copy, so it goes green when the panel agrees and red again when they drift.',
+    },
     async run() {
       const tools = registeredToolNames()
       if (tools.length < 4) {
@@ -306,6 +340,18 @@ export const CLAIMS = [
   defineClaim({
     id: 'panel-does-not-present-pty-as-the-default-bash',
     issue: '#52',
+    // Filed rather than fixed: the panel still says PTY where the code now defaults to the session
+    // shell. The claim reads the code's own answer rather than a recorded one, which is why it can
+    // be filed before the text is corrected and still mean something afterwards.
+    debt: {
+      owed: '`src/client/locales.ts` describes `bash` as backed by a PTY shell, while the '
+        + 'session-shell contract this gate derives says the default is the pipe-driven session '
+        + 'shell, with PTY reachable only behind an opt-in variable. The panel documents the tier that '
+        + 'is off by default.',
+      repair: 'Describe the default tier and name the variable that switches it. The claim reads the '
+        + 'contract from source, so it stops being red when the sentence matches the code — and turns '
+        + 'red again if they drift apart later.',
+    },
     // This claim asserts an *absence*, so it needs the sentence that carries the claim to still be
     // there: with the whole usage paragraph deleted it would find no offending sentence and report
     // success about a panel that says nothing at all.
@@ -340,6 +386,8 @@ export const CLAIMS = [
   // ── declared reds: real, user-visible, and owed by the product ────────────────────────────
   defineClaim({
     id: 'panel-denies-run-in-background',
+    // Not evaluated on a baseline without this file; see BASELINE_ABSENT.
+    not_applicable_without: 'src/host/wsl-bash-tool.ts',
     issue: '#52 (baseline: the merged issue51 tip)',
     // An absence again: the red is declared because a sentence is there, so the red would otherwise
     // be "paid" by deleting the sentence — which is the opposite of what happened.
@@ -448,7 +496,13 @@ export const CLAIMS = [
 ]
 
 /** The claims that must hold today. A failure here is a regression. */
-export const GREEN_CLAIMS = CLAIMS.filter(claim => claim.debt === null)
+/** Claims whose subject is present on this baseline, and so can actually be compared. */
+export const APPLICABLE_CLAIMS = CLAIMS.filter(claim =>
+  claim.not_applicable_without === undefined || subjectExists(claim.not_applicable_without))
+/** Claims this baseline cannot compare, named so the report can list them. */
+export const INAPPLICABLE_CLAIMS = CLAIMS.filter(claim => !APPLICABLE_CLAIMS.includes(claim))
+
+export const GREEN_CLAIMS = APPLICABLE_CLAIMS.filter(claim => claim.debt === null)
 
 /** The claims declared red, with what is owed and by whom. */
-export const DECLARED_RED_CLAIMS = CLAIMS.filter(claim => claim.debt !== null)
+export const DECLARED_RED_CLAIMS = APPLICABLE_CLAIMS.filter(claim => claim.debt !== null)

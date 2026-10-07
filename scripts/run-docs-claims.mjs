@@ -22,14 +22,14 @@
 //
 // Exit code is 0 exactly when there is no unexpected red and no retired declaration.
 
-import { CLAIMS, DECLARED_RED_CLAIMS, GREEN_CLAIMS } from '../tests/parity/claims.mjs'
+import { APPLICABLE_CLAIMS, CLAIMS, DECLARED_RED_CLAIMS, GREEN_CLAIMS, INAPPLICABLE_CLAIMS } from '../tests/parity/claims.mjs'
 import { writeFileSync } from 'node:fs'
 
 const jsonFlag = process.argv.indexOf('--json')
 const jsonPath = jsonFlag > 0 ? process.argv[jsonFlag + 1] : undefined
 
 const observations = []
-for (const claim of CLAIMS) {
+for (const claim of APPLICABLE_CLAIMS) {
   let verdict
   try {
     verdict = await claim.run()
