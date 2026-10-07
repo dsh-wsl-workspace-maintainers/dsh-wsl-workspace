@@ -35,6 +35,7 @@
     "test:repro": "node --experimental-strip-types scripts/repro-e2e.mjs",
     "test:docs": "node scripts/check-docs-parity.mjs",
     "test:docs-claims": "node --experimental-strip-types scripts/run-docs-claims.mjs",
+    "test:host": "node tests/host-boot.mjs",
     "test:distro-shape": "node --experimental-strip-types scripts/compatibility/distro-shape-real.mjs",
     "prepack": "npm run build",
     "prepublishOnly": "node scripts/verify-install.mjs && node scripts/verify-lib-sync.mjs"

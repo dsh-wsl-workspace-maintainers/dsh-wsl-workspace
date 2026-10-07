@@ -1,6 +1,7 @@
 {
   "_comment": "Single source of truth for the @deepseek-ai/* host packages the node test buckets need. The family is only publishable coherently through the @deepseek-ai/dsh umbrella release tree (standalone dsh-* tags drift; their cross-referenced peers can 404, e.g. dsh-compact), so ci/install-pinned.mjs materialises these via a generated standalone npm project under ci/deps/ and links the scope into the repo root. Bump '@deepseek-ai/dsh' and the 0.2.x siblings together with the newest entry of ci/compat-window.json. dsh-client-runtime is frozen upstream at 0.1.1-rc.2 (type-only surface for src/client); 0.0.1-rc.1 does not install (dep graph 404s).",
   "deps": {
+    "@deepseek-ai/dsh-launch-environment": "0.2.0-rc.2",
     "@deepseek-ai/dsh": "0.2.0-rc.2",
     "@deepseek-ai/cordis": "4.0.4",
     "@deepseek-ai/cordis-plugin-include": "1.0.9",
@@ -15,6 +16,8 @@
     "@deepseek-ai/dsh-subprocess-local": "0.2.0-rc.2",
     "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
     "@deepseek-ai/dsh-tool-fs-search": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-jobs": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-attachment": "0.2.0-rc.2",
     "@deepseek-ai/dsh-output-retention": "0.2.0-rc.2",
     "@deepseek-ai/dsh-spill": "0.2.0-rc.2",
     "@deepseek-ai/dsh-skill-filesystem": "0.2.0-rc.2",
