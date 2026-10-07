@@ -92,12 +92,75 @@ async function panels() {
   }
 }
 
-/** A claim that one number from the source is stated in both languages. */
-function numberClaim({ id, file, name, zh, en, label }) {
+/**
+ * A claim, plus the sentences it is *about* — asserted to be present before its own verdict counts.
+ *
+ * This is the completeness half, and it exists because half of the claims here assert an
+ * **absence**: "no sentence makes PTY the provider of `bash`", "no sentence claims a cache
+ * lifetime". An absence is vacuously satisfied by an empty document, so deleting the panel would
+ * silence exactly the claims that police it. A claim whose subject is gone is not satisfied, it is
+ * unanswerable — and this repository treats unanswerable as red, the same way
+ * `check-host-prompt-parity.mjs` treats "could not compare" as drift rather than as agreement.
+ *
+ * The forward direction needs no anchor of its own (a claim that a number is stated fails when the
+ * sentence stating it is deleted), but every claim carries `requires` so the shape is uniform and
+ * the self-check can insist on it.
+ *
+ * @param {{ id: string, issue: string, debt?: object|null,
+ *           requires?: {lang: 'zh'|'en', pattern: RegExp, why: string}[],
+ *           run: () => Promise<{ok: boolean, detail: string}> }} claim
+ */
+function defineClaim({ id, issue, debt = null, requires = [], run, ...carried }) {
   return {
     id,
+    issue,
+    debt,
+    requires,
+    ...carried,
+    async run() {
+      if (requires.length > 0) {
+        const panel = await panels()
+        const missing = requires.filter(req => !req.pattern.test(panel[req.lang].text))
+        if (missing.length > 0) {
+          return {
+            ok: false,
+            detail: 'the sentence this claim is about is gone: '
+              + missing.map(m => `${m.lang} ${String(m.pattern)} (${m.why})`).join('; ')
+              + '. Re-register the claim against the new wording, or delete the claim in the same '
+              + 'commit — an absence is otherwise satisfied by a document that no longer says '
+              + 'anything.',
+          }
+        }
+      }
+      return run()
+    },
+  }
+}
+
+/**
+ * Every number this gate watches, so that deleting a claim is noticed.
+ *
+ * The claims below derive their values, which means a constant can be covered without anyone
+ * writing the number down — but it also means a claim can be *deleted* and the registry still look
+ * healthy. This list is the other half of that bargain: it is the set of facts the panel is known
+ * to make statements about, and each one has to be claimed by something. Add a budget to the panel
+ * and it belongs here; remove a claim and its entry here reddens.
+ */
+export const WATCHED_CONSTANTS = [
+  ['src/host/wsl-skills.ts', 'MAX_SCAN_DEPTH', 'the panel states the scan depth'],
+  ['src/host/wsl-skills.ts', 'MAX_SKILL_ROOTS', 'the panel states the number of skill directories'],
+  ['src/host/wsl-skills.ts', 'MAX_VISITED_DIRECTORIES', 'the panel states the visited-directory cap'],
+  ['src/host/wsl-skills.ts', 'MAX_LINK_RESOLUTIONS', 'the panel states the per-lookup link cap'],
+  ['src/host/wsl-skills.ts', 'REFRESH_POLL_MS', 'the panel states the re-check cadence'],
+  ['src/host/wsl-skills.ts', 'DISCOVERY_POLL_MS', 'the panel states the re-discovery cadence'],
+  ['src/shared/wsl-stdin.ts', 'STDIN_CAP_BYTES', 'the panel states the stdin ceiling'],
+]
+
+/** A claim that one number from the source is stated in both languages. */
+function numberClaim({ id, file, name, zh, en, label }) {
+  return defineClaim({
+    id,
     issue: '#52',
-    debt: null,
     async run() {
       const value = hostConst(file, name)
       const panel = await panels()
@@ -113,7 +176,9 @@ function numberClaim({ id, file, name, zh, en, label }) {
           : failed.map(r => r.detail).join(' | '),
       }
     },
-  }
+    // Kept on the claim so the coverage check below can see which constants are spoken for.
+    covered: { file, name },
+  })
 }
 
 export const CLAIMS = [
@@ -176,10 +241,9 @@ export const CLAIMS = [
   }),
 
   // ── the panel describes the build it ships in ────────────────────────────────────────────
-  {
+  defineClaim({
     id: 'panel-names-the-version',
     issue: '#52',
-    debt: null,
     async run() {
       const version = packageVersion()
       const panel = await panels()
@@ -191,11 +255,10 @@ export const CLAIMS = [
           : `${wrong.join(' and ')} help.news.title does not name the package version ${version}`,
       }
     },
-  },
-  {
+  }),
+  defineClaim({
     id: 'panel-names-every-registered-tool',
     issue: '#52',
-    debt: null,
     async run() {
       const tools = registeredToolNames()
       if (tools.length < 4) {
@@ -215,11 +278,17 @@ export const CLAIMS = [
           : `the panel never names ${missing.join(', ')} — a capability the user cannot discover`,
       }
     },
-  },
-  {
+  }),
+  defineClaim({
     id: 'panel-does-not-present-pty-as-the-default-bash',
     issue: '#52',
-    debt: null,
+    // This claim asserts an *absence*, so it needs the sentence that carries the claim to still be
+    // there: with the whole usage paragraph deleted it would find no offending sentence and report
+    // success about a panel that says nothing at all.
+    requires: [
+      { lang: 'zh', pattern: /会话 shell/, why: 'the sentence naming which shell provides bash' },
+      { lang: 'en', pattern: /session shell/, why: 'the sentence naming which shell provides bash' },
+    ],
     async run() {
       const shell = sessionShellDefault()
       if (shell === undefined) {
@@ -242,12 +311,18 @@ export const CLAIMS = [
             + `shell (PTY is opt-in via DSH_WSL_PTY_SHELL=1): ${hits.join(' | ')}`,
       }
     },
-  },
+  }),
 
   // ── declared reds: real, user-visible, and owed by the product ────────────────────────────
-  {
+  defineClaim({
     id: 'panel-denies-run-in-background',
     issue: '#52 (baseline: the merged issue51 tip)',
+    // An absence again: the red is declared because a sentence is there, so the red would otherwise
+    // be "paid" by deleting the sentence — which is the opposite of what happened.
+    requires: [
+      { lang: 'zh', pattern: /后台任务/, why: 'the sentence about work that outlives a call' },
+      { lang: 'en', pattern: /background job/, why: 'the sentence about work that outlives a call' },
+    ],
     debt: {
       owed: 'src/client/locales.ts help.usage.body tells the user that `bash` has no '
         + '`run_in_background` parameter and ignores one. `src/host/wsl-bash-tool.ts` declares the '
@@ -277,10 +352,16 @@ export const CLAIMS = [
           : `the panel denies a parameter the mounted tool declares and uses: ${hits.join(' | ')}`,
       }
     },
-  },
-  {
+  }),
+  defineClaim({
     id: 'panel-claims-a-ten-second-cache',
     issue: '#52 (baseline: the merged issue51 tip)',
+    // An absence as well, and one whose subject is the same sentence the "10 seconds" sits in:
+    // deleting that sentence must not read as the debt having been paid.
+    requires: [
+      { lang: 'zh', pattern: /技能目录/, why: 'the sentence describing skill-catalog discovery' },
+      { lang: 'en', pattern: /skill catalog/i, why: 'the sentence describing skill-catalog discovery' },
+    ],
     debt: {
       owed: 'src/client/locales.ts says the skill catalog is "cached per scan root for 10 seconds". '
         + 'The skills provider has no TTL: `src/host/wsl-skills.ts` re-checks a served scan root '
@@ -305,7 +386,41 @@ export const CLAIMS = [
           : `a time-to-live is claimed but the provider polls instead: ${hits.join(' | ')}`,
       }
     },
-  },
+  }),
+
+  // ── completeness: a fact the panel speaks about cannot lose its claim ─────────────────────
+  //
+  // Every other claim here answers "is what the document says true". This one answers the other
+  // question, "is everything the document says being checked" — the half that a suite of positive
+  // assertions cannot see, and the half issue #51's own postmortem is about (`TESTING.md`: a budget
+  // met exactly, hiding a violation that any count would have accepted). Deleting a claim is the
+  // cheapest way to make a gate green, and this is what makes that visible.
+  defineClaim({
+    id: 'every-watched-constant-is-claimed',
+    issue: '#52',
+    async run() {
+      const covered = new Set(CLAIMS.filter(c => c.covered !== undefined)
+        .map(c => `${c.covered.file}#${c.covered.name}`))
+      const uncovered = WATCHED_CONSTANTS
+        .map(([file, name, why]) => ({ key: `${file}#${name}`, why }))
+        .filter(entry => !covered.has(entry.key))
+      if (uncovered.length === 0) {
+        return {
+          ok: true,
+          detail: `all ${WATCHED_CONSTANTS.length} watched constant(s) are claimed: `
+            + `${[...covered].join(', ')}`,
+        }
+      }
+      return {
+        ok: false,
+        detail: `${uncovered.length} constant(s) the panel makes statements about have no claim: `
+          + uncovered.map(e => `${e.key} (${e.why})`).join('; ')
+          + '. Either re-register the claim or drop the entry from WATCHED_CONSTANTS in the same '
+          + 'commit — a number the panel states with nothing checking it is the shape this gate exists '
+          + 'to refuse.',
+      }
+    },
+  }),
 ]
 
 /** The claims that must hold today. A failure here is a regression. */

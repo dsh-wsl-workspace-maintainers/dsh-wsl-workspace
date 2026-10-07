@@ -21,8 +21,24 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { CLAIMS, DECLARED_RED_CLAIMS, GREEN_CLAIMS } from './parity/claims.mjs'
-import { hostConst, objectBody } from './parity/derive.mjs'
+import { CLAIMS, DECLARED_RED_CLAIMS, GREEN_CLAIMS, WATCHED_CONSTANTS } from './parity/claims.mjs'
+import { hostConst, objectBody, panelText } from './parity/derive.mjs'
+import { zh, en } from '../src/client/locales.ts'
+
+/**
+ * Claims whose verdict is about the *absence* of a sentence.
+ *
+ * Each of these answers "is any sentence making this false claim" — and an absence is satisfied by
+ * a document that has lost the paragraph entirely, so deleting the help text would silence exactly
+ * the claims that police it. They are listed here rather than inferred because the property is
+ * about what the claim *means*, and a test that guessed it from the source text of `run` would be
+ * guessing.
+ */
+const ABSENCE_CLAIMS = [
+  'panel-does-not-present-pty-as-the-default-bash',
+  'panel-denies-run-in-background',
+  'panel-claims-a-ten-second-cache',
+]
 
 test('every claim has the shape the runners index it by', () => {
   const ids = new Set()
@@ -32,6 +48,13 @@ test('every claim has the shape the runners index it by', () => {
     ids.add(claim.id)
     assert.ok(typeof claim.issue === 'string' && claim.issue !== '', `${claim.id} has no issue`)
     assert.equal(typeof claim.run, 'function', `${claim.id} has no run()`)
+    assert.ok(Array.isArray(claim.requires), `${claim.id} has no requires array`)
+    for (const anchor of claim.requires) {
+      assert.ok(anchor.lang === 'zh' || anchor.lang === 'en', `${claim.id} anchor names lang ${anchor.lang}`)
+      assert.ok(anchor.pattern instanceof RegExp, `${claim.id} anchor is not a RegExp`)
+      assert.ok(typeof anchor.why === 'string' && anchor.why.length > 10,
+        `${claim.id} anchor does not say what sentence it is looking for`)
+    }
     if (claim.debt !== null) {
       assert.ok(typeof claim.debt.owed === 'string' && claim.debt.owed.length > 40,
         `${claim.id} is declared red without saying what is owed`)
@@ -40,6 +63,41 @@ test('every claim has the shape the runners index it by', () => {
     } else {
       assert.equal(claim.debt, null, `${claim.id} has a debt that is neither null nor an object`)
     }
+  }
+})
+
+test('a claim that asserts an absence carries the sentence it is about', () => {
+  for (const id of ABSENCE_CLAIMS) {
+    const claim = CLAIMS.find(entry => entry.id === id)
+    assert.ok(claim !== undefined, `${id} is registered as an absence claim but is not in CLAIMS`)
+    assert.ok(claim.requires.length > 0,
+      `${id} asserts an absence with no anchor, so deleting the paragraph it polices would make it `
+      + 'report success about a document that says nothing')
+  }
+})
+
+test('every anchor matches the panel as it stands', () => {
+  // An anchor that does not match today holds its claim red forever. That is the intended verdict,
+  // but it is worth failing here too, where the message names the anchor rather than the claim.
+  const text = { zh: panelText(zh), en: panelText(en) }
+  for (const claim of CLAIMS) {
+    for (const anchor of claim.requires) {
+      assert.ok(anchor.pattern.test(text[anchor.lang]),
+        `${claim.id}: the ${anchor.lang} anchor ${String(anchor.pattern)} does not match the panel — `
+        + `it was looking for ${anchor.why}`)
+    }
+  }
+})
+
+test('the completeness half is populated', () => {
+  assert.ok(WATCHED_CONSTANTS.length >= 5,
+    `${WATCHED_CONSTANTS.length} watched constant(s); the coverage that makes a deleted claim `
+    + 'visible is only as wide as this list')
+  assert.ok(CLAIMS.some(claim => claim.id === 'every-watched-constant-is-claimed'),
+    'no claim covers the watched constants, so deleting one would go unnoticed')
+  // Every entry must name a constant that exists, or the coverage claim is asking about a ghost.
+  for (const [file, name] of WATCHED_CONSTANTS) {
+    assert.ok(Number.isInteger(hostConst(file, name)), `${file}#${name} did not derive to a number`)
   }
 })
 
