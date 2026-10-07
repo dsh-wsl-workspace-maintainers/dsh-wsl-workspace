@@ -358,6 +358,7 @@ const outcome = await runChild({ DSH_HOME: home }, {
     // The path the user-facing dialog lives at, taken from the module that declares it rather than
     // written here — a second copy of the path would be the failure this whole branch removes.
     defaultRoute: DEFAULT_ROUTE,
+    distro: DISTRO,
 })
 rmSync(home, { recursive: true, force: true })
 
@@ -410,6 +411,7 @@ function probeJson(probes, label, fallback) {
 let isolationHolds = false
 let pluginChannelReadable = false
 let hostChannelReadable = false
+let wslSessionWorks = false
 let hostAudit = null
 let realJobView = null
 let realJobReadable = false
@@ -470,6 +472,26 @@ const presetProblems = probeJson(probes, 'presetProblems', [])
 if (probes.presetRegistry !== undefined) {
   console.log(`  the host's preset registry: ${probes.presetRegistry.value}`)
   console.log(`  presets it ended up holding: ${roster.length === 0 ? '(none)' : roster.map(entry => `${entry.id}[${entry.plugins ?? '?'} rows${entry.broken === null ? '' : ` BROKEN: ${entry.broken}`}]`).join(', ')}`)
+  // ── 3D/3E: the WSL-mode session ───────────────────────────────────────────────────────────
+  console.log(`  a WSL-mode session, as the registry built it: ${probes.wslSession?.value ?? '(not probed)'}`)
+  let sessionView = null
+  try { sessionView = JSON.parse(probes.wslSession?.value ?? 'null') } catch { sessionView = null }
+  // Three claims, in the order the user meets them: the session came up **in WSL mode**, WSL was
+  // reachable **inside it**, and a command's **output came back**. The last one is the one an exit code
+  // cannot stand in for — a shell that starts, runs nothing and exits 0 is precisely the failure this
+  // layer exists to catch.
+  const sessionUsesWsl = Array.isArray(sessionView?.wslToolsVisible) && sessionView.wslToolsVisible.length >= 3
+  const sessionRanCommand = sessionView?.shellRan?.status === 0
+  const sessionReturnedOutput = sessionView?.shellRan?.carriesMarker === true
+  if (sessionView === null) {
+    console.log('    NOT MEASURED — no session was built this run.')
+  } else {
+    console.log(`    ${sessionUsesWsl ? 'ok  ' : 'FAIL'} the session carries the WSL tools (${(sessionView?.wslToolsVisible ?? []).join(', ') || 'none'})`)
+    console.log(`    ${sessionRanCommand ? 'ok  ' : 'FAIL'} a command ran inside it (exit ${sessionView?.shellRan?.status ?? 'n/a'})`)
+    console.log(`    ${sessionReturnedOutput ? 'ok  ' : 'FAIL'} its output came back (${JSON.stringify(sessionView?.shellRan?.text ?? '')})`)
+  }
+  wslSessionWorks = sessionView !== null && sessionUsesWsl && sessionRanCommand && sessionReturnedOutput
+
   // ── the user-facing route, asked of the host's router ───────────────────────────────────
   console.log(`  the route the user dialog posts to: ${probes.userRoute?.value ?? '(not probed)'}`)
   let userRoute = null
@@ -714,6 +736,10 @@ const observedReds = [
   // The host rejecting the tree we contributed is not a debt of ours to negotiate: it is the
   // counterparty refusing the handover, which is the loudest signal this system can produce.
   ...(!hostAcceptsPreset && hostAudit !== null ? [`host-rejects-the-preset: ${hostAudit.listProblem}`] : []),
+  // A WSL-mode session that cannot run a command, or whose command output never comes back, is the
+  // user-visible failure this branch exists to catch, and unlike the channel above it has no entry:
+  // it is expected to hold, so it reddens the gate outright rather than joining the ledger.
+  ...(wslSessionWorks ? [] : ['a-wsl-session-could-not-run-a-command-and-return-its-output']),
   // **One** red, from the **strongest** witness available. Three things are known here: the host's
   // sources never name the channel, a synthetic job on it reads back empty, and — when the product
   // can be run at all — a **real completed job** reads back empty through the host's own reader.

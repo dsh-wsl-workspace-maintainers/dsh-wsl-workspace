@@ -438,6 +438,83 @@ try {
     })
   })
 
+  // ── 3D/3E: a WSL-mode session, and WSL actually usable inside it ──────────────────────────
+  // The hub of the whole user path: everything before it (host, plugin, preset) can be green while
+  // a session never comes up, and then nothing downstream is reachable. What is asked here is
+  // whether the agent the registry built carries the WSL world — its own realm, not the root's — and
+  // whether a command runs from there.
+  try {
+    report.probes.wslSession = { ok: true, value: await (async () => {
+    const agents = ctx.get('agents')
+    if (agents === undefined) return 'no agents service'
+    const handle = await agents.create({
+      // Its own id: the registry refuses a duplicate session, and the background-job probe above has
+      // already claimed `plan.sessionId`. Sharing one would have made this probe's result depend on
+      // probe order — the kind of coupling that makes a report untrustworthy twice over.
+      sessionId: `${plan.sessionId ?? 'host-boot'}-wsl-session`,
+      meta: { cwd: plan.sessionCwd, agentPreset: 'wsl-standard' },
+    })
+    const agent = handle?.agent ?? handle
+    // The agent's own scope, if it exposes one. `Object.getPrototypeOf` reaches getters that
+    // `Object.keys` on the instance does not, which is the difference between "there is no scope"
+    // and "the scope is a getter".
+    const names = new Set()
+    for (let object = agent; object !== null && object !== Object.prototype; object = Object.getPrototypeOf(object)) {
+      for (const name of Object.getOwnPropertyNames(object)) names.add(name)
+    }
+    const agentCtx = agent?.ctx ?? agent?.context ?? agent?.scope
+    const toolRuntime = agentCtx?.get?.('tools') ?? ctx.get('tools')
+    const wslTools = ['bash', 'bash_background', 'grep', 'glob', 'wsl_terminal']
+      .filter(name => toolRuntime?.get?.(name) !== undefined)
+    let ran = null
+    try {
+      const shell = agentCtx?.get?.('shell') ?? ctx.get('shell')
+      if (shell !== undefined && typeof shell.execute === 'function') {
+        // The distro reaches the shell the way it reaches a real session: through the session's
+        // environment, not through `process.env`. A UNC path carries no distribution on its own, and
+        // calling the executor directly skips the `shellEnv` collection that would normally supply it
+        // — so the env is passed the way `src/host/wsl-jobs.ts` passes it, and the failure mode of
+        // forgetting is a named error rather than a silent wrong distribution.
+        const execution = await shell.execute(shell.resolve({
+          command: 'printf WSL_SESSION_MARKER',
+          workdir: '/tmp',
+          dshEnv: { DSH_WSL_DISTRO: plan.distro ?? 'Ubuntu', DSH_WSL_SESSION: '1' },
+        }))
+        const outcome = await execution.result()
+        // The **output**, not just the exit code. A shell that starts, runs nothing and exits 0 is
+        // the exact shape of the failure class this whole layer exists for — "it reported success"
+        // while the result never arrived. An exit code alone cannot tell those apart.
+        const text = (() => {
+          for (const key of ['stdout', 'output', 'text']) {
+            const value = outcome?.[key]
+            if (typeof value === 'string') return value
+            // `stdout` is structured, not a string — `String({})` is `[object Object]`, which would
+            // have made this check pass or fail for reasons that have nothing to do with the output.
+            if (value !== undefined && value !== null) return JSON.stringify(value)
+          }
+          return ''
+        })()
+        ran = {
+          status: outcome?.exitCode ?? outcome?.status ?? null,
+          carriesMarker: text.includes('WSL_SESSION_MARKER'),
+          text: text.slice(0, 120),
+          keys: outcome === undefined || outcome === null ? [] : Object.keys(outcome).slice(0, 10),
+        }
+      }
+    } catch (error) {
+      ran = { error: String(error?.message ?? error).slice(0, 160) }
+    }
+    return JSON.stringify({
+      agentKeys: [...names].filter(name => /ctx|context|scope|session|preset|id/i.test(name)).slice(0, 12),
+      hasOwnScope: agentCtx !== undefined && agentCtx !== null,
+      wslToolsVisible: wslTools,
+      shellRan: ran,
+    })
+    })() }
+  } catch (error) {
+    report.probes.wslSession = { ok: false, value: `THREW: ${String(error?.message ?? error).slice(0, 300)}` }
+  }
+
   probe('jobRoundTrip', () => {
     const jobs = ctx.get('jobs')
     if (jobs === undefined) return 'ABSENT'
