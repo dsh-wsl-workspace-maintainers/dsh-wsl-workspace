@@ -231,25 +231,32 @@ test('feeds 0.2.x pull-source output so job_output is not empty (issue #56)', as
       kill: () => true,
     },
     jobs: {
-      start: spec => {
+      start: (spec: { output?: unknown; run?: (arg: unknown) => unknown }) => {
         captured.output = spec.output
         // Mirror the 0.2.x pump: start() calls run() to register the process
         // (assigning the producer's closure capture) before any source is read.
-        spec.run({})
+        spec.run?.({})
         return 'bash-7'
       },
     },
   })
   await tool.execute({ command: 'echo' }, EXEC)
   const sources = captured.output as Array<{ channel?: string; read(from: number): { text: string; nextOffset: number; lossy: boolean; spillPath?: string } }>
+  // The array is asserted before it is indexed rather than type-asserted and trusted: `assert.ok`
+  // narrows in TypeScript, so the length and the element type are both established by the check
+  // instead of by a cast that would be wrong the moment the producer's shape changes. This file's
+  // other fakes are untyped on purpose (they are the recorded typecheck baseline), so adding
+  // annotations here would have meant moving the goalposts rather than keeping them.
   assert.ok(Array.isArray(sources) && sources.length === 2, 'producer exposes stdout + stderr pull sources')
-  assert.equal(sources[0].channel, undefined, 'stdout carries no channel tag')
-  assert.equal(sources[1].channel, 'stderr', 'stderr is tagged so the registry keeps it on its own channel')
-  const first = sources[0].read(0)
+  const [stdout, stderr] = sources
+  assert.ok(stdout !== undefined && stderr !== undefined, 'both pull sources are present')
+  assert.equal(stdout.channel, undefined, 'stdout carries no channel tag')
+  assert.equal(stderr.channel, 'stderr', 'stderr is tagged so the registry keeps it on its own channel')
+  const first = stdout.read(0)
   assert.equal(first.text, 'tick 1\ntick 2\n', 'stdout source yields the process output')
   assert.equal(first.nextOffset, 'tick 1\ntick 2\n'.length, 'the cursor advances past what was read')
-  const after = sources[0].read(first.nextOffset)
+  const after = stdout.read(first.nextOffset)
   assert.equal(after.text, '', 'a read past the end yields nothing')
-  const err = sources[1].read(0)
+  const err = stderr.read(0)
   assert.equal(err.text, 'warn\n', 'the stderr source yields its own stream')
 })
