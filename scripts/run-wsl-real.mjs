@@ -51,12 +51,15 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
  *     only `results.length === 0` (bash-parity-real.mjs:204). 12 is the floor this matrix holds it
  *     to, so a driver that starts skipping more probes cannot read as a clean run.
  */
+// distro-shape-real reports 9 (`N/M checks passed`): five premises about the substrate and the
+// shapes, then the four cells that hold the panel's two busybox claims to their GNU controls.
 const DRIVERS = [
   { name: 'fs-real', script: 'fs-real.mjs', floor: { kind: 'passLines', value: 2 } },
   { name: 'skills-real', script: 'skills-real.mjs', floor: { kind: 'passLines', value: 3 }, libPlane: 'no-lib-entry' },
   { name: 'search-real', script: 'search-real.mjs', floor: { kind: 'passLines', value: 2 } },
   { name: 'relay-real', script: 'relay-real.mjs', floor: { kind: 'passLines', value: 2 } },
   { name: 'relay-profile-real', script: 'relay-profile-real.mjs', floor: { kind: 'greenLine', marker: 'relay-profile-real: GREEN', value: 1 } },
+  { name: 'distro-shape-real', script: 'distro-shape-real.mjs', floor: { kind: 'checks', value: 9 } },
   { name: 'tool-bash-real', script: 'tool-bash-real.mjs', floor: { kind: 'checks', value: 10 } },
   { name: 'bash-session-real', script: 'bash-session-real.mjs', floor: { kind: 'checks', value: 73 } },
   { name: 'bash-parity-real', script: 'bash-parity-real.mjs', floor: { kind: 'checks', value: 12 } },

@@ -276,6 +276,10 @@ jobs:
           # MSYS_NO_PATHCONV=1 on the assignment, for the same reason as bash-parity-real below.
           MSYS_NO_PATHCONV=1 DSH_WSL_TEST_PLANE=src WSL_COMPAT_ROOT=/tmp/dsh-wsl-relay-profile node --experimental-strip-types scripts/compatibility/relay-profile-real.mjs > logs/relay-profile-real.log 2>&1 || { echo "rc=$?"; tail -8 logs/relay-profile-real.log || true; FAIL=1; }
           run_one tool-bash-real env DSH_WSL_TEST_PLANE=src node --experimental-strip-types scripts/compatibility/tool-bash-real.mjs
+          # The two releases this plugin makes about a distribution that is not the one the gates run
+          # on, held to a GNU control and to a busybox shape obtained from the distribution's own
+          # `/usr/bin/busybox` — no container, because the product's only execution path is `wsl.exe`.
+          run_one distro-shape-real env DSH_WSL_TEST_PLANE=src node --experimental-strip-types scripts/compatibility/distro-shape-real.mjs
           run_one bash-session-real env DSH_WSL_TEST_PLANE=src node --experimental-strip-types scripts/compatibility/bash-session-real.mjs
           MSYS_NO_PATHCONV=1 DSH_WSL_TEST_PLANE=src WSL_COMPAT_ROOT=/tmp/dsh-wsl-parity node --experimental-strip-types scripts/compatibility/bash-parity-real.mjs > logs/bash-parity-real.log 2>&1 || { echo "rc=$?"; tail -8 logs/bash-parity-real.log || true; FAIL=1; }
           # The same gates against the shipped bundle, which is the half that was previously only
