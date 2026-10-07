@@ -27,26 +27,6 @@ export const SHAPE = 'posix'
 
 export const HOST_BOOT_REDS = [
   {
-    id: 'two-of-this-plugins-seven-entries-do-not-load-in-a-real-host',
-    prefix: 'entry-does-not-load',
-    expect: { posix: 'red' },
-    premise: 'every entry this plugin publishes reaches a loaded state in the host it ships into',
-    debt: [
-      'Loading each `lib/*.js` entry as its own row — rather than only `lib/index.js` — shows',
-      '`wsl-shell` (`WslShellExecutor`, declares `subprocess`) and `wsl-fs` (`WslFileSystem`)',
-      'reaching `FAILED` in a real `@deepseek-ai/dsh@0.2.0-rc.2`, while the other five reach `ACTIVE`.',
-      'Both are `Service` subclasses that read their dependency off `this.ctx` rather than through',
-      '`ctx.get`, which is the shape that turns a missing service into a load-time failure instead of',
-      'a declined load. The failure detail is not yet collected: the lifecycle transition happens',
-      'inside `runProfile`, so a listener subscribed afterwards misses it.',
-    ].join(' '),
-    repair: [
-      'Find out what each entry throws, then decide per entry: either it needs `ctx.inject([...])`',
-      'instead of a class-level `static inject`, or it needs a guard. Do not paper over it by removing',
-      'the row from the harness — the row is what found this.',
-    ].join(' '),
-  },
-  {
     id: 'a-channel-this-plugin-offers-has-no-reader-in-the-host',
     // Substring-matched against the reported red, so a red that moves or is reworded still lands on
     // the entry that owns it rather than reading as a new, undeclared failure.

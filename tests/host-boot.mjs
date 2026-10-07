@@ -39,6 +39,15 @@ const TIMEOUT_MS = 120_000
  * is a service something in this repository actually consumes.
  */
 const HOST_ROWS = [
+  // Order is load-bearing, and finding that out is most of what this harness is for. Rows load in
+  // array order, so the host services the plugin's `apply()` reaches for are placed before it:
+  // `src/index.ts:1120` reads `ctx.get('agentPresets')` in a **one-shot guard outside the effect**,
+  // so a service that arrives a moment later leaves the plugin registered with nothing and saying
+  // nothing about it. Putting these first is what a host that composes a preset tree already does;
+  // the fact that the plugin cannot survive the other order is a finding, and it is filed as one.
+  ['agent-presets', '@deepseek-ai/dsh-agent-preset-registry'],
+  ['session-projections', '@deepseek-ai/dsh-session-projection'],
+  ['agent-preset-defs', '@deepseek-ai/dsh-agent-preset'],
   ['tools', '@deepseek-ai/dsh-tools'],
   ['system-prompt', '@deepseek-ai/dsh-system-prompt'],
   ['terminals', '@deepseek-ai/dsh-terminal'],
@@ -51,9 +60,22 @@ const HOST_ROWS = [
   ['sandbox-policy', '@deepseek-ai/dsh-sandbox-policy'],
   ['jobs', '@deepseek-ai/dsh-jobs-local'],
   ['tool-jobs', '@deepseek-ai/dsh-tool-jobs'],
-  ['fs', '@deepseek-ai/dsh-fs'],
-  ['shell', '@deepseek-ai/dsh-shell'],
+  // Deliberately **no** `dsh-fs` and **no** `dsh-shell` row. Both names are provided by this plugin's
+  // own entries (`lib/fs.js`, `lib/shell.js`), so loading them here made the host and the plugin
+  // register the same service and the loader refused the second: `service "fs" has been registered at
+  // <FileSystem>`. That failure was this file's composition error, not the plugin's, and it is worth
+  // recording because a harness that mis-assembles the tree will blame the code under test.
+  //
+  // It is also the reason the whole approach has to change: a plugin that isolates its `fs` and
+  // `shell` inside a preset world cannot be modelled by loading its entries as root rows. The tree has
+  // to be composed the way the host composes it — through the preset — or the isolation the preset
+  // exists to create is exactly what the harness destroys.
   ['host-webserver', '@deepseek-ai/dsh-host-webserver'],
+  // `shellEnv`, without which the host's own `bash` row sits at "waiting for shellEnv", the preset
+  // is marked `broken`, and the plugin skips it entirely
+  // (`presets.filter(preset => preset.broken === undefined && …)`). Measured chain, three hops from
+  // a provider that looked optional.
+  ['shell-env', '@deepseek-ai/dsh-shell-env'],
 ]
 
 /**
@@ -89,6 +111,25 @@ const PLUGIN_ROWS = [
 
 const ROW_CONFIG = {
   'host-webserver': { host: '127.0.0.1', port: 0 },
+  // The registry's `Config` requires a `default` preset id (measured: its static Config marks
+  // `default` as `"defined"` with no fallback), so the row cannot load without one. `wsl-` + the id the
+  // plugin derives its variant from.
+  'agent-presets': { default: 'wsl-standard' },
+  // One row per preset definition: `dsh-agent-preset`'s `Config` **is** a `PresetDefinition`, so its
+  // schema demands `id` (measured: `ValidationError: $.id missing required value`). This row exists so
+  // the plugin has a host preset to transform — it registers `wsl-standard` derived from `standard`,
+  // it does not define one.
+  'agent-preset-defs': {
+    id: 'standard',
+    // A preset with a `bash` row in it, because that is what the plugin transforms: it registers
+    // `wsl-standard` by replacing the host's bash/fs rows with its own. A preset with `plugins: []`
+    // gives it nothing to replace and it registers nothing — which is indistinguishable, from outside,
+    // from the guard never firing.
+    plugins: [
+      { id: 'tool-bash', name: '@deepseek-ai/dsh-tool-bash' },
+      { id: 'tool-fs', name: '@deepseek-ai/dsh-tool-fs' },
+    ],
+  },
 }
 
 /**
@@ -271,7 +312,11 @@ if (false) {
   process.exit(1)
 }
 
-writeManifest(home, PROFILE, HOST_ROWS.map(([, name]) => name))
+// **No bundles.** A `bundles` entry must declare `dsh.bundle` in its own package.json; these are
+// plugins, not bundles, and listing them produced one `skipping profile bundle … declares no
+// dsh.bundle` line per row on every run — noise that trains a reader to skim the log. Everything the
+// profile needs arrives as a patch row instead.
+writeManifest(home, PROFILE, [])
 const overlay = writeOverlay(home, HOST_ROWS, PLUGIN_ROWS)
 
 const { requirements, declaredInject: declaredSurface } = deriveRequirements()
@@ -300,6 +345,11 @@ if (report.stage !== 'booted') {
   process.exit(1)
 }
 
+// The loader's own diagnostics go to the child's stderr, not into the report, so a row that failed
+// quietly looks identical to one nobody asked about. Carrying the tail is what makes `FAILED`
+// actionable instead of merely red.
+const childStderrTail = (outcome.stderr ?? '').split('\n').filter(line => line.trim() !== '')
+
 const probes = report.probes
 const rows = probeJson(probes, 'rows', [])
 const own = rows.find(row => row.id === 'dsh-wsl-workspace')
@@ -318,6 +368,11 @@ function probeJson(probes, label, fallback) {
   if (typeof raw !== 'string') return fallback
   try { return JSON.parse(raw) } catch { return fallback }
 }
+
+// Assigned inside the preset block below and read by the ledger after it, so it is declared here:
+// a `const` inside that block would be out of scope by the time the ledger is computed, which is the
+// same class of mistake as reading a probe's value before its shape has been checked.
+let isolationHolds = false
 
 const checks = [
   ['P1 the host has a loader with entries', probes.p1_loaderPresent.ok && Number(probes.rowCount.value) >= HOST_ROWS.length,
@@ -366,6 +421,41 @@ console.log('  substrate is real. The properties that read these states come aft
 // declaration back verbatim, so that check would pass with the plugin doing nothing at all.
 
 const resolvedServices = probeJson(probes, 'requirements', [])
+const roster = probeJson(probes, 'presetRoster', [])
+const presetProblems = probeJson(probes, 'presetProblems', [])
+if (probes.presetRegistry !== undefined) {
+  console.log(`  the host's preset registry: ${probes.presetRegistry.value}`)
+  console.log(`  presets it ended up holding: ${roster.length === 0 ? '(none)' : roster.map(entry => `${entry.id}[${entry.plugins ?? '?'} rows${entry.broken === null ? '' : ` BROKEN: ${entry.broken}`}]`).join(', ')}`)
+  // ── the isolation, as the host holds it ─────────────────────────────────────────────────
+  // The plugin's whole claim about `fs` and `shell` is that they live inside a WSL world group with
+  // `isolate`, so the host's own tools cannot reach past them. That claim is checkable against the
+  // document the host is holding, and it is the only place the claim becomes true rather than
+  // intended.
+  const wslPreset = String(probes.wslPresetDocument?.value ?? '')
+  const presetLines = wslPreset.split('\n').map(line => line.trim())
+  const hasWorldGroup = presetLines.some(line => line.startsWith('group:') && line.includes('true'))
+  const isolateAt = presetLines.findIndex(line => line.startsWith('isolate:'))
+  const hasIsolate = isolateAt >= 0
+  // `fs` counts as isolated when it appears in the `isolate:` mapping rather than beside it. Scanning
+  // forward a bounded number of lines rather than with a regex, because a regex over a generated YAML
+  // document needs its own escaping discipline and this does not.
+  const isolatesFs = hasIsolate && presetLines
+    .slice(isolateAt + 1, isolateAt + 8)
+    .some(line => line.startsWith('fs:') && line.includes('true'))
+  const pointsAtOwnShell = wslPreset.includes('lib/shell.js')
+  const pointsAtOwnFs = wslPreset.includes('lib/fs.js')
+  console.log(`  the plugin's own preset, as the host holds it (${wslPreset.length} bytes):`)
+  console.log(`    ${hasWorldGroup ? 'ok  ' : 'FAIL'} the WSL world is a group`)
+  console.log(`    ${hasIsolate ? 'ok  ' : 'FAIL'} the group isolates its members`)
+  console.log(`    ${isolatesFs ? 'ok  ' : 'FAIL'} fs is inside the isolated set`)
+  console.log(`    ${pointsAtOwnShell ? 'ok  ' : 'FAIL'} the bash slot points at lib/shell.js`)
+  console.log(`    ${pointsAtOwnFs ? 'ok  ' : 'FAIL'} the fs slot points at lib/fs.js`)
+  isolationHolds = hasWorldGroup && hasIsolate && isolatesFs && pointsAtOwnShell && pointsAtOwnFs
+  if (childStderrTail.length > 0) {
+    console.log('  what the child logged (plugin effects report here):')
+    for (const line of childStderrTail.slice(0, 10)) console.log(`    ${line}`)
+  }
+}
 const bareReads = resolvedServices.filter(entry => entry.how.startsWith('read bare'))
 const unreachable = resolvedServices.filter(entry => !entry.reachable)
 
@@ -449,6 +539,12 @@ if (rowStates.length > 0) {
   if (raw !== undefined && typeof raw === 'string' && !raw.startsWith('[')) {
     console.log(`    (the detail could not be collected: ${raw})`)
   }
+  if (false) {
+    console.log('    what the loader logged:')
+    // Not sliced: the loader interleaves every row's stack, so a window hides the other rows'
+    // reasons behind the first one's frames.
+    for (const line of childStderrTail) console.log(`      ${line}`)
+  }
 }
 
 // ── the ledger ──────────────────────────────────────────────────────────────────────────────
@@ -470,6 +566,14 @@ const notLoadedIds = rows
 const notLoaded = notLoadedIds.length === 0 ? [] : [`entry-does-not-load: ${notLoadedIds.join(', ')}`]
 const observedReds = [
   ...notLoaded,
+  // A preset whose isolation did not survive the round trip is the L2 finding: `fs` and `shell` would
+  // be reachable by the host's own tools, which is the whole thing the group exists to prevent. One
+  // red, named by what failed, because a debt is an invariant rather than a row count.
+  ...(isolationHolds ? [] : [`preset-isolation-did-not-survive: ${[
+    hasWorldGroup ? null : 'no-group', hasIsolate ? null : 'no-isolate',
+    isolatesFs ? null : 'fs-not-isolated', pointsAtOwnShell ? null : 'bash-slot-foreign',
+    pointsAtOwnFs ? null : 'fs-slot-foreign',
+  ].filter(Boolean).join(', ')}`]),
   // `unread` and `unreachable` are already name lists — `unread` comes from `offered.filter(...)`, so
   // mapping `.name` over it would file an empty string and the ledger would report a blank red.
   //

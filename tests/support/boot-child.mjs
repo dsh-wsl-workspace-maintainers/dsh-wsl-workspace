@@ -196,7 +196,78 @@ try {
 
   // The union of every `inject` this plugin's sources declare, so a bare read that nothing declares
   // anywhere can be named as such rather than showing up as an unexplained absence.
-  probe('declaredSurface', () => JSON.stringify(plan.declaredInject ?? []))
+  // The loader keeps its own log and, left alone, keeps it to itself: a row that failed says so with
+  // a colour and no sentence. Turning it on before anything is read is the only way the reason reaches
+  // the parent's captured stderr.
+  probe('logsEnabled', () => {
+    const loader = ctx.get('loader')
+    if (loader === undefined) return 'no loader'
+    loader.enableLogs?.(true)
+    return 'enabled'
+  })
+
+  // ── the preset tree, and the host's own audit of it ────────────────────────────────────────
+  // The registry is asked, not the sources: this plugin does not define a preset, it registers
+  // `wsl-<id>` derived from one the host ships. Reading the roster therefore answers "what did the
+  // host end up holding" rather than "what did we mean to hand it".
+  const registry = ctx.get('agentPresets')
+  probe('presetRegistry', () => registry === undefined ? 'ABSENT' : registry.constructor?.name)
+
+  // Awaited, not called synchronously. `list(): Promise<AgentPreset[]>` — reading it synchronously
+  // yields a Promise, `?? []` never fires because a Promise is not nullish, and the roster comes back
+  // empty. That is not a subtle bug: it is the harness reporting "the host holds no presets" while
+  // holding one, which is the exact shape of a false negative.
+  // **Settle first.** The plugin registers its variants inside `ctx.effect`, and that effect awaits
+  // `supportsPersistentShell(ctx)` and `resolveRelayNode()` — real probes with real I/O. Reading the
+  // roster the moment `runProfile` returns therefore races the registration, and the report says "the
+  // host holds no `wsl-` preset" while the plugin is still working. A timeout bounded well under the
+  // harness's own, so a hang is still a hang and not a silent wait.
+  await new Promise(resolve => setTimeout(resolve, 4000))
+  try {
+    const list = registry === undefined ? [] : await registry.list()
+    report.probes.presetRoster = {
+      ok: true,
+      value: JSON.stringify(list.map(entry => ({
+        id: entry?.id,
+        name: entry?.name,
+        plugins: Array.isArray(entry?.plugins) ? entry.plugins.length : undefined,
+        // `broken` is what makes the plugin skip a preset entirely
+        // (`presets.filter(preset => preset.broken === undefined && …)`), so it is read here rather
+        // than inferred from the preset's absence.
+        broken: entry?.broken === undefined ? null : String(entry.broken),
+      }))),
+    }
+  } catch (error) {
+    report.probes.presetRoster = { ok: false, value: `THREW: ${String(error?.message ?? error).slice(0, 200)}` }
+  }
+  // The **transformed** preset, which is the one this plugin contributed. Read from the host rather
+  // than from `src/host/variants.ts`: the question is not what the plugin meant to publish but what
+  // the host ended up holding, and those are different things often enough to be worth the round trip.
+  try {
+    const wslDocument = registry === undefined ? null : await registry.readDocument('wsl-standard')
+    report.probes.wslPresetDocument = {
+      ok: wslDocument !== null,
+      value: wslDocument === null ? 'ABSENT' : String(wslDocument.content ?? ''),
+    }
+  } catch (error) {
+    report.probes.wslPresetDocument = { ok: false, value: `THREW: ${String(error?.message ?? error).slice(0, 200)}` }
+  }
+
+  try {
+    const document = registry === undefined ? null : await registry.readDocument('standard')
+    report.probes.presetDocument = {
+      ok: document !== null,
+      value: document === null ? 'ABSENT' : JSON.stringify({
+        name: document.name ?? null,
+        bytes: String(document.content ?? '').length,
+        head: String(document.content ?? '').slice(0, 120),
+      }),
+    }
+  } catch (error) {
+    report.probes.presetDocument = { ok: false, value: `THREW: ${String(error?.message ?? error).slice(0, 200)}` }
+  }
+
+  probe('presetDeclaredSurface', () => JSON.stringify(plan.declaredInject ?? []))
 
   probe('ownRowInject', () => JSON.stringify(byId.get('dsh-wsl-workspace')?.declaredInject ?? []))
 
