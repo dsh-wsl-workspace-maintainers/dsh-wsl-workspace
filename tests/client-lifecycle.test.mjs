@@ -9,6 +9,8 @@
 // (`agentPreset` at the top level vs `projectionValues.agentPreset`).
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import vm from 'node:vm';
 import fs from 'node:fs';
 
@@ -121,11 +123,16 @@ function fixture({ legacy = false, late = false, startService = legacy ? 'legacy
   };
   if (!late) mount();
 
+  const localeCalls = []
   const ctx = {
     get: key => services[key],
     effect: fn => effects.push(fn()),
     inject: (deps, callback) => { pending.push({ deps, callback }); runInjections(); },
-    locale: { register: () => () => {}, bind: () => key => key },
+    // `register` **records** instead of discarding. It used to be `() => () => {}`, which made this
+    // file prove only that the service *exists* — the dictionaries the user actually reads were
+    // handed over and dropped, with nothing able to notice. A stub that accepts everything and
+    // remembers nothing is the shape of a test that cannot fail on the half it does not look at.
+    locale: { register: (...args) => { localeCalls.push(args); return () => {} }, bind: () => key => key },
     slots: { inject: (_name, fn) => fn(), register: config => { dialog = config.inject(); return () => {}; } },
   };
   services.slots = ctx.slots;
@@ -188,6 +195,7 @@ function fixture({ legacy = false, late = false, startService = legacy ? 'legacy
   plugin.apply(ctx);
   return {
     calls, services, dialog, mount, summary, setPreset, opened, pending, signals, budgets,
+    locales: () => localeCalls,
     emit: () => subscriber?.(),
     tick: () => tick?.(),
     setVariantStatus: value => { outcome = value; },
@@ -660,3 +668,27 @@ test('every call is bounded, and the filesystem walks get the longer budget', as
   }
   f.dispose();
 });
+
+test('the client hands its dictionaries to the host, in both languages', () => {
+  // The user-visible half of this plugin is its panel. `register('wslWorkspace', …)` is how the panel
+  // reaches the host, and until the `register` above recorded its arguments nothing could tell whether
+  // the handover happened at all — the fixture accepted the call and threw the payload away.
+  const { locales } = fixture()
+  const registration = locales().find(args => args[0] === 'wslWorkspace')
+  assert.ok(registration !== undefined,
+    `nothing registered a locale namespace; saw ${JSON.stringify(locales().map(a => a[0]))}`)
+  const [, dictionaries] = registration
+  assert.deepEqual(Object.keys(dictionaries ?? {}).sort(), ['en', 'zh'],
+    'both languages go over, because a missing one renders as raw keys in the other language')
+
+  // Derived, not listed: the keys the panel reads are read off the panel component, so a key the UI
+  // asks for and the dictionary does not carry is a blank label with nothing to notice it.
+  const source = readFileSync(join(import.meta.dirname, '..', 'src', 'client', 'help.tsx'), 'utf8')
+  const used = [...source.matchAll(/t\(\s*['"]([\w.]+)['"]/g)].map(match => match[1])
+  assert.ok(used.length > 0, 'the panel reads no keys at all, so this test cannot fail')
+  for (const language of ['zh', 'en']) {
+    const missing = used.filter(key => dictionaries?.[language]?.[key] === undefined)
+    assert.deepEqual(missing, [],
+      `${language} is missing key(s) the panel renders: ${missing.join(', ')}`)
+  }
+})

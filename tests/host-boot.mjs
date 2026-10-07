@@ -23,6 +23,7 @@ import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { DEFAULT_ROUTE } from '../lib/index.js'
 import { bareContextReads, declaredInject, hostMentions, offeredJobChannels } from './parity/derive.mjs'
 import { HOST_BOOT_REDS, compareHostBoot, premises } from './host-boot-debt.mjs'
 
@@ -354,6 +355,9 @@ const outcome = await runChild({ DSH_HOME: home }, {
   pluginRowIds: PLUGIN_ROWS.map(([id]) => id),
     sessionId: `host-boot-${process.pid}`,
     sessionCwd: sessionCwd,
+    // The path the user-facing dialog lives at, taken from the module that declares it rather than
+    // written here — a second copy of the path would be the failure this whole branch removes.
+    defaultRoute: DEFAULT_ROUTE,
 })
 rmSync(home, { recursive: true, force: true })
 
@@ -406,6 +410,7 @@ function probeJson(probes, label, fallback) {
 let isolationHolds = false
 let pluginChannelReadable = false
 let hostChannelReadable = false
+let hostAudit = null
 let realJobView = null
 let realJobReadable = false
 let hostAcceptsPreset = false
@@ -465,6 +470,13 @@ const presetProblems = probeJson(probes, 'presetProblems', [])
 if (probes.presetRegistry !== undefined) {
   console.log(`  the host's preset registry: ${probes.presetRegistry.value}`)
   console.log(`  presets it ended up holding: ${roster.length === 0 ? '(none)' : roster.map(entry => `${entry.id}[${entry.plugins ?? '?'} rows${entry.broken === null ? '' : ` BROKEN: ${entry.broken}`}]`).join(', ')}`)
+  // ── the user-facing route, asked of the host's router ───────────────────────────────────
+  console.log(`  the route the user dialog posts to: ${probes.userRoute?.value ?? '(not probed)'}`)
+  let userRoute = null
+  try { userRoute = JSON.parse(probes.userRoute?.value ?? 'null') } catch { userRoute = null }
+  const routeRegistered = userRoute?.registered === true
+  console.log(`    ${routeRegistered ? 'ok  ' : 'FAIL'} the host's router holds it (${userRoute?.route})`)
+
   // ── the real thing: this plugin's producer, over real WSL, read by the host's reader ───────
   // The strongest evidence this system can produce, and the reason it exists: the plugin's **own**
   // `bash_background` tool runs a **real** command in a **real** distribution, and the output comes
@@ -510,7 +522,6 @@ if (probes.presetRegistry !== undefined) {
   // ── the host's own verdict on this plugin's preset ──────────────────────────────────────
   // The counterparty's own acceptance, not our reading of its rules. A non-null `listProblem` is the
   // host saying this preset tree is malformed, and nothing written here gets to overrule it.
-  let hostAudit = null
   try { hostAudit = JSON.parse(probes.hostAudit?.value ?? 'null') } catch { hostAudit = null }
   const hostAccepts = hostAudit !== null && hostAudit.listProblem === null
   hostAcceptsPreset = hostAccepts

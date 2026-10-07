@@ -422,6 +422,22 @@ try {
     report.probes.realJob = { ok: false, value: `THREW: ${String(error?.message ?? error).slice(0, 300)}` }
   }
 
+  // ── the route this plugin opens for the user, asked of the host's own router ─────────────
+  // `DEFAULT_ROUTE` is where "add a WSL workspace" goes: the Electron dialog POSTs to it, and the
+  // handler answers with the workspace descriptor. So asking the host's router whether it holds the
+  // route is asking whether the user has anything to talk to — with the host's own matcher, not a
+  // copy of its path table.
+  probe('userRoute', () => {
+    const webServer = ctx.get('webServer')
+    if (webServer === undefined) return 'ABSENT'
+    const matched = webServer.match?.(plan.defaultRoute ?? '/wsl-workspace/api')
+    return JSON.stringify({
+      route: plan.defaultRoute ?? '/wsl-workspace/api',
+      registered: matched !== undefined,
+      kind: matched?.kind ?? null,
+    })
+  })
+
   probe('jobRoundTrip', () => {
     const jobs = ctx.get('jobs')
     if (jobs === undefined) return 'ABSENT'
