@@ -466,10 +466,23 @@ try {
     const toolRuntime = agentCtx?.get?.('tools') ?? ctx.get('tools')
     const wslTools = ['bash', 'bash_background', 'grep', 'glob', 'wsl_terminal']
       .filter(name => toolRuntime?.get?.(name) !== undefined)
+    // **Why, not what.** The first version reported `exit n/a` when the run never happened, which is
+    // a true statement about an exit code and a useless statement about a defect: run against `main`
+    // it read as a mystery, when the whole cause was that this host's executor has no `execute` at
+    // all. Each shape below names itself, so the reader learns the failure from the line rather than
+    // from re-running it. A red that does not say why is the first step toward a red nobody reads.
     let ran = null
     try {
       const shell = agentCtx?.get?.('shell') ?? ctx.get('shell')
-      if (shell !== undefined && typeof shell.execute === 'function') {
+      if (shell === undefined) {
+        ran = { shape: 'no-shell-service', why: 'no `shell` service in the session or at the root' }
+      } else if (typeof shell.execute !== 'function') {
+        const available = Object.getOwnPropertyNames(Object.getPrototypeOf(shell) ?? {}).join(', ')
+        ran = {
+          shape: 'executor-cannot-run',
+          why: `this host's shell executor has no execute(); it offers: ${available || '(nothing)'}`,
+        }
+      } else {
         // The distro reaches the shell the way it reaches a real session: through the session's
         // environment, not through `process.env`. A UNC path carries no distribution on its own, and
         // calling the executor directly skips the `shellEnv` collection that would normally supply it
@@ -495,6 +508,7 @@ try {
           return ''
         })()
         ran = {
+          shape: text.includes('WSL_SESSION_MARKER') ? 'ran-and-returned' : 'ran-and-returned-nothing',
           status: outcome?.exitCode ?? outcome?.status ?? null,
           carriesMarker: text.includes('WSL_SESSION_MARKER'),
           text: text.slice(0, 120),
@@ -502,7 +516,8 @@ try {
         }
       }
     } catch (error) {
-      ran = { error: String(error?.message ?? error).slice(0, 160) }
+      // A thrown run is named too. `error` alone is not a diagnosis; the shape is what a reader scans.
+      ran = { shape: 'threw', why: String(error?.message ?? error).slice(0, 200) }
     }
     return JSON.stringify({
       agentKeys: [...names].filter(name => /ctx|context|scope|session|preset|id/i.test(name)).slice(0, 12),

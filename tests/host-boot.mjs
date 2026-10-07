@@ -211,6 +211,7 @@ function writeOverlay(home, rows, pluginEntries) {
   for (const [id, relative] of pluginEntries) {
     yaml.push(`    - id: ${id}`, `      name: "${pathToFileURL(join(repoRoot, relative)).href}"`)
   }
+  void 0
   yaml.push('')
   const file = join(home, 'overlay.yml')
   writeFileSync(file, yaml.join('\n'), 'utf8')
@@ -339,7 +340,9 @@ if (false) {
 // dsh.bundle` line per row on every run — noise that trains a reader to skim the log. Everything the
 // profile needs arrives as a patch row instead.
 writeManifest(home, PROFILE, [])
-const overlay = writeOverlay(home, HOST_ROWS, PLUGIN_ROWS)
+const CONTROL_ARM = process.argv.includes('--without-plugin')
+const pluginRows = CONTROL_ARM ? [] : PLUGIN_ROWS
+const overlay = writeOverlay(home, HOST_ROWS, pluginRows)
 
 const { requirements, declaredInject: declaredSurface } = deriveRequirements()
 
@@ -359,6 +362,10 @@ const outcome = await runChild({ DSH_HOME: home }, {
     // written here — a second copy of the path would be the failure this whole branch removes.
     defaultRoute: DEFAULT_ROUTE,
     distro: DISTRO,
+    // The control arm: the same host surface with this plugin's rows omitted. Without it there is
+    // no way to tell "the plugin broke the host" from "my host composition was wrong", and this
+    // harness got that wrong three times in one day.
+    withoutPlugin: process.argv.includes('--without-plugin'),
 })
 rmSync(home, { recursive: true, force: true })
 
@@ -433,7 +440,7 @@ const checks = [
   // the substrate owes is that the rows were accepted and got fibers at all.
   ['P4 the host accepted every one of this plugin\'s entries as a row', PLUGIN_ROWS.every(
     ([id]) => byId.get(id) !== undefined && byId.get(id)?.stateName !== undefined),
-    PLUGIN_ROWS.map(([id]) => `${id}=${byId.get(id)?.stateName ?? 'ABSENT'}`).join(' ')],
+    pluginRows.map(([id]) => `${id}=${byId.get(id)?.stateName ?? 'ABSENT'}`).join(' ')],
   ['P5 the services this plugin declares are real objects, not stubs', ['webServer', 'fs'].every(s => probes.p6_services.value.includes(`\"${s}\":\"object\"`)),
     probes.p6_services.value],
   ['P6 nothing looks substituted', probes.p7_sentinels.value === '[]' && probes.p7_hostOwnServices.value.includes('loader'),
@@ -786,6 +793,17 @@ console.log(`  ledger: ${verdict.ok ? 'every red observed is on the books' : 'MI
 // red that appeared is one the ledger already accounts for. The second is the whole reason the
 // ledger exists — a known defect should not make CI unreadable, and it should become *unreadable*
 // again the moment it is paid without being withdrawn.
+// In the control arm the plugin is absent **on purpose**, so every claim about the plugin is not
+// applicable rather than false. Reporting them as failures would make the control arm red for the
+// thing it exists to demonstrate, and a red that means "as designed" is the one kind nobody reads.
+if (CONTROL_ARM) {
+  for (const [name] of checks) {
+    if (name.startsWith('P4')) console.log(`  n/a  ${name} — the control arm boots the host without this plugin`)
+  }
+  console.log(`\nhost-boot: CONTROL ARM GREEN — the pinned host boots and serves without this plugin.`)
+  console.log('  So a boot failure in the full arm is this plugin\'s doing, not the composition\'s.')
+  process.exit(failed.length === 0 ? 0 : 1)
+}
 if (failed.length > 0) {
   console.error(`\nhost-boot: RED — ${failed.length} positive control(s) failed. `
     + 'The substrate did not look like the pinned host, so nothing downstream can be trusted.')

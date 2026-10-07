@@ -5,7 +5,21 @@
  * the composition carries the WSL execution-world realm.
  *
  * Run from the plugin directory: `node tests/host-materialize.mjs`
- */
+  * ## Superseded for host-contract questions — read this first
+ *
+ * This harness answers "is the shape of what we declare well-formed". It cannot answer "does the
+ * host accept it", because a hand-built face has no loader, no group realms and no reader: a face can
+ * be made to agree with any expectation, which is exactly why agreeing with it proves nothing.
+ *
+ * `tests/host-boot.mjs` asks the **pinned host** instead — it boots
+ * `@deepseek-ai/dsh@0.2.0-rc.2` through its own `runProfile`, mounts this plugin's real entries, and
+ * reads the result back through the host's registry, router and reader. It also has a control arm
+ * (`--without-plugin`) that boots the same surface without this plugin, so a boot failure can be
+ * attributed.
+ *
+ * **Keep this file** — the shape of a declaration is still worth checking, and it is cheaper. But do
+ * not read a green run here as evidence about the host.
+
 
 import { mkdirSync, mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
