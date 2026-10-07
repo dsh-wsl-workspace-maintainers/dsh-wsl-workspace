@@ -4,6 +4,16 @@
 
 本文件为中文记录（0.4.3 及更早为摘要）；英文原文见 [CHANGELOG.md](CHANGELOG.md)。
 
+## 0.7.7 — 2026-10-07
+
+- **DSH 0.2.x 下 `bash_background` 的 `job_output` 始终为空（issue #56）。** `bash_background`（以及复用同一生产者的 `bash` 的 `run_in_background: true`）能正常起任务、`job_list` 也能追踪，但 `job_output` 每次读取都返回 `(no new output)`——运行中、结束后如此，完成通告也不带正文。命令**确实**执行了、stdout 也落了盘，所以死的是读取通道，不是任务本身。
+
+  根因是注册表在两个版本线之间的契约变更。`@deepseek-ai/dsh-jobs-local@0.2.x` 只从 `spec.output` 这个 pull-source 数组填充任务输出环（`start()` 在后续 tick 逐一 drain 每个 source 的 `read(from)`），**从不**读取 `run()` 返回的 `readOutput`。而本插件的生产者只设置了 `readOutput`（即 0.1.x 契约），于是 `spec.output` 为空、pump 从未被武装，输出环始终为空。单元测试用的假注册表实现的是旧的 `run()`-`readOutput` 语义，所以测试全绿、真实 0.2.0-rc.2 宿主却红。
+
+  生产者现在**双通道齐发**，各自版本线读取自己理解的那一个：`spec.output` 内两个 pull-source——`stdout` 与一个带 `stderr` 标签的 source——各自从 shell 进程自身的逐流 `observed` reader 读取（与 `readOutput` 所 drain 的是同一组独立游标，互不抢字节），同时保留 `run()` 返回的 `readOutput` 给 0.1.x 注册表使用。`spillPath` 原样透传，因此溢出流仍会报告其 spill 文件，`stderr` 也借由 channel 标签留在自己的通道上。
+
+  新增一条单元门禁，复刻 0.2.x 的 drain 循环去拉取生产者产出的 `output` source，在旧生产者（无 source，或 source 不吐字节）上必定失败，故此类回归无法再静默复现。
+
 ## 0.7.6 — 2026-10-01
 
 - **DSH Desktop 0.2.x 上 WSL 工作区里每一次 `bash` 调用都失败（issue #51），修的是三件事。**

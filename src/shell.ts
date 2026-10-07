@@ -469,7 +469,40 @@ export class WslShellExecutor extends ShellExecutor {
 
     let stdoutOffset = 0
     let stderrOffset = 0
-    let resultPromise: Promise<ShellRunResult> | undefined
+let resultPromise: Promise<ShellRunResult> | undefined
+
+    /**
+     * The non-consuming observers `ShellProcess.observed` is required to carry.
+     *
+     * `observed` is **not optional** in the host's `ShellProcess` contract, and the host spells out
+     * what it is for: "Independent observers read here at their own offsets without stealing bytes
+     * from `readOutput`." `dsh-jobs-local@0.2.x` drains a job's ring through offset readers and never
+     * calls `readOutput`, so a handle that offered only the latter shipped an empty `job_output`
+     * (issue #56).
+     *
+     * The offsets are **not** `stdoutOffset` / `stderrOffset` above: those track the consuming
+     * cursor, and sharing them would make the two readers steal bytes from each other. The host asks
+     * for independence explicitly.
+     *
+     * A rejected spawn leaves the subprocess service with nothing buffered, so `readFrom` yields an
+     * empty delta forever. The failure note is served as the **whole stderr stream** instead — once,
+     * to whichever observer asks first — because a reader cannot be told "nothing happened, here is
+     * why" any other way, and a job that never ran is exactly the case a user needs to see.
+     */
+    let spawnFailureObserved = false
+    const readObserved = (
+      which: 'stdout' | 'stderr',
+      from: number,
+    ): { text: string; nextOffset: number; lossy: boolean; spillPath?: string } => {
+      const read = collected[which].readFrom(from)
+      if (which === 'stderr' && read.text.length === 0 && !spawnFailureObserved) {
+        const note = consumeSpawnFailure()
+        if (note !== '') return { text: note, nextOffset: note.length, lossy: false }
+      }
+      if (which === 'stderr' && read.text.length > 0) spawnFailureObserved = true
+      return read
+    }
+
     const execution: ShellExecution = {
       status: 'running',
       exitCode: null,
@@ -505,10 +538,17 @@ export class WslShellExecutor extends ShellExecutor {
           ...err.spillPath !== undefined ? { stderrSpillPath: err.spillPath } : {},
         }
       },
-      // Independent cursors over the same captured streams `readOutput` drains,
-      // so an observer can follow a background command without stealing bytes
-      // from the job tool that owns it.
-      observed: { stdout: collected.stdout, stderr: collected.stderr },
+// Independent cursors over the same captured streams `readOutput` drains, so an observer can
+      // follow a background command without stealing bytes from the job tool that owns it. The
+      // `readObserved` wrapper (above) is main's: the readers themselves are the subprocess service's,
+      // which already keep independent offsets, and the wrapper adds what they cannot — a rejected
+      // spawn leaves them reading an empty stream forever, so the failure note is served as the whole
+      // stderr stream instead. This branch's `observed: { stdout: collected.stdout, … }` was the same
+      // idea without that half.
+      observed: {
+        stdout: { readFrom: from => readObserved('stdout', from) },
+        stderr: { readFrom: from => readObserved('stderr', from) },
+      },
       kill: (): boolean => {
         if (execution.status !== 'running') return false
         execution.status = 'killed'

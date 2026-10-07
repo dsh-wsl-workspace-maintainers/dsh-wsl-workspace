@@ -71,6 +71,12 @@ interface ToolsRegistryFace {
   register(tool: unknown): void
 }
 
+/** One captured output stream, read incrementally from a byte offset. */
+interface OutputReader {
+  /** Return the bytes written since `fromByte`, plus the offset just past them. */
+  readFrom(fromByte: number): { text: string; nextOffset: number; lossy: boolean; spillPath?: string }
+}
+
 /** One background process handle, as this plugin's shell provider returns it. */
 interface ShellProcessFace {
   readonly status: 'running' | 'completed' | 'killed'
@@ -79,6 +85,12 @@ interface ShellProcessFace {
   readonly done: Promise<void>
   readOutput(): { delta: string; lossy: boolean; stdoutSpillPath?: string; stderrSpillPath?: string }
   kill(): boolean
+  /**
+   * Per-stream readers the 0.2.x registry drains through the `output` pull
+   * sources below. The 0.1.x registry instead consumes `run()`'s returned
+   * `readOutput`, so both are exposed and each release reads the one it knows.
+   */
+  readonly observed: { stdout: OutputReader; stderr: OutputReader }
 }
 
 /** The `ctx.shell` face: resolve a request, then start it in the background. */
@@ -100,6 +112,13 @@ interface JobsFace {
     kind: string
     label: string
     owner?: unknown
+    /**
+     * Pull-sources the 0.2.x registry drains into the job's output ring. Each
+     * source's `read(from)` returns the bytes written since `from` plus the next
+     * cursor; an optional `channel` keeps the stream on its own lane. The 0.1.x
+     * registry ignores this and reads `run()`'s `readOutput` instead (issue #56).
+     */
+    output?: Array<{ channel?: string; read(from: number): { text: string; nextOffset: number; lossy: boolean; spillPath?: string } }>
     run(): {
       cancel(reason?: string): void
       done: Promise<{ status: 'completed' | 'killed' | 'failed'; detail?: string }>
@@ -286,6 +305,10 @@ export function apply(ctx: Context, config?: Config): void {
       }],
     },
     async execute(args: { command: string; workdir?: string }, exec: ToolExecution) {
+      // main inlined this body; this branch lifted it into `startBackgroundJob` so the
+      // `bash` tool's `run_in_background: true` path and this tool share one producer instead of
+      // two copies of it. That refactor already carries #56's fix with it: the `output`
+      // pull-sources inside it are the same two sources main added, so taking this side keeps both.
       return startBackgroundJob(ctx, args, exec)
     },
     presentCall: (args: { command: string }) => ({
