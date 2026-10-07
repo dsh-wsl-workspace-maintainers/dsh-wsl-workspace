@@ -46,6 +46,11 @@ export const HOST_BOOT_REDS = [
       '`jobs.read()` — the path `job_output` takes — returns `chunks: []` for `run().readOutput` and',
       'the full marker for `spec.output`. The harness control is that the host reads its own channel',
       'fine, so the empty result is about this plugin\'s channel and not about the harness.',
+      '',
+      'Confirmed on the **product itself**, which is the witness that matters: this plugin\'s own',
+      '`bash_background` tool, a real command in a real distribution, a job that reaches',
+      '`status: completed` — and `0` chunks back through the host\'s reader. The command ran; the',
+      'output did not come home.',
     ].join(' '),
     repair: [
       'Offer the channel the host reads, not the one it used to: put pull-sources on `spec.output`',

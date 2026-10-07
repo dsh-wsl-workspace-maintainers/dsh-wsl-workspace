@@ -17,6 +17,7 @@
     "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
     "@deepseek-ai/dsh-tool-fs-search": "0.2.0-rc.2",
     "@deepseek-ai/dsh-jobs": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-session-persistence": "0.2.0-rc.2",
     "@deepseek-ai/dsh-attachment": "0.2.0-rc.2",
     "@deepseek-ai/dsh-output-retention": "0.2.0-rc.2",
     "@deepseek-ai/dsh-spill": "0.2.0-rc.2",

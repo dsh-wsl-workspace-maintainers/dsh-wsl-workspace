@@ -278,6 +278,60 @@ try {
   // takes. Nothing here knows what any defect is: it registers a job, asks the host to read it, and
   // reports what came back. If one comes back empty and the other does not, the asymmetry is the
   // host's, established by the host rather than by our reading of its source.
+  // ── the mounted preset: the group realm, as the host sees it ─────────────────────────────
+  // `mount(ctx, id)` is the host's own entry point for putting a preset into a live subtree, and
+  // `leakedServices(ctx, mount)` is the host's own answer to "did anything inside `isolate` escape
+  // into the root". Asking the counterparty is the whole discipline: a check written here would only
+  // be my reading of what `isolate` is supposed to mean.
+  try {
+    if (registry === undefined) throw new Error('no agentPresets service')
+    const hostRegistry = await import('../../ci/deps/node_modules/@deepseek-ai/dsh-agent-preset-registry/lib/index.js')
+    const scopeModule = await import('../../ci/deps/node_modules/@deepseek-ai/dsh-scope/lib/index.js')
+    // `mount()` refuses an unscoped context (measured: `Agent preset binding requires a scoped
+    // context`), so the scope is minted first: the registry mints the key, `createScope` turns it
+    // into a context, and the preset mounts *into that subtree*. This is the host's own route — the
+    // same sequence an Agent goes through — rather than one assembled here.
+    const acquired = await registry.acquireScope()
+    const keyParent = scopeModule.scopeParentOf?.(acquired.key)
+    let scope
+    try {
+      scope = scopeModule.createScope(ctx, acquired.key, { parent: keyParent })
+    } catch {
+      // Reported rather than guessed at: the cycle message names the constraint, not the fix.
+      scope = scopeModule.createScope(ctx, `${String(acquired.key)}:realm`, { parent: keyParent })
+    }
+    const mounted = await registry.mount(scope.ctx, 'wsl-standard')
+    const mounts = hostRegistry.livePresetMounts?.() ?? []
+    const view = mounts.map(entry => {
+      const leaks = hostRegistry.leakedServices?.(ctx, entry) ?? null
+      const realmEntries = [...(entry?.fiber?.ctx?.loader?.entries?.() ?? [])]
+      return {
+        id: entry?.fiber?.options?.id ?? entry?.id ?? '(unnamed)',
+        leaked: leaks,
+        realmRowIds: realmEntries.map(row => row?.options?.id).filter(Boolean).slice(0, 12),
+        realmRows: realmEntries.length,
+      }
+    })
+    // Inside the mounted realm, does the host's own `tool-fs` row still see `fs`? This is the
+    // question the isolate declaration exists to answer, asked inside the realm rather than in a
+    // document.
+    const realmFsRow = realmEntriesFor(mounts, 'tool-fs')
+    void scope
+    report.probes.realmVisibility = {
+      ok: true,
+      value: JSON.stringify({
+        mountedPreset: typeof mounted === 'string' ? mounted : (mounted?.id ?? 'mounted'),
+        scopeParentOfKey: keyParent === undefined ? null : String(keyParent),
+        rootScope: String(scopeModule.scopeOf?.(ctx) ?? 'none'),
+        mounts: view,
+        toolFsSeesFs: realmFsRow === undefined ? 'no-tool-fs-row' : (realmFsRow.ctx?.get?.('fs') !== undefined),
+        rootSeesFs: ctx.get('fs') !== undefined,
+      }),
+    }
+  } catch (error) {
+    report.probes.realmVisibility = { ok: false, value: `THREW: ${String(error?.message ?? error).slice(0, 300)}` }
+  }
+
   // ── the host's own auditor, on this plugin's preset ──────────────────────────────────────
   // `auditRows` and `entryListProblem` are exported by `@deepseek-ai/dsh-agent-preset-registry` and
   // are the host's **own** definition of whether a preset tree is well-formed. Using them is the whole
@@ -305,6 +359,67 @@ try {
     }
   } catch (error) {
     report.probes.hostAudit = { ok: false, value: `THREW: ${String(error?.message ?? error).slice(0, 200)}` }
+  }
+
+  // ── the real thing: this plugin's own producer, over real WSL, read by the host ────────────
+  // Everything above proves the *contract*; this proves the *product*. `bash_background` is the tool
+  // this plugin registers, it runs a real command in a real distribution, and the output comes back
+  // through the host's own `jobs.read()` — the reader `job_output` uses. Nothing here substitutes
+  // the producer, the command, or the reader.
+  try {
+    report.probes.realJob = { ok: true, value: await (async () => {
+    const tools = ctx.get('tools')
+    const jobsRegistry = ctx.get('jobs')
+    if (tools === undefined) return 'no tools service'
+    if (jobsRegistry === undefined) return 'no jobs service'
+    const tool = tools.get?.('bash_background')
+    if (tool === undefined) return 'bash_background is not registered'
+    const MARK = 'DSH_REAL_JOB_MARKER'
+    // A **live** agent, not a plausible-looking identity. The jobs service checks ownership against
+    // the agent registry and refuses by name:
+    // `session "…" has no live agent (background job owner must be live)`. Every background job this
+    // plugin starts is owned, so the registry has to hold the owner before the producer is called —
+    // this is the session stack, and it is the last thing standing between this harness and the
+    // plugin's real producer.
+    const agents = ctx.get('agents')
+    const sessionId = plan.sessionId ?? `host-boot-real-${process.pid}`
+    let owner = null
+    if (agents !== undefined) {
+      const handle = await agents.create({
+        sessionId,
+        meta: { cwd: plan.sessionCwd, agentPreset: 'wsl-standard' },
+      })
+      owner = handle?.agent ?? handle
+    }
+    const exec = {
+      agent: owner === null
+        ? { id: sessionId, session: { header: { cwd: plan.sessionCwd } } }
+        : owner,
+    }
+    const result = await tool.execute({ command: `printf '%s\\n' ${MARK}` }, exec)
+    const jobId = String(result?.jobId ?? result?.job_id ?? '')
+    if (jobId === '') return `tool returned no job id: ${JSON.stringify(result ?? null).slice(0, 200)}`
+    // The host's reader, given a moment to drain the producer.
+    // Read as the same caller that created it. The registry fences access by session —
+    // `job bash-1 belongs to another session` — so a read with no caller, or with the wrong one,
+    // reports an empty job rather than the defect.
+    let view = null
+    for (let attempt = 0; attempt < 20; attempt++) {
+      view = jobsRegistry.read(jobId, sessionId)
+      if ((view?.chunks ?? []).length > 0) break
+      await new Promise(resolve => setTimeout(resolve, 250))
+    }
+    const text = (view?.chunks ?? []).map(chunk => String(chunk?.text ?? '')).join('')
+    return JSON.stringify({
+      jobId,
+      status: view?.job?.status ?? null,
+      chunkCount: (view?.chunks ?? []).length,
+      carriesMarker: text.includes(MARK),
+      text: text.slice(0, 160),
+    })
+    })() }
+  } catch (error) {
+    report.probes.realJob = { ok: false, value: `THREW: ${String(error?.message ?? error).slice(0, 300)}` }
   }
 
   probe('jobRoundTrip', () => {

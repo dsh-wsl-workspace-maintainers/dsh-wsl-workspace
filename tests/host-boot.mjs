@@ -80,6 +80,20 @@ const HOST_ROWS = [
   // `skill-filesystem: pending (waiting for service: skills)` without it — which is the shape of a
   // provider whose absence is invisible until something reads the roster.
   ['skills', '@deepseek-ai/dsh-skill'],
+  // The agent registry. The jobs service refuses an owned job without it, by name:
+  // `background job ownership requires the agent registry (load @deepseek-ai/dsh-agent)`. Every
+  // background job this plugin starts is owned, so without this row the real producer cannot run at
+  // all — and the only symptom is that sentence.
+  ['agent', '@deepseek-ai/dsh-agent'],
+  // …and the loop, which is the factory that makes an agent *runnable*:
+  // `no agent factory registered (load an agent-loop plugin)`. Two rows for one capability, each
+  // naming its own missing half.
+  ['agent-loop', '@deepseek-ai/dsh-agent-loop'],
+  // …which in turn waits for the session store and an LLM provider. These three rows are one
+  // capability, and each is named by the one before it, which is why they are here together rather
+  // than discovered one at a time.
+  ['sessions', '@deepseek-ai/dsh-session'],
+  ['llm', '@deepseek-ai/dsh-llm'],
 ]
 
 /**
@@ -282,7 +296,10 @@ function pluginSources() {
 function runChild(env, plan) {
   return new Promise(resolvePromise => {
     const child = spawn(process.execPath, ['--experimental-strip-types', CHILD, JSON.stringify(plan)], {
-      env: { ...process.env, ...env },
+      // The plugin resolves its distribution from the session path first and `DSH_WSL_DISTRO` second;
+    // without the fallback it logs "no WSL distribution resolved for the session probe" and mounts
+    // nothing, which is a property of the harness rather than of the plugin.
+    env: { ...process.env, DSH_WSL_DISTRO: DISTRO, ...env },
     })
     let stdout = ''
     let stderr = ''
@@ -324,9 +341,19 @@ writeManifest(home, PROFILE, [])
 const overlay = writeOverlay(home, HOST_ROWS, PLUGIN_ROWS)
 
 const { requirements, declaredInject: declaredSurface } = deriveRequirements()
+
+// A real Windows-visible path into the distribution, in the shape the real drivers build: the
+// session's `cwd` is a UNC path, and the plugin resolves both the distribution and the Linux
+// directory from it. `distro-shape-real.mjs` and `bash-session-real.mjs` construct the same shape,
+// which is why this is a copy of a known-good form rather than an invention.
+const DISTRO = process.env.WSL_COMPAT_DISTRO ?? 'Ubuntu'
+const LINUX_HOME = process.env.WSL_COMPAT_ROOT ?? '/tmp'
+const sessionCwd = `\\\\wsl.localhost\\${DISTRO}${LINUX_HOME.replaceAll('/', '\\')}`
 const outcome = await runChild({ DSH_HOME: home }, {
   profile: PROFILE, patchFiles: [overlay], requirements, declaredInject: declaredSurface,
   pluginRowIds: PLUGIN_ROWS.map(([id]) => id),
+    sessionId: `host-boot-${process.pid}`,
+    sessionCwd: sessionCwd,
 })
 rmSync(home, { recursive: true, force: true })
 
@@ -379,7 +406,12 @@ function probeJson(probes, label, fallback) {
 let isolationHolds = false
 let pluginChannelReadable = false
 let hostChannelReadable = false
+let realJobView = null
+let realJobReadable = false
 let hostAcceptsPreset = false
+let realmMounted = false
+let realmClean = false
+let realmHoldsFs = false
 
 const checks = [
   ['P1 the host has a loader with entries', probes.p1_loaderPresent.ok && Number(probes.rowCount.value) >= HOST_ROWS.length,
@@ -433,6 +465,48 @@ const presetProblems = probeJson(probes, 'presetProblems', [])
 if (probes.presetRegistry !== undefined) {
   console.log(`  the host's preset registry: ${probes.presetRegistry.value}`)
   console.log(`  presets it ended up holding: ${roster.length === 0 ? '(none)' : roster.map(entry => `${entry.id}[${entry.plugins ?? '?'} rows${entry.broken === null ? '' : ` BROKEN: ${entry.broken}`}]`).join(', ')}`)
+  // ── the real thing: this plugin's producer, over real WSL, read by the host's reader ───────
+  // The strongest evidence this system can produce, and the reason it exists: the plugin's **own**
+  // `bash_background` tool runs a **real** command in a **real** distribution, and the output comes
+  // back through the **host's** reader. Not a contract reading, not a shape comparison — the product,
+  // doing the thing, observed by the other party.
+  const realJob = String(probes.realJob?.value ?? '(not probed)')
+  console.log(`  the plugin's own background job, read back by the host: ${realJob}`)
+  let realJobParsed = null
+  try { realJobParsed = JSON.parse(probes.realJob?.value ?? 'null') } catch { realJobParsed = null }
+  realJobView = realJobParsed
+  realJobReadable = realJobView?.carriesMarker === true
+  if (realJobView === null) {
+    console.log('    NOT MEASURED — the real job did not run here; see the value above.')
+  } else {
+    console.log(`    ${realJobReadable ? 'ok  ' : 'FAIL'} the marker came back through the host's reader (${realJobView.chunkCount} chunk(s), status ${realJobView.status})`)
+  }
+
+  // ── the mounted preset: the realm, and the host's own leak verdict ─────────────────────
+  console.log(`  the mounted preset, as the host assembled it: ${probes.realmVisibility?.value ?? '(not probed)'}`)
+  let realm = null
+  try { realm = JSON.parse(probes.realmVisibility?.value ?? 'null') } catch { realm = null }
+  const realmMounts = realm?.mounts ?? []
+  const anyLeak = realmMounts.some(entry => Array.isArray(entry?.leaked) && entry.leaked.length > 0)
+  const realmHoldsFsValue = realm?.toolFsSeesFs === true
+  // **Not measured** and **measured-and-red** are different, and the report must not blur them. If the
+  // preset could not be mounted at all, that is this harness not having assembled the host's scope
+  // chain — it says nothing about whether the isolation holds, and a FAIL there would be a false
+  // accusation. A leak verdict is only reported once there is a mounted realm to leak from.
+  const mountFailed = typeof probes.realmVisibility?.value === 'string'
+    && probes.realmVisibility.value.startsWith('THREW:')
+  if (mountFailed) {
+    console.log('    NOT MEASURED — the preset could not be mounted here, so runtime isolation is unverified:')
+    console.log(`      ${probes.realmVisibility.value}`)
+    console.log('      What *is* verified is on the lines above: the isolation survives into the document')
+    console.log('      the host holds, and the host\'s own auditor accepts that document. Whether the realm')
+    console.log('      then enforces it at run time needs an Agent, which needs the session stack.')
+  } else {
+    console.log(`    ${realmMounts.length === 0 ? 'FAIL' : 'ok  '} the preset mounted into a live subtree (${realmMounts.length} mount(s))`)
+    console.log(`    ${anyLeak ? 'FAIL' : 'ok  '} nothing inside the isolate leaked into the root${anyLeak ? ` — ${realmMounts.filter(e => e.leaked?.length).map(e => `${e.id}: ${e.leaked.join(',')}`).join('; ')}` : ''}`)
+    console.log(`    ${realm?.toolFsSeesFs === 'no-tool-fs-row' ? 'note' : realmHoldsFsValue ? 'ok  ' : 'FAIL'} inside the realm, tool-fs sees fs: ${realm?.toolFsSeesFs}`)
+  }
+
   // ── the host's own verdict on this plugin's preset ──────────────────────────────────────
   // The counterparty's own acceptance, not our reading of its rules. A non-null `listProblem` is the
   // host saying this preset tree is malformed, and nothing written here gets to overrule it.
@@ -440,6 +514,9 @@ if (probes.presetRegistry !== undefined) {
   try { hostAudit = JSON.parse(probes.hostAudit?.value ?? 'null') } catch { hostAudit = null }
   const hostAccepts = hostAudit !== null && hostAudit.listProblem === null
   hostAcceptsPreset = hostAccepts
+  realmMounted = realmMounts.length > 0
+  realmClean = realmMounts.length > 0 && !anyLeak
+  realmHoldsFs = realmHoldsFsValue
   console.log(`  the host's own auditor on wsl-standard: ${probes.hostAudit?.value ?? '(not probed)'}`)
   console.log(`    ${hostAccepts ? 'ok  ' : 'FAIL'} the host accepts this preset tree`)
 
@@ -611,9 +688,17 @@ const observedReds = [
   // The host rejecting the tree we contributed is not a debt of ours to negotiate: it is the
   // counterparty refusing the handover, which is the loudest signal this system can produce.
   ...(!hostAcceptsPreset && hostAudit !== null ? [`host-rejects-the-preset: ${hostAudit.listProblem}`] : []),
-  ...(!pluginChannelReadable && unread.includes('readOutput')
-    ? ['readOutput: unread in the host sources, and not readable by the host reader']
-    : []),
+  // **One** red, from the **strongest** witness available. Three things are known here: the host's
+  // sources never name the channel, a synthetic job on it reads back empty, and — when the product
+  // can be run at all — a **real completed job** reads back empty through the host's own reader.
+  // One invariant, one entry, one red; and when the real witness is available it *replaces* the
+  // synthetic one rather than adding to it, because a reader who has seen the product do the thing
+  // does not need the stand-in explained to them.
+  ...(realJobView !== null && !realJobReadable
+    ? ['readOutput: a real completed job read back empty through the host reader']
+    : (!pluginChannelReadable && unread.includes('readOutput')
+      ? ['readOutput: unread in the host sources, and not readable by the host reader']
+      : [])),
   // A preset whose isolation did not survive the round trip is the L2 finding: `fs` and `shell` would
   // be reachable by the host's own tools, which is the whole thing the group exists to prevent. One
   // red, named by what failed, because a debt is an invariant rather than a row count.
