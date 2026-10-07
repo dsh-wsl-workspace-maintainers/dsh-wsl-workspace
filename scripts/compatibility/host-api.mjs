@@ -27,13 +27,14 @@ await probe('invalid-user','setUser',{path:unc,username:'bad;name'},b=>!b.ok);
 await probe('clear-user','setUser',{path:unc,username:''},b=>b.ok);
 await probe('windows','registerWindows',{distro,linuxPath:mnt,username:''},b=>b.ok);
 await probe('windows-list','listWorkspaces',{},b=>b.ok&&b.value.some(p=>p.toLowerCase()===windows.toLowerCase()));
+await probe('workspace-records','listWorkspaceRecords',{},b=>b.ok&&b.value.some(r=>r.path.toLowerCase()===windows.toLowerCase()&&r.distro===distro));
 await probe('mnt','check',{distro,path:mnt},b=>b.ok&&b.value.isDirectory);
 await probe('unknown-method','not-a-method',{},b=>!b.ok);
 await fs.writeFile(path.join(path.dirname(process.argv[2]),'host-api.json'),JSON.stringify(results,null,2));
 // Floor, the same class of hole `verify-lib` had: `some()` over an empty array is false, so a
 // run that probed nothing printed "0/0 checks passed" and exited 0. The probe list is a
 // contract, so a short run is a failure rather than a quieter pass.
-const EXPECTED_PROBES = 12;
+const EXPECTED_PROBES = 13;
 console.log(`${results.filter(r=>r.pass).length}/${results.length} checks passed`);
 if(results.length !== EXPECTED_PROBES){
   console.error(`host-api: RED — ran ${results.length} probes, expected ${EXPECTED_PROBES}; `

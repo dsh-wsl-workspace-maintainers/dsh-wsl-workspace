@@ -9,6 +9,10 @@
  * The binding is a watching effect rather than a one-shot dialog action so
  * EVERY creation path (this dialog, the workspace row's New Session, the
  * hero picker) converges on the WSL-backed composition automatically.
+ *
+ * It also translates file references for WSL sessions (issue #49), so a path
+ * the model wrote inside the distribution can be previewed; see
+ * `./references.ts` and the hook at the end of `apply`.
  */
 
 // Type-only: pulls the locale plugin's Context merge (ctx.locale) and the
@@ -19,11 +23,12 @@
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
-import { check as checkApi, describe as describeApi, listDir as listDirApi, listDistros as listDistrosApi, listWorkspaces as listWorkspacesApi, registerWindows as registerWindowsApi, setWorkspaceUser as setWorkspaceUserApi } from './api.ts'
+import { check as checkApi, describe as describeApi, listDir as listDirApi, listDistros as listDistrosApi, listWorkspaceRecords as listWorkspaceRecordsApi, registerWindows as registerWindowsApi, setWorkspaceUser as setWorkspaceUserApi, type WslWorkspaceRecord } from './api.ts'
 import { AddWslWorkspace, type AddWslWorkspaceInjected } from './AddWslWorkspace.tsx'
 import { ensureStyles } from './styles.ts'
 import { zh, en } from './locales.ts'
 import { canonicalWindowsPath, isWslUnc, joinUnc, mntToWindowsPath } from '../shared/paths.ts'
+import { distroOfWorkspace, isWslWorkspace, rewriteReferenceAddress, type ReferenceSession } from './references.ts'
 
 /** Required services (cordis fiber inject). */
 export const inject = ['slots', 'locale', 'sessions', 'workspaces']
@@ -72,6 +77,20 @@ interface WslUiWorkspaceFace {
 interface WslAgentPresetsNamespace {
   list(): Promise<{ ok: boolean; value?: { presets: { id: string; broken?: string; isDefault?: boolean }[] }; error?: { message: string } }>
   select(sessionId: string, presetId: string): Promise<{ ok: boolean }>
+}
+
+/**
+ * Minimal right-Sidebar navigation face — the controller this plugin wraps.
+ *
+ * The `sidebarRight` service arrives with the right Sidebar itself
+ * (DSH 0.1.5-rc.1): the six earlier declared releases ship no right Sidebar, no
+ * document preview and no resource model, so there is no reference surface to
+ * fix there and the hook must simply not install. Both methods are the
+ * controller's published navigation API, unchanged in every release that has it.
+ */
+interface WslSidebarNavigationFace {
+  openResource(address: string, options?: unknown): void
+  openResourceIn(sessionId: string, address: string, options?: unknown): void
 }
 
 /** 旧版 connection 服务最小接口（v0.1.1-rc.2 及更早），api 属性承载远程调用。 */
@@ -191,6 +210,11 @@ export function apply(ctx: ClientContext): void {
   // cwd is one of these binds to the WSL variant like a UNC-cwd session.
   let wslWindowsPaths = new Set<string>()
 
+  // The distribution behind each of those drive keys. A `/mnt/<drive>` workspace
+  // stores it at registration time; a reference that leaves the drive mounts can
+  // only be opened through that distribution's UNC share (issue #49).
+  let driveDistros = new Map<string, string>()
+
   const injected = (): AddWslWorkspaceInjected => ({
     t,
     checkPreset: async (): Promise<string | undefined> => {
@@ -226,7 +250,10 @@ export function apply(ctx: ClientContext): void {
           const view = await workspaces.create({ path: winPath })
           await registerWindowsApi(linuxPath, distro, username)
           const canonical = canonicalWindowsPath(winPath)
-          if (canonical !== null) wslWindowsPaths = new Set(wslWindowsPaths).add(canonical)
+          if (canonical !== null) {
+            wslWindowsPaths = new Set(wslWindowsPaths).add(canonical)
+            driveDistros = new Map(driveDistros).set(canonical, distro)
+          }
           await startSession(view.workspaceId)
           return undefined
         }
@@ -291,18 +318,22 @@ export function apply(ctx: ClientContext): void {
     }
     refreshRoster()
     const refreshWorkspaces = (): void => {
-      void listWorkspacesApi().then((keys: string[]) => {
-        const next = new Set<string>()
-        for (const key of keys) {
-          const canonical = canonicalWindowsPath(key)
-          if (canonical !== null) next.add(canonical)
+      void listWorkspaceRecordsApi().then((records: WslWorkspaceRecord[]) => {
+        const keys = new Set<string>()
+        const distros = new Map<string, string>()
+        for (const record of records) {
+          const canonical = canonicalWindowsPath(record.path)
+          if (canonical === null) continue
+          keys.add(canonical)
+          if (record.distro !== undefined && record.distro !== '') distros.set(canonical, record.distro)
         }
-        wslWindowsPaths = next
+        wslWindowsPaths = keys
+        driveDistros = distros
         // Same late-input rule as the roster: the `/mnt/<drive>` key set
         // decides binding for drive-cwd sessions.
         maybeBind()
       }).catch(() => {
-        // A failed store read leaves the previous set; sessions stay on
+        // A failed store read leaves the previous sets; sessions stay on
         // their current composition until the next refresh.
       })
     }
@@ -358,4 +389,50 @@ export function apply(ctx: ClientContext): void {
       window.clearInterval(timer)
     }
   }, 'dsh-wsl-workspace: WSL mode-variant binding')
+
+  // File-reference path translation (issue #49).
+  //
+  // A WSL session's file references carry absolute LINUX paths, and the host
+  // resolves such a path with `node:path.resolve(cwd, path)` — where a POSIX
+  // absolute path is root-relative, so `/mnt/d/x` lands on the workspace drive
+  // (`D:\mnt\d\x`) and an in-distribution path under the cwd share's root.
+  // Neither names the file the model meant, so the document pane reports
+  // `error.notFound` (or EPERM, for the drvfs mount 9P cannot serve).
+  //
+  // The host plane offers this plugin no hook: `fs` and the `workspaceFiles`
+  // endpoint belong to other plugins, and cordis refuses a second `provide` for
+  // a name another fiber owns. The Sidebar's navigation controller is the one
+  // entry every reference surface goes through — the conversation's file links,
+  // a tool row's line reference and the Files panel's rows alike — so the
+  // address is translated there, which fixes both the tab's content and the
+  // metadata read under the same address.
+  ctx.inject(['sidebarRight'], (scope: ClientContext) => {
+    scope.effect(() => {
+      const controller = scope.get('sidebarRight') as unknown as WslSidebarNavigationFace | undefined
+      const openResource = controller?.openResource
+      const openResourceIn = controller?.openResourceIn
+      // A release whose controller has a different shape is left untouched: a
+      // partial patch would be worse than none. The no-op keeps this effect's
+      // return type a disposer on both paths.
+      if (controller === undefined || typeof openResource !== 'function' || typeof openResourceIn !== 'function') {
+        return () => {}
+      }
+      const sessionOf = (sessionId: string): ReferenceSession | undefined => {
+        const cwd = sessions.list.getSnapshot().byId[sessionId]?.cwd
+        if (cwd === undefined || cwd === '') return undefined
+        if (!isWslWorkspace(cwd, wslWindowsPaths)) return undefined
+        return { cwd, distro: distroOfWorkspace(cwd, driveDistros) }
+      }
+      controller.openResource = (address: string, options?: unknown): void => {
+        openResource.call(controller, rewriteReferenceAddress(address, sessionOf), options)
+      }
+      controller.openResourceIn = (sessionId: string, address: string, options?: unknown): void => {
+        openResourceIn.call(controller, sessionId, rewriteReferenceAddress(address, sessionOf), options)
+      }
+      return () => {
+        controller.openResource = openResource
+        controller.openResourceIn = openResourceIn
+      }
+    }, 'dsh-wsl-workspace: file-reference path translation')
+  })
 }
