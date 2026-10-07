@@ -322,7 +322,7 @@ console.log(`  the plugin's own row declares: ${probes.ownRowInject.value}`)
 console.log(`  ${'─'.repeat(70)}`)
 console.log('  every service the sources reach for, resolved in the booted host:')
 for (const entry of resolvedServices) {
-  console.log(`  ${entry.reachable ? 'ok  ' : 'FAIL'} ${entry.service.padEnd(15)} ${entry.resolvedAtRoot.padEnd(9)} ${entry.how}`)
+  console.log(`  ${entry.reachable ? 'ok  ' : 'FAIL'} ${entry.service.padEnd(14)} root=${entry.resolvedAtRoot.padEnd(8)} own-realm=${entry.resolvedInOwnRealm.padEnd(8)} ${entry.how}`)
 }
 console.log(`  ${'─'.repeat(70)}`)
 console.log(`  ${bareReads.length} of them are read bare, with no ctx.get guard:`)

@@ -67,6 +67,7 @@ try {
   report.stage = 'booted'
 
   // ── what the host actually did with every row it was given ──────────────────────────────
+  const ownFiber = [...(ctx.get('loader')?.entries?.() ?? [])].find(e => e?.options?.id === 'dsh-wsl-workspace')?.fiber
   probe('rows', () => [...(ctx.get('loader')?.entries?.() ?? [])].map(entry => ({
     id: entry?.options?.id,
     // `fiber === undefined` means the entry never got a fiber at all — a different failure from
@@ -145,16 +146,20 @@ try {
   // A property written against level 1 would pass today with the plugin doing nothing, which is why
   // this checks level 4 and prints the others beside it.
   probe('requirements', () => JSON.stringify((plan.requirements ?? []).map(requirement => {
-    const resolved = ctx.get(requirement.service)
-    const fromRoot = resolved !== undefined
+    const atRoot = ctx.get(requirement.service)
+    // The same question asked again **inside this plugin's own realm**. Asking only the root is how
+    // a gate would miss the failure where a declaration never reaches the fiber: the service is
+    // right there at the root, so a root-level check reports it reachable while the plugin's own
+    // context throws `cannot get property "<name>" without inject` the first time it is used. Two
+    // realms, two answers, and only the second one is the one the code will feel.
+    const ownRealm = ownFiber === undefined ? null : ownFiber.ctx.get(requirement.service)
     return {
       service: requirement.service,
       module: requirement.module,
       how: requirement.how,
-      resolvedAtRoot: fromRoot ? typeof resolved : 'ABSENT',
-      // `undefined` is the failure and `null` means "not a service name at all" — conflating them
-      // would let a typo in the derivation read as an absent service.
-      reachable: resolved !== undefined,
+      resolvedAtRoot: atRoot !== undefined ? typeof atRoot : 'ABSENT',
+      resolvedInOwnRealm: ownRealm !== undefined ? typeof ownRealm : 'ABSENT',
+      reachable: atRoot !== undefined && ownRealm !== undefined,
     }
   })))
 
