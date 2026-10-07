@@ -191,7 +191,8 @@ as a pass:
 
 | Driver | Floor | Read from |
 | --- | --- | --- |
-| `bash-session-real` | 71 checks | `bash-session-real.mjs:807` (`EXPECTED_CHECKS = 71`) |
+| `bash-session-real` | 73 checks | 76 `check(` sites in the file, minus the 2 that only report from a `catch` and the 1 unexecuted arm of the control pair. The driver no longer carries an `EXPECTED_CHECKS` constant: it derives the set from its own source and names every site that never reported, so a truncated arm reads as a named list rather than as a total to trust |
+| `relay-profile-real` | 1 `GREEN` line | `relay-profile-real.mjs:126` prints the marker only after every `assert.match` in its three arms has passed, so the line is the evidence that the run reached its own end |
 | `tool-bash-real` | 10 checks | `tool-bash-real.mjs:195` (`EXPECTED_CHECKS = 10`) |
 | `bash-parity-real` | 12 checks | 14 probes (`bash-parity-real.mjs:46-69`) minus the 2 `sessionOnly` ones (`:67-68`) that are skipped at `:169-171`. Its own guard is only `results.length === 0` (`:204`), which a driver skipping *more* probes would satisfy |
 | `fs-real` | 2 `PASS ` lines | `fs-real.mjs:105-106` |
@@ -437,7 +438,8 @@ weekly), use the Git-Bash driver instead — no PowerShell needed:
 npm run test:compat -- 0.2.0-rc.2 0.1.7-rc.2   # PLUGIN_REF=<tarball> to test an unpublished commit
 ```
 
-Eight checks need a live WSL distribution (`skills-real`, `fs-real`, `relay-real`, `tool-bash-real`,
+Nine checks need a live WSL distribution (`skills-real`, `fs-real`, `relay-real`,
+`relay-profile-real`, `tool-bash-real`,
 `bash-session-real`, `bash-parity-real`, `search-real`, and `conpty-relay`); they build their own
 fixtures under `/tmp/dsh-wsl-compat` (override with `WSL_COMPAT_ROOT`, and the distribution with
 `WSL_COMPAT_DISTRO`) and remove them again. `bash-parity-real` writes its spill files under the
@@ -445,6 +447,16 @@ system temp directory and compares **two tools against each other**, so a differ
 wrote down in [docs/bash-parity.md](docs/bash-parity.md) is a red build; the same table is read by
 `tests/wsl-bash-parity.test.ts`, which needs the installed host package and says `NOT VERIFIED`
 rather than skipping when it is absent.
+Those same live gates run in CI on **two WSL kernels** — `ci.yml`'s `real-WSL hard gates` job is
+matrixed over `wslVersion: [1, 2]` Ubuntu-24.04, and the log artifact carries which one it came from
+(`wsl-gate-logs-wsl1` / `-wsl2`). They are not interchangeable: the WSL1 runner reports no sleep location
+for any process, so a command waiting on the keyboard is left to the deadline the call asked for and the
+body prints the rows the reading took, while on WSL2 the same wait is stopped in about 0.6 s and re-run.
+Each cell says which of the two it asserted — `branch:"reading-acts"` or `"reading-declares"` — and both
+spellings are in a passing frame's logs: frame 37506092966 (head `ff626e6`, 2026-10-06T17:59:13Z) reads
+`reading-acts` with `canAct` true on the `src` and `lib` planes of the WSL2 arm, and `reading-declares` on
+the WSL1 one.
+`docs/CHECK-CATALOG.md` states which cells assert which of the two shapes.
 **Which persistent shell is being tested matters**: the world now mounts the pipe-driven session by
 default, so `host-materialize` and `host-declare` each run twice in `test:node` — once per tier — and
 `persistent-shell-fallback` is pinned to the PTY tier because its subject is that tier's

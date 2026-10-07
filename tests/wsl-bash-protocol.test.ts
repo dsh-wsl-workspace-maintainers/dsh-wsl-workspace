@@ -13,8 +13,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { BOOTSTRAP_COMMAND, RECORD_TAG, SESSION_ARGV, STATE_TAG, dropProtocolEcho, encodeFrame, newNonce, readFrame, restoreChunks, restoreScript, stripRecords } from '../src/host/wsl-bash-protocol.ts'
-import { STDIN_CAP_BYTES, stdinRefusal } from '../src/host/wsl-bash-tool.ts'
+import { BOOTSTRAP_COMMAND, RECORD_TAG, SESSION_ARGV, SNAPSHOT_HELPER, STATE_TAG, dropProtocolEcho, encodeFrame, newNonce, readFrame, restoreChunks, restoreScript, stripRecords } from '../src/host/wsl-bash-protocol.ts'
+import { STDIN_CAP_BYTES, stdinRefusal } from '../src/shared/wsl-stdin.ts'
 
 const NUL = String.fromCharCode(0)
 
@@ -192,11 +192,24 @@ test('the state record is sections, and the replay orders them and drops what is
   assert.deepEqual(plan.skipped, [], 'nothing was left out, so nothing is reported as left out')
 })
 
-test('a function snapshot over the cap is skipped with its size, never truncated', () => {
-  const state = `#dsh-section functions-count\n85\n#dsh-section functions\n#dsh-functions-skipped 61083\n`
+test('a snapshot that could not carry a body names it, and says what was never at risk', () => {
+  // The cap used to be all-or-nothing over the whole dump, which on a distribution whose own
+  // startup functions are 86,954 bytes threw away every function in the shell — including the one
+  // the model had just defined. Measured 2026-10-06; the external report's gauntlet cell
+  // `a function needing extglob survives a rebuild` failed here for the same reason.
+  const state = `#dsh-section functions-count\n85\n#dsh-section functions\n#dsh-functions-skipped big_fn(70000),other(20)\n`
   const plan = restoreScript(state)
-  assert.ok(plan.skipped.some(entry => /61083 bytes over the \d+ byte cap/.test(entry)), JSON.stringify(plan.skipped))
+  assert.ok(plan.skipped.some(entry => entry.includes('big_fn(70000)') && entry.includes('other(20)')),
+    `the names have to be in the note: ${JSON.stringify(plan.skipped)}`)
+  assert.ok(plan.skipped.some(entry => /over the \d+ byte cap/.test(entry)), JSON.stringify(plan.skipped))
+  assert.ok(plan.skipped.some(entry => entry.includes("the distribution's own functions were left")),
+    'and the note must not read as if the rc functions had been lost too')
   assert.ok(!plan.script.includes('declare -f'), 'half a function body replayed is a syntax error')
+})
+
+test('a shell with no snapshot helper reports that instead of reporting nothing', () => {
+  const plan = restoreScript('#dsh-section functions\n#dsh-functions-missing __dsh_snapshot: the session bootstrap did not run in this shell\n')
+  assert.ok(plan.skipped.some(entry => entry.includes('bootstrap did not run')), JSON.stringify(plan.skipped))
 })
 
 test('a state record without a working directory says so instead of quietly going home', () => {
@@ -226,10 +239,35 @@ test('the restore is chunked so a shell option is live before the parse that nee
 test('the frame asks for function bodies only when the count moved', () => {
   const quiet = encodeFrame('pwd', 3).line
   assert.ok(quiet.includes("[ \"$__dsh_n\" != '3' ]"), 'the shell compares, so an unchanged snapshot costs nothing')
-  assert.ok(!encodeFrame('pwd').line.includes('declare -f'), 'no count known means no bodies requested')
-  assert.ok(encodeFrame('pwd', -1).line.includes('declare -f'), '-1 is the count no shell can report: always send them')
-  assert.ok(encodeFrame('pwd', -1).line.includes('"#dsh-functions-skipped $__dsh_s"'),
-    'the marker reports a byte count; in single quotes it reached the model as the literal `$__dsh_s`')
+  assert.ok(!encodeFrame('pwd').line.includes('__dsh_snapshot'), 'no count known means no bodies requested')
+  assert.ok(encodeFrame('pwd', -1).line.includes('__dsh_snapshot'), '-1 is the count no shell can report: always ask')
+  // The frame goes out on every call, so the loop has to live in the bootstrap, not in the frame:
+  // measured 8 ms per ordinary call, and the dump walk costs 150 ms when it runs at all.
+  assert.ok(encodeFrame('pwd', -1).line.includes('declare -F __dsh_snapshot'), 'the frame guards the helper it calls')
+  assert.ok(!encodeFrame('pwd', -1).line.includes('comm -13'), 'the set difference is not repeated on every frame')
+})
+
+test('the snapshot helper expands its own marker, and its baseline is taken after itself', () => {
+  // A marker printed inside single quotes reaches the model as the literal `$__dsh_over` — the bug
+  // this file already caught once in the byte-count form.
+  assert.match(SNAPSHOT_HELPER, /printf '%s\\n' "#dsh-functions-skipped \$__dsh_over"/, SNAPSHOT_HELPER.slice(0, 400))
+  assert.ok(!/printf '%s\\n' '#dsh-functions-skipped \$/.test(SNAPSHOT_HELPER), 'not the single-quoted form')
+  // The helper is a function of the shell's own, so it must be part of the baseline it compares
+  // against — otherwise the first frame after the bootstrap would report it as a user function.
+  assert.ok(BOOTSTRAP_COMMAND.includes('for f in /etc/profile'), 'the rc files come first')
+  assert.ok(BOOTSTRAP_COMMAND.indexOf('__dsh_snapshot()') < BOOTSTRAP_COMMAND.indexOf('__dsh_rcf=$(compgen'),
+    'the helper is defined before the baseline names are taken')
+})
+
+test('function names are read from compgen, not from declare -F', () => {
+  // Measured 2026-10-06: with `set -o allexport` in effect bash prints `declare -fx name`, so a name
+  // list made by cutting `declare -f ` off that output is a list of `declare -fx name` strings — every
+  // function looks "new", and the lookup that follows finds no such function, so the snapshot comes
+  // back empty. The live cell that sets allexport lost the function it defined in the same call.
+  assert.match(SNAPSHOT_HELPER, /comm -13 <\(printf '%s\\n' "\$__dsh_rcf" \| sort\) <\(compgen -A function \| sort\)/)
+  assert.ok(!SNAPSHOT_HELPER.includes("sed 's/^declare -f //'"), 'the flag-dependent form is not used')
+  assert.ok(BOOTSTRAP_COMMAND.includes('__dsh_rcf=$(compgen -A function)'),
+    'the baseline is taken the same way the snapshot reads it, or a flag change makes everything new')
 })
 
 test('the session argv keeps its long options ahead of the shell name', () => {

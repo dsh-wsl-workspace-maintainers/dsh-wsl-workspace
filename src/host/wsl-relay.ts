@@ -10,11 +10,13 @@
  * PTY — to `wsl.exe`, so the model gets a stateful shell inside the
  * distribution instead of one process per call.
  *
- * The inner shell is started as `bash -lc '<cd …> && exec bash -i'`: the login
- * pass loads `/etc/profile` and the user profile (PATH and friends), and the
+ * The inner shell is started as `bash -lc '<cd …> && <re-assert the contract> && exec bash -i'`:
+ * the login pass loads `/etc/profile` and the user profile (PATH and friends), and the
  * interactive shell that replaces it keeps the session directory. A plain
  * `bash -l` can be sent to `$HOME` by a profile — that is why the one-shot
- * executor in `src/shell.ts` prefixes an explicit `cd` too.
+ * executor in `src/shell.ts` prefixes an explicit `cd` too. The re-assertion is in the
+ * middle because the login pass is where a distribution can take the prompt contract away:
+ * see {@link readinessReassertion}.
  *
  * Resolution mirrors that executor: the UNC cwd names its distribution, else
  * `DSH_WSL_DISTRO` (the per-session fact this plugin publishes, normally absent here
@@ -36,7 +38,7 @@
 import { spawn } from 'node:child_process'
 import { isValidWslUsername, joinUnc, parseWslUnc, windowsToMntPath } from '../shared/paths.ts'
 import { getWindowsWorkspace, getWorkspaceUsername } from '../shared/wsl-credentials.ts'
-import { bridgeReadiness } from '../shared/wsl-env.ts'
+import { READINESS_COPY_KEY, bridgeReadiness, readinessReassertion } from '../shared/wsl-env.ts'
 import { defaultDistroSync } from '../shared/wsl.ts'
 
 /** Shell signals whose arrival means this relay should take the shell down. */
@@ -119,7 +121,17 @@ const user = resolveUser(stored.username)
 // own filesystem and a drive path (mapped to `/mnt/<drive>`), so it is handed
 // through unchanged and only the login shell's `cd` needs the Linux spelling.
 const linuxCwd = unc !== null ? unc.linuxPath : windowsToMntPath(cwd) ?? undefined
-const command = `${linuxCwd === undefined ? '' : `cd ${quote(linuxCwd)} && `}exec bash -i`
+const env = bridgeReadiness(process.env)
+// The login pass can rewrite the readiness contract — a distribution whose profile turns
+// `PROMPT_COMMAND` into an array exports nothing at all to the shell that replaces it — so the
+// bridged copy is put back after the pass and before `exec`. Only when the host bridged a
+// contract: a host that injected none gets the shell its own startup files describe.
+const steps = [
+  ...linuxCwd === undefined ? [] : [`cd ${quote(linuxCwd)}`],
+  ...env[READINESS_COPY_KEY] === undefined ? [] : [readinessReassertion()],
+  'exec bash -i',
+]
+const command = steps.join(' && ')
 const argv = [
   'wsl.exe',
   '-d', distro,
@@ -129,7 +141,7 @@ const argv = [
   '-lc', command,
 ]
 
-const child = spawn(argv[0] ?? 'wsl.exe', argv.slice(1), { stdio: 'inherit', env: bridgeReadiness(process.env) })
+const child = spawn(argv[0] ?? 'wsl.exe', argv.slice(1), { stdio: 'inherit', env })
 child.on('error', (error: Error) => fail(`persistent shell: cannot start ${argv[0] ?? 'wsl.exe'} (${error.message})`))
 child.on('exit', (code, signal) => process.exit(signal === null ? code ?? 0 : 1))
 for (const signal of FORWARDED_SIGNALS) {

@@ -27,7 +27,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { BOOTSTRAP_COMMAND, dropProtocolEcho, encodeFrame, parseState, readCompletion, readStateRecord, restoreChunks, shellPidOf, stripRecords } from './wsl-bash-protocol.ts'
-import { FIRST_PROBE_MS, LOOKS_BEFORE_SLOWING, MIN_WAIT_MS, PROBE_DONE_SENTINEL, PROBE_EVERY_MS, PROBE_SLOW_MS, confirmsTerminalRead, culpritPids, parseProbe, probeScript, starveOf, stopScript, type StarveKind, type StarveSample } from './wsl-bash-starve.ts'
+import { FIRST_PROBE_MS, LOOKS_BEFORE_SLOWING, MIN_WAIT_MS, PROBE_DONE_SENTINEL, PROBE_EVERY_MS, PROBE_SLOW_MS, confirmsTerminalRead, culpritPids, describeRows, parseProbe, probeScript, starveOf, stopScript, type StarveKind, type StarveSample } from './wsl-bash-starve.ts'
 
 /** How often the reader looks for a frame's records, in milliseconds. */
 const POLL_MS = 20
@@ -118,6 +118,13 @@ export interface WslBashRun {
    * than left to conclude it ran and found nothing.
    */
   starveProbeBroken?: boolean | undefined
+  /**
+   * What the last look actually read, when the call reached its deadline after looks that confirmed
+   * nothing. It is the difference between "the wait was examined and found ordinary" and "this
+   * kernel does not expose the wait" — measured on the WSL1 runner (CI frame 37494104075), where
+   * `/proc/<pid>/wchan` and `/proc/<pid>/syscall` come back empty for every process, asleep or running.
+   */
+  starveSaw?: string | undefined
 }
 
 /** The seam a session needs: enough of the host context to spawn a child. */
@@ -649,7 +656,7 @@ export class WslBashSession {
 
   /** The run fields that carry a watchdog stop, or nothing when there was none. */
   private starvedFields(watch: FrameWatch):
-  Pick<WslBashRun, 'starved' | 'starvedAtMs' | 'starvedViaRoot' | 'starvedShellInterrupt' | 'starveProbeBroken'> {
+  Pick<WslBashRun, 'starved' | 'starvedAtMs' | 'starvedViaRoot' | 'starvedShellInterrupt' | 'starveProbeBroken' | 'starveSaw'> {
     if (watch.stop !== undefined) {
       return {
         starved: watch.stop.kind, starvedAtMs: watch.stop.atMs, starvedViaRoot: watch.viaRoot,
@@ -657,7 +664,18 @@ export class WslBashSession {
       }
     }
     // Looked and never got an answer: the check is not running here, which is a fact the caller needs.
-    return watch.looks === 0 && watch.failed > 0 ? { starveProbeBroken: true } : {}
+    if (watch.looks === 0 && watch.failed > 0) return { starveProbeBroken: true }
+    // Looked, got answers, and none of them confirmed a wait: say what was seen, because "timed out"
+    // alone reads as though the wait had been examined and found ordinary.
+    const saw = describeRows(watch.previous)
+    if (saw !== '') return { starveSaw: saw }
+    // And when there is nothing to show, that is itself the finding: on the WSL1 frame the walk
+    // answered and reported no children at all, which no earlier note distinguished from a look that
+    // never ran. The pid goes in because the walk cannot start without it.
+    if (watch.looks > 0) {
+      return { starveSaw: `the walk answered ${watch.looks} time(s) and reported no child processes (shell pid ${this.shellPid ?? 'unknown'})` }
+    }
+    return { starveSaw: `no look ran before the deadline (shell pid ${this.shellPid ?? 'unknown'})` }
   }
 
   /**
@@ -749,6 +767,10 @@ export class WslBashSession {
    */
   private journalWithFunctions(state: string): string {
     const sections = parseState(state)
+    if (process.env.DSH_WSL_TRACE === '1') {
+      console.error(`[trace] state record: functions section=${String(sections.functions !== undefined)} `
+        + `bodies=${Buffer.byteLength((sections.functions ?? []).join('\n'))} markers=${JSON.stringify((sections.functions ?? []).filter(line => line.startsWith('#dsh-functions-')))}`)
+    }
     if (sections.functions !== undefined) {
       this.functionsBody = sections.functions.join('\n')
       return state
@@ -788,6 +810,10 @@ export class WslBashSession {
     // tens of milliseconds here cannot be seen — and no ordinary call pays it any more.
     await this.settleTail()
     const restore = restoreChunks(this.journal)
+    if (process.env.DSH_WSL_TRACE === '1') {
+      console.error(`[trace] rebuild: chunks=${restore.chunks.length} `
+        + `functions chunk=${String(restore.chunks.some(chunk => chunk.includes('()')))} skipped=${JSON.stringify(restore.skipped)}`)
+    }
     await this.kill()
     this.closeSpills()
     const reaped = await this.reapDetached()

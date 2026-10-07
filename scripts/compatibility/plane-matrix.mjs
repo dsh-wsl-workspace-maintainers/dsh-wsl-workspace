@@ -70,8 +70,11 @@ mkdirSync(logDir, { recursive: true })
  * line; `passLines` counts leading `PASS ` lines. Each is annotated with where it was read.
  */
 const DRIVERS = [
-  // bash-session-real.mjs:807 — `const EXPECTED_CHECKS = 71`
-  { name: 'bash-session-real', floor: { kind: 'checks', value: 71, at: 'bash-session-real.mjs:807' } },
+  // bash-session-real.mjs no longer carries an `EXPECTED_CHECKS` constant (it derives the set from
+  // its own `check(` sites and names every site that never reported). 73 is the count a green run
+  // prints as `N/M checks passed`: 76 sites in the file, minus the 2 that only report from a
+  // `catch` and the 1 unexecuted arm of the control pair.
+  { name: 'bash-session-real', floor: { kind: 'checks', value: 73, at: 'bash-session-real.mjs (76 sites - 2 catch-only - 1 unexecuted arm)' } },
   // tool-bash-real.mjs:195 — `const EXPECTED_CHECKS = 10`
   { name: 'tool-bash-real', floor: { kind: 'checks', value: 10, at: 'tool-bash-real.mjs:195' } },
   // bash-parity-real.mjs:46-69 declares 14 probes, of which 2 are `sessionOnly`

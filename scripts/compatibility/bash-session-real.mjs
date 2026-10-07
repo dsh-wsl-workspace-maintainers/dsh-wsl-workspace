@@ -103,19 +103,71 @@ function makeOwner(id) {
   }
 }
 const owner = makeOwner('agent-bash-session')
-const exec = { signal: AbortSignal.timeout(180_000), agent: owner }
+
+/**
+ * A cancellation for one call, sized from that call's own deadline the way the host sizes each one.
+ *
+ * The WSL1 arm of CI is what taught the difference: there the keyboard-wait cells cannot be stopped
+ * early, so each burns the full `timeoutMs` it asked for (23.7 s, 23.6 s, 20.6 s, 23.7 s, 63.7 s in
+ * frame 37491885553) instead of answering at ~2 s the way WSL2 does. With one 180 s signal shared by
+ * the whole file that budget ran out mid-run, every later call threw `tool call aborted`, and 28
+ * check sites went unrun — an apparatus deadline posing as a product result.
+ * @param agent - the owner fake the call runs as.
+ * @param options - the call's own parameters, whose `timeoutMs` sets the budget.
+ * @returns the execution context to hand `tool.execute`.
+ */
+function budget(agent, options = {}) {
+  const asked = Number.isInteger(options.timeoutMs) ? options.timeoutMs : 120_000
+  return { signal: AbortSignal.timeout(asked + 60_000), agent }
+}
 
 const renderedBodies = []
 
 /** One tool call, timed, with the text the model would read. */
-async function call(command, options = {}, execution = exec) {
+async function call(command, options = {}, agent = owner) {
   const started = Date.now()
   const args = { command, description: 'compatibility driver: session bash', ...options }
-  const value = await tool.execute(args, execution)
+  const value = await tool.execute(args, budget(agent, args))
   const parts = tool?.output?.render?.(args, value) ?? []
   const rendered = parts.map(part => String(part?.text ?? '')).join('')
   renderedBodies.push(rendered)
   return { ms: Date.now() - started, value, text: String(value?.stdout?.text ?? ''), rendered }
+}
+
+/** The watchdog's own sentence out of a rendered body, so the log carries what the probe read.
+ *
+ * It was added after two WSL1 frames in which the cells that needed the reading printed a `tail` of
+ * the body instead — and the tail was the restart note, so the frame said nothing about the rows and
+ * the question stayed open for another 40 minutes of CI.
+ */
+function clause(rendered) {
+  const match = /\[the check for a command waiting on a keyboard (looked and read[^\]]*|could not run[^\]]*)\]/.exec(rendered)
+  return match === null ? '' : match[1].replace(/^looked and read \(([^)]*)\): /, 'fields $1: ')
+}
+
+/**
+ * Whether this kernel hands the tool something a rule could act on, read off the rows themselves.
+ *
+ * Deliberately not the product's own decision: the cells below need to tell two shapes apart that look
+ * identical from outside — "the kernel does not expose where the process is asleep, so nothing could be
+ * stopped early" (what CI frame 37494104075 measured on WSL1: `w=not-reported`, no `sc=`, `0tty`), and
+ * "the kernel exposed it and the tool still burnt the deadline". Only the second is a product fail, so
+ * the reading decides which assertion a cell makes, and the rows go into the cell's detail either way.
+ * @param rendered - the body the model would read.
+ * @returns true when some non-shell row names a terminal descriptor, the terminal's read, or the `read`
+ *   syscall; false when the body carries no reading at all or every row is blank in those fields.
+ */
+function witnessIn(rendered) {
+  const text = clause(rendered)
+  if (text === '' || text.startsWith('could not run')) return false
+  // Rows are `name:state w=<wchan>[ sc=<n>] <Ntty|fd-unreadable> <fg|bg|no-tpgid>`, `; `-separated.
+  // A row counts when all three of the facts the product's confirmed reading uses are there: it is the
+  // terminal's foreground job, `/proc/<pid>/wchan` names the terminal's read, and a terminal is among
+  // its descriptors. Deliberately the *same* three and not a wider set — if this predicate let in
+  // evidence the rule does not act on, the cell would demand a stop the tool has no basis for and the
+  // red would be a fault of the gate, not of the product.
+  return text.split('; ').some(row => /\bfg$/.test(row)
+    && /\bw=wait_woken\b/.test(row) && /\b[1-9]\d*tty\b/.test(row))
 }
 
 /** How many processes in the distribution have this exact command line.
@@ -213,7 +265,13 @@ try {
   // took.
   const cttyProbe = await call('ps -o tty= -p $$; echo FLAGS=$-', { timeoutMs: 8_000 })
   const cttyName = (cttyProbe.text.trim().split('\n')[0] ?? '').trim()
-  const hasCtty = /^pts\/\d+$/.test(cttyName)
+  // A controlling terminal is any name except `??`. Requiring the `pts/N` spelling was this file
+  // committing the very mistake its comment warns about: on the WSL1 frame `ps -o tty=` answers `tty1`,
+  // the `/dev/tty` read really does block (measured there: 23 699 ms of silence), and every reactive
+  // cell below took its "this distribution has no terminal, so the read errors at once" branch —
+  // green while the product burned the deadline. The name goes into the details now, so which branch a
+  // frame took is readable from the log instead of inferred from the runner.
+  const hasCtty = cttyName !== '' && cttyName !== '??'
   check('the controlling-terminal premise is read, not assumed',
     cttyName === '??' || hasCtty,
   JSON.stringify({ tty: cttyName, hasCtty, flags: /\bFLAGS=(\S+)/.exec(cttyProbe.text)?.[1] }))
@@ -224,18 +282,33 @@ try {
   // session rebuild. What it must do now is get stopped, re-run on a pseudo-terminal where the read
   // meets end-of-file, and say it ran twice — all inside one call.
   const starved = await call(`sh -c 'read x < /dev/tty; echo GOT=$?'`, { timeoutMs: 20_000 })
+  // Whether this kernel hands the tool something to act on, measured from this call rather than from a
+  // name. Two ways it is true: the body shows the tool *did* act on a reading (the strongest evidence
+  // there was one), or the rows themselves name a foreground read on a terminal. `hasCtty` alone was not
+  // enough: on the WSL1 frame the terminal is there and the read really does block, but the rows carry no
+  // sleep location and no foreground job, so no rule built on `/proc` could have stopped it. What *is*
+  // available there — and what the second branch asserts — is the body saying so.
+  const canAct = hasCtty && (/first attempt was stopped|waiting for keyboard input/.test(starved.rendered)
+    || witnessIn(starved.rendered))
   check('a command waiting for the keyboard is stopped and answered, not left to its deadline',
-    hasCtty
-      ? (starved.value?.timedOut === false && starved.text.includes('GOT=')
-        && /first attempt was stopped/.test(starved.rendered))
-      : (starved.value?.timedOut === false && starved.ms < 8_000),
-  JSON.stringify({ hasCtty, ms: starved.ms, exit: starved.value?.exitCode, tail: starved.text.trim().slice(0, 20) }))
+    !hasCtty
+      ? (starved.value?.timedOut === false && starved.ms < 8_000)
+      : canAct
+        ? (starved.value?.timedOut === false && starved.text.includes('GOT=')
+          && /first attempt was stopped/.test(starved.rendered))
+        : (starved.value?.timedOut === true && clause(starved.rendered) !== ''),
+  JSON.stringify({
+    tty: cttyName, branch: !hasCtty ? 'no-ctty' : canAct ? 'reading-acts' : 'reading-declares',
+    ms: starved.ms, exit: starved.value?.exitCode, clause: clause(starved.rendered).slice(0, 150),
+  }))
   // The stopped-and-re-run sentence is the whole point: the second execution can repeat work the first
   // attempt did before it reached its prompt, and a body that hides that is the defect this file has
   // already caught once (`echo run >> f` landing twice, 2026-10-04).
+  const announcedTwice = /run once more on a pseudo-terminal/.test(starved.rendered)
+    && /done twice/.test(starved.rendered)
   check('the re-run is announced as a second execution',
-    !hasCtty || (/run once more on a pseudo-terminal/.test(starved.rendered) && /done twice/.test(starved.rendered)),
-  JSON.stringify({ hasCtty, head: starved.rendered.slice(0, 90) }))
+    hasCtty && canAct ? announcedTwice : !/run once more on a pseudo-terminal/.test(starved.rendered),
+  JSON.stringify({ hasCtty, canAct, announcedTwice, head: starved.rendered.slice(0, 90) }))
   // A long silent wait that is NOT a keyboard wait must be left completely alone: `sleep 4` produces no
   // bytes, uses no CPU, sleeps in the terminal's foreground job — and is distinguishable only by where
   // it is asleep. This is the false-positive sentinel; if the rule ever broadens to "quiet means stuck",
@@ -260,20 +333,26 @@ try {
   // stop still happens (the shell would otherwise be unusable) but the re-run must not.
   const vetoed = await call(`sh -c 'read x < /dev/tty; echo GOT=$?'`, { tty: false, timeoutMs: 20_000 })
   check('tty:false vetoes the re-run and keeps the command on the pipe',
-    !hasCtty || (!/run once more on a pseudo-terminal/.test(vetoed.rendered)
-      && !vetoed.text.includes('GOT=') && /waiting for keyboard input/.test(vetoed.rendered)),
-  JSON.stringify({ hasCtty, ms: vetoed.ms, exit: vetoed.value?.exitCode, text: vetoed.text.trim().slice(0, 20) }))
+    !hasCtty ? !/run once more on a pseudo-terminal/.test(vetoed.rendered)
+      : canAct ? (!/run once more on a pseudo-terminal/.test(vetoed.rendered)
+        && !vetoed.text.includes('GOT=') && /waiting for keyboard input/.test(vetoed.rendered))
+        : (!/run once more on a pseudo-terminal/.test(vetoed.rendered)
+          && vetoed.value?.timedOut === true && clause(vetoed.rendered) !== ''),
+  JSON.stringify({ hasCtty, canAct, ms: vetoed.ms, exit: vetoed.value?.exitCode,
+    clause: clause(vetoed.rendered).slice(0, 150) }))
   // The shape a real model chose where this plugin's own cells used `sh -c …`: a *builtin* that reads
   // the terminal blocks the session shell itself, so there is no child process to find. Measured while
   // it happened (2026-10-06): the shell's own row is `Ss+ wchan=wait_woken fd0=/dev/tty` with CPU flat,
   // and before the walk included that row the call merely timed out at 30 s and rebuilt the shell.
   const builtinRead = await call(`read -r line < /dev/tty; echo LINE=[$line]`, { timeoutMs: 20_000 })
   check('a builtin that reads the terminal is ended and re-run, not left to the deadline',
-    !hasCtty || (builtinRead.value?.timedOut === false && builtinRead.text.includes('LINE=[]')
-      && /ended by restarting the shell/.test(builtinRead.rendered)),
-  JSON.stringify({ hasCtty, ms: builtinRead.ms, exit: builtinRead.value?.exitCode,
-    timedOut: builtinRead.value?.timedOut, text: builtinRead.text.trim().slice(0, 20),
-    note: /ended by restarting the shell/.test(builtinRead.rendered) }))
+    !hasCtty ? !/ended by restarting the shell/.test(builtinRead.rendered)
+      : canAct ? (builtinRead.value?.timedOut === false && builtinRead.text.includes('LINE=[]')
+        && /ended by restarting the shell/.test(builtinRead.rendered))
+        : (builtinRead.value?.timedOut === true && clause(builtinRead.rendered) !== ''),
+  JSON.stringify({ hasCtty, canAct, ms: builtinRead.ms, timedOut: builtinRead.value?.timedOut,
+    text: builtinRead.text.trim().slice(0, 20),
+    clause: clause(builtinRead.rendered).slice(0, 150) }))
 
   const pty = await call('stty size; tty', { timeoutMs: 8_000, tty: true })
   const [sizeLine = '', ttyLine = ''] = pty.text.trim().split('\n')
@@ -304,16 +383,26 @@ try {
   // waiting command inside a wrapper is caught by the same code as one on its own.
   const nested = await call(`bash -c 'read x < /dev/tty; echo GOT=$?'`, { timeoutMs: 20_000 })
   check('a waiting command inside a wrapper is caught without reading a single word',
-    nested.value?.timedOut === false && nested.text.includes('GOT=')
-    && /first attempt was stopped/.test(nested.rendered),
-  `${nested.ms}ms exit=${nested.value?.exitCode} :: ${JSON.stringify(nested.text.trim().slice(0, 20))}`)
+    !hasCtty ? !/first attempt was stopped/.test(nested.rendered)
+      : canAct ? (nested.value?.timedOut === false && nested.text.includes('GOT=')
+        && /first attempt was stopped/.test(nested.rendered))
+        : (nested.value?.timedOut === true && clause(nested.rendered) !== ''),
+  `${nested.ms}ms exit=${nested.value?.exitCode} canAct=${canAct} :: ${JSON.stringify(clause(nested.rendered).slice(0, 150))}`)
   // A deadline the call named does not buy a keyboard wait back — the property the old 8-second cap was
   // built to hold, now earned by evidence instead of by a name list. 60 seconds asked, ~2 answered.
-  const longAsked = await call(`sh -c 'read x < /dev/tty; echo GOT=$?'`, { timeoutMs: 60_000 })
+  // Where the kernel gives the tool nothing to act on, the same property has the other shape: the call
+  // waits the deadline it was given instead of inventing a stop, so the ask shrinks to 8 seconds and
+  // what is asserted is that it was not cut short by a guess.
+  const longAskMs = canAct ? 60_000 : 8_000
+  const longAsked = await call(`sh -c 'read x < /dev/tty; echo GOT=$?'`, { timeoutMs: longAskMs })
   check('a longer deadline does not buy a keyboard wait back',
-    longAsked.ms < 20_000 && longAsked.value?.timedOut === false
-    && /first attempt was stopped/.test(longAsked.rendered),
-  JSON.stringify({ ms: longAsked.ms, asked: longAsked.value?.timeoutMs, exit: longAsked.value?.exitCode }))
+    !hasCtty ? (longAsked.value?.timedOut === false && !/first attempt was stopped/.test(longAsked.rendered))
+      : canAct ? (longAsked.ms < 20_000 && longAsked.value?.timedOut === false
+        && /first attempt was stopped/.test(longAsked.rendered))
+        : (longAsked.ms >= longAskMs && longAsked.value?.timedOut === true
+          && clause(longAsked.rendered) !== '' && !/first attempt was stopped/.test(longAsked.rendered)),
+  JSON.stringify({ canAct, ms: longAsked.ms, asked: longAsked.value?.timeoutMs,
+    exit: longAsked.value?.exitCode, clause: clause(longAsked.rendered).slice(0, 150) }))
   // The pager class answers better on the pipe (`man` prints the whole page; on a terminal it opens a
   // pager that waits for keys), so nothing about it is escalated any more — asserted through the
   // program's own eyes rather than a timing guess, and `tty: true` remains the door for the caller who
@@ -340,10 +429,27 @@ try {
   // are produced from different facts, so asserting they agree catches the claim without trusting it.
   const ptyTimeout = await call('sleep 5', { tty: true, timeoutMs: 1_000 })
   const claimedRecovery = /shell was restarted to recover/.test(ptyTimeout.rendered)
-  const actuallyRestarted = /was restarted and its directory/.test(ptyTimeout.rendered)
+  // Both renderings of the restart have to count as one, because the tool picks between them by
+  // whether the rebuild had anything to report: `and its directory …` when nothing was left out,
+  // `; not restored: …` when it was. Matching only the first made this cell impossible to pass on a
+  // distribution where the rebuild does report — measured 2026-10-06 on the external gauntlet's
+  // machine, where the claim and the fact were both true and the cell still read them as disagreeing.
+  const actuallyRestarted = /was restarted (and its directory|; not restored:)/.test(ptyTimeout.rendered)
   check('a timed-out call says a restart only when the session had one',
     ptyTimeout.value?.timedOut === true && claimedRecovery === actuallyRestarted,
     JSON.stringify({ claimedRecovery, actuallyRestarted, timedOut: ptyTimeout.value?.timedOut }))
+  // And a deadline reached *with* looks taken has to print what they read. On WSL2 the line names the
+  // sleep location and the syscall number; on the WSL1 runner (frame 37494104075) `wchan` and `syscall`
+  // both come back empty for every process, which the line prints as `w=not-reported`. A body that says
+  // only "timed out" there reads as though the wait had been examined and found ordinary — which is
+  // precisely the claim this layer must not make about a kernel it cannot read.
+  const looked = await call('sleep 3', { timeoutMs: 1_500 })
+  // The clause is printed at the front of the detail on purpose: the tail-150 form that first carried
+  // it was cut off in the WSL1 frame's log, which left "did the reading run there" unanswered for a
+  // round even though the cell had passed.
+  check('a timed-out call carries the reading it took',
+    looked.value?.timedOut === true && clause(looked.rendered) !== '',
+  JSON.stringify(clause(looked.rendered).slice(0, 150) || looked.rendered.slice(-150)))
   // The `tty: false` veto is asserted offline instead (`tests/wsl-bash-tty.test.ts`): it is a decision,
   // and the only live discriminator would be a program that hangs on a real terminal, which would make
   // the cell's cost the very defect it is measuring.
@@ -355,15 +461,23 @@ try {
   // blind the watchdog, so this cell writes a line and *then* waits for a keyboard.
   const compound = await call(`printf 'x\\n'; sh -c 'read y < /dev/tty; echo GOT=$?'`, { timeoutMs: 20_000 })
   check('a wait after some output is still caught',
-    compound.text.includes('x') && compound.text.includes('GOT=') && compound.ms < 20_000
-    && /first attempt was stopped/.test(compound.rendered),
-  JSON.stringify({ ms: compound.ms, exit: compound.value?.exitCode, text: compound.text.replace(/\s+/g, ' ').trim().slice(0, 24) }))
-  // The premise of the whole layer, checked rather than assumed: the note has to cite the `/proc` field
-  // it read. A probe that silently stopped answering (no `pgrep`, a hardened `/proc` mount) would look
-  // exactly like a command that is not waiting, so a reading with no provenance in it is the red flag.
+    !hasCtty ? (compound.text.includes('x') && compound.text.includes('GOT='))
+      : canAct ? (compound.text.includes('x') && compound.text.includes('GOT=') && compound.ms < 20_000
+        && /first attempt was stopped/.test(compound.rendered))
+        : (compound.text.includes('x') && compound.value?.timedOut === true
+          && clause(compound.rendered) !== '' && !/first attempt was stopped/.test(compound.rendered)),
+  JSON.stringify({ canAct, ms: compound.ms, exit: compound.value?.exitCode,
+    text: compound.text.replace(/\s+/g, ' ').trim().slice(0, 24),
+    clause: clause(compound.rendered).slice(0, 150) }))
+  // The premise of the whole layer, checked rather than assumed: the reading has to cite the `/proc`
+  // fields it read. A probe that silently stopped answering (no `pgrep`, a hardened `/proc` mount) would
+  // look exactly like a command that is not waiting, so a reading with no provenance in it is the red
+  // flag. Where the tool acted, the citation is the field that justified it; where it could not, the
+  // body still has to say which fields it read and got nothing from.
   check('the reading names the /proc field it came from',
-    /\/proc\/<pid>\/wchan/.test(vetoed.rendered) && /wait_woken/.test(vetoed.rendered),
-  JSON.stringify(vetoed.rendered.slice(0, 80)))
+    /\/proc\/<pid>\/(wchan|syscall)/.test(vetoed.rendered)
+    && (canAct ? /wait_woken/.test(vetoed.rendered) : clause(vetoed.rendered) !== ''),
+  JSON.stringify({ canAct, clause: clause(vetoed.rendered).slice(0, 150) || vetoed.rendered.slice(0, 80) }))
   // The other half of the same session pass: a live display on a pipe does not wait, it refuses. `top`
   // answered `top: failed tty get` in 687 ms with exit 1 — so it is *not* the deadline case, and the
   // tool's description must not promise the model that a bare `top` prints something.
@@ -451,12 +565,43 @@ try {
     && restored.text.includes('FN_OK_9') && restored.text.includes('SHOPT_OK_5') && restored.text.includes('SET_OK_3'),
   JSON.stringify(restored.text.trim()))
 
-  const many = await call('for i in $(seq 1 4000); do eval "dshbig$i() { echo $i; }"; done; declare -f | wc -c')
+  // The cap is a budget per function, not a veto over the snapshot. Measured 2026-10-06 on a
+  // distribution whose own startup functions alone are 86,954 bytes: the whole-set form reported
+  // `functions (86954 bytes over the 65536 byte cap)` and restored *nothing*, the function the model
+  // had just defined included. Those functions do not need replaying at all — a rebuilt shell
+  // re-sources the same startup files — and one oversized user function must not take its neighbours
+  // down with it, so this cell makes exactly that shape: a body over the cap beside a small one.
+  const mixed = await call('big=$(printf "x%.0s" $(seq 1 70000)); eval "dshhugefn() { : $big; }"; '
+    + 'dshsmallfn() { echo SMALL_OK_6; }; declare -f dshhugefn | wc -c')
+  const hugeBytes = Number((mixed.text.match(/^\s*(\d+)/) ?? [])[1] ?? '0')
   const bigRestart = await call('sleep 4', { timeoutMs: 1_500 })
-  const overCap = /not restored: functions \(\d+ bytes over the \d+ byte cap\)/.test(bigRestart.rendered)
-  check('a function snapshot over the cap is reported, not silently dropped', many.value?.exitCode === 0 && overCap,
-    `snapshot=${many.text.trim()} bytes; note=${overCap}`)
-  await call('for i in $(seq 1 4000); do unset -f dshbig$i 2>/dev/null; done; true')
+  const named = /not restored: functions dshhugefn\(\d+\)([^.\n]*)\(over the \d+ byte cap/.test(bigRestart.rendered)
+  const keptBack = await call('dshsmallfn')
+  check('a function over the cap is named, and the others still come back',
+    hugeBytes > 65_536 && named && keptBack.text.includes('SMALL_OK_6'),
+    `huge=${hugeBytes}B note=${JSON.stringify(bigRestart.rendered.slice(-160))} kept=${JSON.stringify(keptBack.text.trim().slice(0, 40))}`)
+  await call('unset -f dshhugefn dshsmallfn 2>/dev/null; true')
+
+  // The same reporting on the path that needs it most. A builtin that reads the terminal blocks the
+  // shell itself, so the rebuild happens *inside* the starve handling, and the run the tool reports is
+  // the pseudo-terminal retry — which does not know about the rebuild unless the first attempt's facts
+  // are carried onto it. Measured before the fix: the restart happened, functions were left behind,
+  // and the call answered as if nothing had been lost.
+  await call('big=$(printf "x%.0s" $(seq 1 70000)); eval "dshhugefn2() { : $big; }"')
+  const starveReport = await call('read -r line < /dev/tty; echo LINE=[$line]', { timeoutMs: 20_000 })
+  // The half that does not move between kernels is the report of what the rebuild left behind — that is
+  // the seam the cell was written for. What moves is the *reason* sentence: where the kernel exposes the
+  // wait the call was stopped and the body says so, where it does not the body carries the reading it
+  // took instead. A rebuild that hides a loss is red on either arm; a reason that is not the one that
+  // actually fired is red too.
+  check('a rebuild triggered by a terminal wait reports what it could not restore',
+    /not restored: functions dshhugefn2\(\d+\)/.test(starveReport.rendered)
+    && (canAct
+      ? /waiting for a keyboard|ran twice|pseudo-terminal/i.test(starveReport.rendered)
+      : clause(starveReport.rendered) !== '' && starveReport.value?.timedOut === true),
+    JSON.stringify({ canAct, clause: clause(starveReport.rendered).slice(0, 90),
+      tail: starveReport.rendered.slice(-120) }))
+  await call('unset -f dshhugefn2 2>/dev/null; true')
 
   // Detached children. Measured: killing `wsl.exe` takes ordinary children with it (0 survivors) but
   // `setsid`/`nohup` ones live (2/2), so the session marks its processes and reaps exactly those.
@@ -501,9 +646,8 @@ try {
   // `cd`, exports, aliases and processes becoming another's. The shells are keyed by the agent's id in
   // `wsl-bash-tool.ts`, so these cells drive a second agent through the same registered tool.
   const ownerB = makeOwner('agent-bash-session-b')
-  const execB = { signal: AbortSignal.timeout(180_000), agent: ownerB }
   await call('cd /tmp && export DSHISO=from_A_$(( 6 * 7 ))')
-  const foreign = await call('pwd; echo ISO=[$DSHISO]', {}, execB)
+  const foreign = await call('pwd; echo ISO=[$DSHISO]', {}, ownerB)
   check('a second agent does not inherit the first one’s directory or exports',
     !foreign.text.includes('from_A_42') && !foreign.text.startsWith('/tmp'),
   JSON.stringify(foreign.text.trim().slice(0, 60)))
@@ -526,14 +670,14 @@ try {
   // The reaper matches this session's token in `/proc/*/environ`, so a rebuild must be able to stop
   // its own detached children without touching another agent's. Duration 37 belongs to agent B;
   // agent A's rebuild below is the only thing allowed to run.
-  await call('setsid sleep 37 & disown; echo B_DETACHED=$!', {}, execB)
+  await call('setsid sleep 37 & disown; echo B_DETACHED=$!', {}, ownerB)
   const beforeForeignReap = probeCount('sleep[ ]37')
   const aRebuild = await call('sleep 4', { timeoutMs: 1_500 })
   const afterForeignReap = probeCount('sleep[ ]37')
   check('a rebuild reaps only the session that owns the token',
     beforeForeignReap >= 1 && afterForeignReap >= 1 && /detached process|the shell was restarted/.test(aRebuild.rendered),
   JSON.stringify({ beforeForeignReap, afterForeignReap, note: aRebuild.rendered.slice(-58) }))
-  const bAlive = await call('echo B_STILL_$(( 3 * 9 ))', {}, execB)
+  const bAlive = await call('echo B_STILL_$(( 3 * 9 ))', {}, ownerB)
   check('the other agent’s shell answered through its own rebuild', bAlive.text.includes('B_STILL_27'),
     JSON.stringify(bAlive.text.trim().slice(0, 40)))
 
@@ -542,7 +686,7 @@ try {
   // host's (`started background job <id>`), and the hand-off carries the job kind and `onExpiry: none`
   // so the job outlives one command's timeout.
   const bgArgs = { command: 'echo BG_$(( 6 * 7 ))', description: 'compatibility driver: background arm', run_in_background: true }
-  const bg = await tool.execute(bgArgs, exec)
+  const bg = await tool.execute(bgArgs, budget(owner, bgArgs))
   const bgText = (tool?.output?.render?.(bgArgs, bg) ?? []).map(part => String(part?.text ?? '')).join('')
   check('run_in_background hands off to the jobs producer', bg?.kind === 'background'
     && bg?.jobId === 'job-dsh-session-real' && bgText === 'started background job job-dsh-session-real'
@@ -559,7 +703,7 @@ try {
   // the registry double above never calls `run()`, and a claim about what a job receives has to come
   // from the job.
   const bgStdinArgs = { command: 'cat; echo RC=$?', description: 'compatibility driver: background stdin', run_in_background: true, stdin: 'FED_TO_BACKGROUND\n' }
-  await tool.execute(bgStdinArgs, exec)
+  await tool.execute(bgStdinArgs, budget(owner, bgStdinArgs))
   const bgJob = jobRequest.run()
   const bgOutcome = await bgJob.done
   // This producer's `readOutput` is the registry's contract — a rendered string, not the shell
@@ -804,11 +948,29 @@ try {
     `the control harness failed before comparing: ${String(error?.message ?? error).slice(0, 120)}`)
 }
 
-const EXPECTED_CHECKS = 71
+// Every `check(` site in this file, read out of this file. The count in the summary used to be a
+// number typed by whoever added a cell, so a run that reached 46 of them on the WSL1 frame reported
+// "expected 73" and named nothing — the reader had to diff two logs to learn that a whole stretch of
+// cells never ran. Now the audit is derived: a site with no matching verdict is listed by name.
+const sites = [...readFileSync(new URL(import.meta.url), 'utf8')
+  .matchAll(/^[ \t]*(?:await[ \t]+)?check\([ \t]*(?:'([^']+)'|"([^"]+)"|`([^`]+)`)/gm)]
+  .map(match => (match[1] ?? match[2] ?? match[3] ?? '').trim())
+  .filter(name => name !== '')
+/** Compare a site with a verdict: a `${dynamic}` label matches on the literal part it starts with. */
+const norm = text => text.replace(/\$\{[^}]*\}/g, '').replace(/\s+/g, ' ').trim().slice(0, 28)
+// Two sites exist only to report a failure from inside a `catch`, so a green run never reaches them
+// and the audit must not count what it cannot see. Anything else that goes unreported is a red below.
+const CATCH_ONLY = ['every call returned', 'the keyboard door ran'].map(norm)
+const ranKeys = [...new Set(results.map(entry => norm(entry.name)))]
+const missing = [...new Set(sites.map(norm))]
+  .filter(key => key !== '' && !CATCH_ONLY.includes(key)
+    && !ranKeys.some(name => name === key || name.startsWith(key)))
 const passed = results.filter(r => r.pass).length
-console.log(`${passed}/${results.length} checks passed (plane=${plane()}, distro=${distro}, user=${username}, cwd=${sessionCwd})`)
-if (results.length !== EXPECTED_CHECKS) {
-  console.error(`bash-session-real: RED — ran ${results.length} checks, expected ${EXPECTED_CHECKS}; a short run must not report green`)
+console.log(`${passed}/${results.length} checks passed, ${sites.length} check sites in this file `
+  + `(plane=${plane()}, distro=${distro}, user=${username}, cwd=${sessionCwd})`)
+if (missing.length > 0) {
+  console.error(`bash-session-real: RED — ${missing.length} check site(s) below never ran; a short run must not report green:`)
+  for (const name of missing.slice(0, 40)) console.error(`  not run: ${name}`)
   process.exitCode = 1
 } else if (passed !== results.length) {
   console.error('bash-session-real: RED — at least one check failed')

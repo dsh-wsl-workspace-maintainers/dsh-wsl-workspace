@@ -40,8 +40,12 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
  *   - `passLines`: fs-real prints 2 (fs-real.mjs:105-106), search-real 2 (search-real.mjs:296-297),
  *     skills-real 3 (skills-real.mjs:104-106). These drivers assert per statement and print a
  *     summary, so the summary line count is the only completion evidence they leave.
- *   - `checks`: bash-session-real declares `EXPECTED_CHECKS = 71` (bash-session-real.mjs:807) and
+ *   - `checks`: bash-session-real reports `73/73 checks passed` (76 `check(` sites in its own file,
+ *     minus the 2 that only report from a `catch` and the 1 unexecuted arm of the control pair) and
  *     tool-bash-real declares 10 (tool-bash-real.mjs:195); both print `N/M checks passed`.
+ *   - `greenLine`: relay-profile-real prints one `relay-profile-real: GREEN …` line and asserts with
+ *     `assert.match`, so a non-zero exit is already required above; the marker is the evidence that
+ *     the run reached its own end instead of stopping part-way through the arms.
  *   - bash-parity-real has no EXPECTED_CHECKS constant — it compares 14 probes and skips the 2
  *     `sessionOnly` ones (bash-parity-real.mjs:67-68), landing 12 results, and its own guard is
  *     only `results.length === 0` (bash-parity-real.mjs:204). 12 is the floor this matrix holds it
@@ -52,8 +56,9 @@ const DRIVERS = [
   { name: 'skills-real', script: 'skills-real.mjs', floor: { kind: 'passLines', value: 3 }, libPlane: 'no-lib-entry' },
   { name: 'search-real', script: 'search-real.mjs', floor: { kind: 'passLines', value: 2 } },
   { name: 'relay-real', script: 'relay-real.mjs', floor: { kind: 'passLines', value: 2 } },
+  { name: 'relay-profile-real', script: 'relay-profile-real.mjs', floor: { kind: 'greenLine', marker: 'relay-profile-real: GREEN', value: 1 } },
   { name: 'tool-bash-real', script: 'tool-bash-real.mjs', floor: { kind: 'checks', value: 10 } },
-  { name: 'bash-session-real', script: 'bash-session-real.mjs', floor: { kind: 'checks', value: 71 } },
+  { name: 'bash-session-real', script: 'bash-session-real.mjs', floor: { kind: 'checks', value: 73 } },
   { name: 'bash-parity-real', script: 'bash-parity-real.mjs', floor: { kind: 'checks', value: 12 } },
 ]
 
@@ -138,7 +143,9 @@ for (const driver of requested) {
   const passLines = output.split('\n').filter(l => l.startsWith('PASS ')).length
   const reached = driver.floor.kind === 'checks'
     ? (counted === null ? 0 : Number(counted[2]))
-    : passLines
+    : driver.floor.kind === 'greenLine'
+      ? output.split('\n').filter(l => l.includes(driver.floor.marker)).length
+      : passLines
 
   if (run.status !== 0) {
     cells.push({ driver: driver.name, verdict: 'fail', rc: run.status, floor: `${reached}/${driver.floor.value} ${driver.floor.kind}`, ms: Date.now() - started })

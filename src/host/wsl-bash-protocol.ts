@@ -72,14 +72,54 @@ const STATE_REPORT_BODY = [
 /**
  * The conditional that carries function bodies, given the count the session last saw.
  *
- * Measured on this machine, `declare -f` after the rc files is **61,083 bytes across 85 functions**.
+ * Measured on this machine, `declare -f` after the rc files is **61,881 bytes across 91 functions**.
  * Base64 on every frame would put ~81 kB through the pipe per command to repeat a snapshot that
  * almost never changes, so the shell itself compares its own function count with the one the session
- * last recorded and only emits the bodies when they differ (or when the session asks, because the
- * command text looked like a definition). A body larger than the cap is skipped with a marker rather
- * than truncated: half a function replayed is a syntax error in the restored shell.
+ * last recorded and only asks {@link BOOTSTRAP_COMMAND}'s helper when they differ (or when the
+ * session asks, because the command text looked like a definition).
+ *
+ * What the helper sends is the functions the distribution's own startup files did not define — a
+ * rebuilt shell re-sources those files, so replaying them costs the pipe and proves nothing. The cap
+ * is then applied per function, not to the whole snapshot: measured 2026-10-06 on a distribution
+ * whose rc functions alone are 86,954 bytes, an all-or-nothing cap threw away *every* function in
+ * the shell, including the one the user had just defined. Functions that individually do not fit are
+ * reported by name.
  */
 export const FUNCTION_SNAPSHOT_CAP_BYTES = 65_536
+
+/** The header of the section the snapshot writes. */
+const FUNCTIONS_SECTION = '#dsh-section functions'
+
+/** The marker that names the functions the cap could not carry. */
+const FUNCTIONS_SKIPPED = '#dsh-functions-skipped'
+
+/** The marker a shell writes when it has no snapshot helper to ask. */
+const FUNCTIONS_MISSING = '#dsh-functions-missing'
+
+/**
+ * The helper the session's own shell defines at bootstrap: write one function snapshot.
+ *
+ * It walks only the names the baseline does not already contain, so the loop body runs as many times
+ * as there are functions the user defined. Measured on this machine's 91 startup functions: the
+ * `sort`/`comm` set difference costs 7 ms and a walk of all 91 bodies would cost 150 ms — both
+ * paid only on a frame whose function count moved, never on an ordinary call (which is why the frame
+ * asks this helper instead of carrying the loop itself: the frame goes out on every call).
+ *
+ * The names come from `compgen -A function`, not from `declare -F` with its prefix cut off: with
+ * `set -o allexport` in effect bash prints `declare -fx name`, and a filter anchored on `declare -f `
+ * then turns every name into `declare -fx name` — measured the day it was found, when the live cell
+ * that sets `allexport` lost the function it had just defined, because the "new" name it looked up
+ * with `declare -f --` did not exist.
+ */
+export const SNAPSHOT_HELPER = `__dsh_snapshot() { printf '%s\\n' '${FUNCTIONS_SECTION}'; `
+  + `__dsh_new=$(comm -13 <(printf '%s\\n' "$__dsh_rcf" | sort) <(compgen -A function | sort)); `
+  + `__dsh_left=${FUNCTION_SNAPSHOT_CAP_BYTES}; __dsh_over=''; `
+  + `while IFS= read -r __dsh_f; do [ -n "$__dsh_f" ] || continue; __dsh_b=$(declare -f -- "$__dsh_f"); `
+  + `if [ "\${#__dsh_b}" -le "$__dsh_left" ]; then printf '%s\\n' "$__dsh_b"; `
+  + `__dsh_left=$((__dsh_left - \${#__dsh_b} - 1)); `
+  + `else __dsh_over="\${__dsh_over}\${__dsh_over:+,}\${__dsh_f}(\${#__dsh_b})"; fi; done <<< "$__dsh_new"; `
+  + `[ -n "$__dsh_over" ] && printf '%s\\n' "${FUNCTIONS_SKIPPED} $__dsh_over"; `
+  + `return 0; }`
 
 /** The section headers the state record is allowed to contain, in the order the frame writes them. */
 export const STATE_SECTIONS = ['exports', 'pwd', 'pid', 'aliases', 'options', 'shopt', 'functions-count', 'functions'] as const
@@ -102,10 +142,11 @@ export function shellPidOf(state: string): number | undefined {
  */
 export function stateReport(functionCount: number | undefined): string {
   const conditional = functionCount === undefined ? '' : `; __dsh_n=$(declare -F | wc -l)`
-    + `; if [ "$__dsh_n" != '${functionCount}' ]; then __dsh_s=$(declare -f | wc -c)`
-    + `; printf '%s\\n' '#dsh-section functions'`
-    + `; if [ "$__dsh_s" -le ${FUNCTION_SNAPSHOT_CAP_BYTES} ]; then declare -f;`
-    + ` else printf '%s\\n' "#dsh-functions-skipped $__dsh_s"; fi; fi`
+    + `; if [ "$__dsh_n" != '${functionCount}' ]; then`
+    // A shell whose bootstrap never ran (or whose helper was unset from under it) says so inside the
+    // section it reports, rather than answering with no functions section at all.
+    + ` if declare -F __dsh_snapshot >/dev/null 2>&1; then __dsh_snapshot;`
+    + ` else printf '%s\\n' '${FUNCTIONS_SECTION}' '${FUNCTIONS_MISSING} __dsh_snapshot: the session bootstrap did not run in this shell'; fi; fi`
   return `{ ${STATE_REPORT_BODY}${conditional}; } | base64 -w0`
 }
 
@@ -390,8 +431,18 @@ export function restoreScript(state: string): RestorePlan {
   // `declare -f` output starts with the *function's own name*, not with `declare -f`, so this section
   // is taken verbatim apart from the over-cap marker.
   const functions = (sections.functions ?? []).filter(line => !line.startsWith('#dsh-'))
-  const skippedMarker = (sections.functions ?? []).find(line => line.startsWith('#dsh-functions-skipped'))
-  if (skippedMarker !== undefined) skipped.push(`functions (${skippedMarker.split(' ')[1]} bytes over the ${FUNCTION_SNAPSHOT_CAP_BYTES} byte cap)`)
+  const skippedMarker = (sections.functions ?? []).find(line => line.startsWith(`${FUNCTIONS_SKIPPED} `))
+  const missingMarker = (sections.functions ?? []).find(line => line.startsWith(`${FUNCTIONS_MISSING} `))
+  if (missingMarker !== undefined) {
+    skipped.push(`functions (${missingMarker.slice(`${FUNCTIONS_MISSING} `.length).trim()})`)
+  }
+  if (skippedMarker !== undefined) {
+    // The helper names what it could not carry, so the note can too. Before it named sizes, a
+    // distribution whose startup functions alone exceed the cap reported one number and left the
+    // model to guess that nothing of its own had been restored.
+    const names = skippedMarker.slice(`${FUNCTIONS_SKIPPED} `.length).split(',').filter(entry => entry !== '')
+    if (names.length > 0) skipped.push(`functions ${names.slice(0, 6).join(', ')}${names.length > 6 ? ` and ${names.length - 6} more` : ''} (over the ${FUNCTION_SNAPSHOT_CAP_BYTES} byte cap; the distribution's own functions were left for its startup files)`)
+  }
   const pwdLine = (sections.pwd ?? []).find(line => line.startsWith('PWD='))
   const pwd = pwdLine?.slice(4)
   if (pwd === undefined || pwd === '') skipped.push('working directory (not reported)')
@@ -447,6 +498,12 @@ export function restoreChunks(state: string): { chunks: string[]; skipped: strin
  * neither belongs anywhere a model or a transcript can see. What survives is the environment those
  * files set — PATH additions, locale, proxies — which is the part a piped non-interactive shell
  * would otherwise be missing.
+ *
+ * The last two lines are the snapshot machinery's own: the helper writes a function snapshot, and
+ * the name list it compares against is taken **after** both are in place, so the helper is one of
+ * the distribution's own functions from the snapshot's point of view. A rebuilt shell re-runs this
+ * bootstrap, so it re-derives both — which is why the snapshot only has to carry what the rc files
+ * did not define.
  */
 export const BOOTSTRAP_COMMAND = [
   'set +H',
@@ -455,6 +512,8 @@ export const BOOTSTRAP_COMMAND = [
   // Prompt bytes are noise here: completion is a record, and an interactive shell with a piped
   // stdin writes its prompt to stderr, where the model would read it as output.
   'PS1=',
+  SNAPSHOT_HELPER,
+  '__dsh_rcf=$(compgen -A function)',
   'cd "$PWD"',
 ].join('; ')
 

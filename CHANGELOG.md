@@ -125,7 +125,11 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   that prompt has now been done twice"), because an unannounced second execution is the defect this
   ticket already caught once; and if the `/proc` walk never answers, the body says the check could not
   run instead of leaving a silent deadline — a premise that has gone away is not allowed to look like a
-  verdict. `tty: true` asks for a terminal up front and `tty: false` vetoes the second attempt; the
+  verdict. And when the walk does answer but this kernel reports no sleep location — which is what the
+  WSL1 runner does, `wchan` and `/proc/<pid>/syscall` empty for every process, no foreground job named —
+  the deadline body prints the rows it read and says so (`w=not-reported`, beside `w=running` for a
+  process on the CPU and `w=0` for one it may not look inside), instead of leaving "timed out" to be read
+  as "examined and found ordinary". `tty: true` asks for a terminal up front and `tty: false` vetoes the second attempt; the
   pager and live-display behaviours that the class lists existed to encode are simply what the pipe does
   (`man` prints the page, `top: failed tty get` refuses in 687 ms), and the sheet of which symptom
   belongs to which layer is [docs/tty-triage.md](docs/tty-triage.md).
@@ -413,6 +417,30 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   requires editing the ledger in the same commit**: `run-seams` fails with `LEDGER MISSING` the
   moment a declared red goes green without the declaration moving with it, because a ledger that
   drifts from the product is a proof nobody maintains. The ledger's ten entries are unchanged.
+- **An outside adversarial run found three things this machine could not see, and each is now closed.**
+  (1) *The readiness contract depended on the distribution's startup files leaving it alone.* On a
+  distribution shipping `/etc/profile.d/80-systemd-osc-context.sh`, that file runs
+  `PROMPT_COMMAND+=(…)`, bash refuses to export an array, and the interactive shell the relay `exec`s
+  inherits no `PROMPT_COMMAND` at all — measured here in a simulated profile: `env | grep -c
+  '^PROMPT_COMMAND='` goes from `1` to `0` and the `133;D;` marker never reaches the wire, so
+  `wsl_terminal` pays its quiet window on every keystroke and the `DSH_WSL_PTY_SHELL=1` tier never
+  settles. The relay now bridges the contract a second time under a name no startup file knows
+  (`__DSH_READINESS_PROMPT_COMMAND`) and re-asserts it between the login pass and the `exec`, `unset`
+  first — assigning to an array only writes element `[0]` and still exports nothing. Four arms measured:
+  old command + hostile profile `0`/no marker (the report's shape), old + benign `1`/marker (why this
+  machine was green), **new + hostile `1`/marker `prompt=[dsh> ]`**, new + no contract bridged
+  `0`/no marker (a host that injects none still gets its own shell). (2) *The function snapshot's cap
+  was all-or-nothing*, so on a distribution whose own startup functions are 86,954 bytes the whole
+  section — the function the model had just defined included — was dropped, and the journal's own
+  `alias, function, shopt and set options survive a restart` cell went red for the same reason. The cap
+  is now a per-function budget over only the functions the distribution's own files did not define
+  (a rebuilt shell re-sources those), and what does not fit is named. (3) *A rebuild that had something to
+  report was not believed by the cell that checks it*: the note renders as `was restarted and its
+  directory …` when nothing was left out and `was restarted; not restored: …` when something was, and
+  the check matched only the first, so on a reporting machine the claim and the fact were both true and
+  the cell still read them as disagreeing. Both wordings count now, and a starve-triggered rebuild
+  carries what it could not restore into the note of the call that asked for the terminal, instead of
+  losing it with the first attempt.
 
 ## 0.7.5 — 2026-09-30
 

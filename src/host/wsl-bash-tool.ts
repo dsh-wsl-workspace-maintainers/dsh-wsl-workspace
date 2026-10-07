@@ -26,6 +26,7 @@ import { isValidWslUsername, joinUnc, parseWslUnc, windowsToMntPath } from '../s
 import { getWindowsWorkspace, getWorkspaceUsername } from '../shared/wsl-credentials.ts'
 import { defaultDistroSync } from '../shared/wsl.ts'
 import { bridgeEnv } from '../shared/wsl-env.ts'
+import { STDIN_CAP_BYTES, stdinRefusal } from '../shared/wsl-stdin.ts'
 import { SESSION_ARGV } from './wsl-bash-protocol.ts'
 import { WslBashSession, type WslBashRun, type WslBashSessionSpec, type WslBashSpawnHost } from './wsl-bash-session.ts'
 import { startBackgroundJob } from './wsl-jobs.ts'
@@ -109,29 +110,9 @@ interface BashArgs {
 }
 
 /**
- * The ceiling on one call's `stdin`, and the reason it is where it is.
- *
- * The text travels inside the frame line (base64, like the command), so its cost is the frame's cost,
- * and that was measured on this machine (2026-10-05, `D:\Temp\issue51-s0`): a 64 kB command answers in
- * ~3.8 s and a 256 kB one in ~59 s, because a piped bash reads the line as fast as the pipe delivers
- * it. Half the measured 64 kB point is the ceiling — a command plus its input at the frame size
- * nobody has measured past should still feel like a tool call — and a larger input is refused by name
- * rather than truncated, because a program fed half its input fails in ways that look like the
- * program's fault.
+ * The ceiling on one call's `stdin`, and the refusal it earns when exceeded, both live in
+ * `src/shared/wsl-stdin.ts` — see the note there for why a test must not need this module.
  */
-export const STDIN_CAP_BYTES = 32 * 1024
-
-/**
- * Whether a call's `stdin` is beyond what the frame can carry.
- * @param stdin - the caller's input, if any.
- * @returns the sentence to throw for the tool, or undefined when the input fits.
- */
-export function stdinRefusal(stdin: string | undefined): string | undefined {
-  if (stdin === undefined) return undefined
-  const bytes = Buffer.byteLength(stdin, 'utf8')
-  if (bytes <= STDIN_CAP_BYTES) return undefined
-  return `wsl-bash: stdin is ${bytes} bytes, over the ${STDIN_CAP_BYTES}-byte ceiling. The input travels in the same line as the command, and a frame's cost grows with its length (measured: a 64 kB frame answers in ~3.8 s, 256 kB in ~59 s). Write the data to a file first and redirect the command\'s stdin from it (\`command < file\`) — nothing was truncated and nothing ran`
-}
 
 /** Environment facts that must reach the distribution. */
 const BRIDGED_KEYS = ['DSH_HOME', 'DSH_SESSION_ID', 'DSH_WSL_DISTRO', 'DSH_WSL_USER', 'DSH_WSL_SESSION', 'NO_COLOR', 'TERM', 'PAGER', 'GIT_PAGER']
@@ -304,6 +285,17 @@ function toForeground(run: WslBashRun, timeoutMs: number, escalated: boolean, be
     }
     else {
       notes.push('[the call reached its deadline; for work that outlives one call pass run_in_background: true, or use bash_background]')
+    }
+    // The reading ran, saw processes, and none of them matched a terminal wait. Print what it read and
+    // which fields it read it from: on a kernel that exposes the wait this line carries the sleep
+    // location and the foreground job (`w=wait_woken 1tty fg`); on the WSL1 runner (CI frame
+    // 37494104075) `wchan` and `syscall` both come back empty for every process, asleep or running, and
+    // the line says `w=not-reported` instead.
+    // Without the fields named, either shape reads as though the wait had been examined and found
+    // ordinary — which is the one claim this layer must not make about a kernel it cannot read.
+    if (run.starveSaw !== undefined) {
+      notes.push('[the check for a command waiting on a keyboard looked and read '
+        + `(/proc/<pid>/wchan, /proc/<pid>/syscall, its fd table): ${run.starveSaw}]`)
     }
   }
   if (run.restarted) {
@@ -604,7 +596,16 @@ export function apply(ctx: Context, config?: Config): void {
         escalated = true
         before.push(retryNote(first.kind, first.atMs, first.viaRoot, first.shellInterrupted))
         command = wrap(wrapForTty(args.command))
-        run = await session.run(command, timeoutMs, exec.signal, true, args.stdin)
+        // What the first attempt did to the shell is a fact about this call, not about the attempt it
+        // was found in: a builtin that read the terminal blocks the shell itself, so the shell is
+        // restarted here, and what that restart could not restore has to reach the note. Measured
+        // 2026-10-06: dropped with the first run, the loss went unreported on exactly the path that
+        // loses the most.
+        const firstRun = run
+        const retry = await session.run(command, timeoutMs, exec.signal, true, args.stdin)
+        run = { ...retry,
+          restarted: retry.restarted || firstRun.restarted,
+          skipped: retry.skipped ?? firstRun.skipped }
       }
       if (run.aborted) throw toolAborted()
       // Any success clears every streak: the note's claim is about a shell where nothing has worked

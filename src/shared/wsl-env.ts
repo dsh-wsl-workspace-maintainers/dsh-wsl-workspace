@@ -9,8 +9,20 @@
  * `wsl.exe` without naming them produces a shell whose prompt the host can never
  * recognise. Measured on 2026-10-04 under a real ConPTY: with the keys present but
  * unnamed, neither the marker nor the prompt literal reaches the wire; naming them
- * in `WSLENV` makes both appear — and the inner `bash -lc` profile chain does not
- * undo it, because the crossed `PROMPT_COMMAND` re-assigns `PS1` at every prompt.
+ * in `WSLENV` makes both appear.
+ *
+ * Naming them is not enough on its own, because the value is then handed to
+ * `bash -lc`, whose login pass may rewrite it. Measured on 2026-10-06 on a
+ * distribution shipping `/etc/profile.d/80-systemd-osc-context.sh`: that script runs
+ * `PROMPT_COMMAND+=(…)`, and bash **does not export array variables**, so the
+ * interactive shell that replaces the login shell inherits no `PROMPT_COMMAND` at
+ * all (`env | grep -c '^PROMPT_COMMAND='` answers `0`) and the marker never reaches
+ * the wire. Re-assigning the same name is not a fix either — the variable keeps its
+ * array attribute, and assigning to an array writes element `[0]` — it has to be
+ * `unset` first, which is what {@link readinessReassertion} does. That is why the
+ * contract also travels under a name no startup file knows
+ * ({@link READINESS_COPY_KEY}), so the value re-asserted is the host's own rather
+ * than whatever the login pass left behind.
  *
  * This is a pure function over the environment so it can be asserted offline: the
  * relay module itself spawns `wsl.exe` at load time.
@@ -24,6 +36,31 @@
  * `/mnt/<drive>` path on the way in.
  */
 export const READINESS_KEYS: readonly string[] = ['PS1', 'PROMPT_COMMAND']
+
+/**
+ * The name the contract travels under, beside the name bash itself uses.
+ *
+ * No distribution's startup file has a reason to rewrite a name this specific, so it
+ * is the copy the relay can trust after the login pass — see the module note. WSL
+ * hands it over verbatim: like the prompt keys it must never be given `/p`.
+ */
+export const READINESS_COPY_KEY = '__DSH_READINESS_PROMPT_COMMAND'
+
+/**
+ * The shell text that puts the contract back after a login pass may have taken it away.
+ *
+ * `unset` comes first because a startup file that ran `PROMPT_COMMAND+=(…)` leaves the
+ * variable with an array attribute, and an assignment to an array writes element `[0]`
+ * without clearing that attribute — measured: that form still exports nothing, while
+ * `unset` then assign then export exports the value. The guard means a host that
+ * injects no contract leaves the shell exactly as its own startup files made it.
+ * @returns shell text that re-asserts `PROMPT_COMMAND` from the copy, and changes
+ *   nothing when the copy is absent or empty.
+ */
+export function readinessReassertion(): string {
+  return `{ [ -z "\${${READINESS_COPY_KEY}:-}" ] || { unset PROMPT_COMMAND; `
+    + `PROMPT_COMMAND="\${${READINESS_COPY_KEY}}"; export PROMPT_COMMAND; }; }`
+}
 
 /**
  * The prompt string the host compares the tail against. This is a COPY of a host
@@ -50,6 +87,8 @@ export function readinessContract(): Record<string, string> {
 /**
  * The environment for `wsl.exe`, with the readiness keys named in `WSLENV`.
  *
+ * A bridged `PROMPT_COMMAND` is mirrored to {@link READINESS_COPY_KEY} and that name is
+ * bridged too, so the contract survives a login pass that rewrites the bash variable.
  * Ambient `WSLENV` entries survive and are never duplicated; a key absent or empty
  * in the environment is not named, so a host that injects no contract leaves the
  * environment byte-identical to what it was (including having no `WSLENV` at all).
@@ -57,7 +96,11 @@ export function readinessContract(): Record<string, string> {
  * @returns a shallow copy with `WSLENV` merged, and `undefined` values dropped.
  */
 export function bridgeReadiness(env: NodeJS.ProcessEnv): Record<string, string> {
-  return bridgeEnv(env, READINESS_KEYS)
+  const source = { ...env }
+  if (source[READINESS_COPY_KEY] === undefined && source.PROMPT_COMMAND !== undefined && source.PROMPT_COMMAND !== '') {
+    source[READINESS_COPY_KEY] = source.PROMPT_COMMAND
+  }
+  return bridgeEnv(source, [...READINESS_KEYS, READINESS_COPY_KEY])
 }
 
 /**
