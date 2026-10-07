@@ -1,14 +1,8 @@
 {
   "name": "dsh-wsl-workspace",
-  "description": "WSL workspace support for DeepSeek Harness: add a WSL workspace from the web GUI and run the whole agent session (bash + file tools) inside the WSL distribution, VS Code Remote-WSL style. No toolchain install inside WSL required. Works on DSH Desktop as well as dsh web.",
   "version": "0.7.6",
-  "type": "module",
-  "packageManager": "npm@11.19.0",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace.git"
-  },
-  "main": "lib/index.js",
+  "private": null,
+  "description": "WSL workspace support for DeepSeek Harness: add a WSL workspace from the web GUI and run the whole agent session (bash + file tools) inside the WSL distribution, VS Code Remote-WSL style. No toolchain install inside WSL required. Works on DSH Desktop as well as dsh web.",
   "scripts": {
     "clean": "node scripts/clean-lib.mjs",
     "build": "npm run clean && tsdown && node scripts/verify-lib.mjs",
@@ -20,7 +14,7 @@
     "verify:lib-sync": "node scripts/verify-lib-sync.mjs",
     "verify:plane": "node scripts/verify-plane-log.mjs",
     "ci:pinned": "node ci/install-pinned.mjs",
-    "test:unit": "node --experimental-strip-types --test tests/variants.test.ts tests/paths.test.ts tests/references.test.ts tests/locales.test.ts tests/readme-compat.test.mjs tests/wsl-output-decode.test.ts tests/default-distro-parity.test.ts tests/deliberate-reds.test.mjs tests/client-classnames.test.ts tests/support/fake-child-process.test.mjs scripts/check-portable-spelling.test.mjs tests/tool-contract.test.mjs tests/client-wiring.test.mjs tests/parity-claims.test.mjs tests/docs-debt.test.mjs && node scripts/check-unit-closure.mjs",
+    "test:unit": "node --experimental-strip-types --test tests/variants.test.ts tests/paths.test.ts tests/references.test.ts tests/locales.test.ts tests/readme-compat.test.mjs tests/wsl-output-decode.test.ts tests/default-distro-parity.test.ts tests/deliberate-reds.test.mjs tests/client-classnames.test.ts tests/support/fake-child-process.test.mjs scripts/check-portable-spelling.test.mjs tests/tool-contract.test.mjs tests/client-wiring.test.mjs tests/parity-claims.test.mjs tests/docs-debt.test.mjs",
     "lint:portability": "node scripts/check-portable-spelling.mjs",
     "lint:portability:strict": "node scripts/check-portable-spelling.mjs --strict",
     "test:win32": "node --experimental-strip-types --test tests/wsl-skills.test.ts tests/fs-policy.test.ts tests/relay-node.test.mjs",
@@ -33,8 +27,19 @@
     "test:compat": "bash scripts/verify-dsh-compat.sh",
     "test:docs": "node scripts/check-docs-parity.mjs",
     "prepack": "npm run build",
-    "prepublishOnly": "node scripts/verify-install.mjs && node scripts/verify-lib-sync.mjs"
+    "prepublishOnly": "node scripts/verify-install.mjs && node scripts/verify-lib-sync.mjs",
+    "test:repro": "node --experimental-strip-types scripts/repro-e2e.mjs",
+    "test:docs-claims": "node --experimental-strip-types scripts/run-docs-claims.mjs",
+    "test:host": "node tests/host-boot.mjs",
+    "test:distro-shape": "node --experimental-strip-types scripts/compatibility/distro-shape-real.mjs"
   },
+  "type": "module",
+  "packageManager": "npm@11.19.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace.git"
+  },
+  "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
     "./shell": "./lib/shell.js",
