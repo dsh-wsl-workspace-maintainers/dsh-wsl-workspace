@@ -312,6 +312,12 @@ jobs:
           run_lib relay-real node --experimental-strip-types scripts/compatibility/relay-real.mjs
           MSYS_NO_PATHCONV=1 DSH_WSL_TEST_PLANE=lib WSL_COMPAT_ROOT=/tmp/dsh-wsl-relay-profile-lib node --experimental-strip-types scripts/compatibility/relay-profile-real.mjs > logs/lib-relay-profile-real.log 2>&1 || { echo "rc=$?"; tail -8 logs/lib-relay-profile-real.log || true; FAIL=1; }
           run_lib tool-bash-real node --experimental-strip-types scripts/compatibility/tool-bash-real.mjs
+          # The two distribution promises again, against the shipped bundle this time. No
+          # WSL_COMPAT_ROOT and no MSYS_NO_PATHCONV: the driver builds its own fixture path inside
+          # node and hands it to `wsl.exe` as an argument, so there is nothing for the Windows bash
+          # runner to rewrite. The script bytes it reads come from `lib/wsl-search.js` on this plane,
+          # which is the point of running it twice.
+          run_lib distro-shape-real node --experimental-strip-types scripts/compatibility/distro-shape-real.mjs
           run_lib bash-session-real node --experimental-strip-types scripts/compatibility/bash-session-real.mjs
           MSYS_NO_PATHCONV=1 DSH_WSL_TEST_PLANE=lib WSL_COMPAT_ROOT=/tmp/dsh-wsl-parity-lib node --experimental-strip-types scripts/compatibility/bash-parity-real.mjs > logs/lib-bash-parity-real.log 2>&1 || { echo "rc=$?"; tail -8 logs/lib-bash-parity-real.log || true; FAIL=1; }
           # skills-real is deliberately not attempted under `lib`: tsdown declares no entry for

@@ -39,10 +39,18 @@ import { load, plane, resolvePath } from './plane.mjs'
 
 const distro = process.env.WSL_COMPAT_DISTRO ?? 'Ubuntu'
 const user = process.env.WSL_COMPAT_USER ?? 'root'
-/** Where the busybox-shaped `grep`/`find` live inside the distribution. */
-const SHAPE_DIR = '/tmp/dsh-distro-shape'
-/** The fixture tree the scripts are pointed at. */
-const FIXTURE = '/tmp/dsh-distro-shape-tree'
+/**
+ * Where the busybox-shaped `grep`/`find` live inside the distribution, and where the fixture tree is.
+ *
+ * **Both carry the plane**, for the reason `ci.yml` states about every other driver in this job: these
+ * paths are created rather than cleaned, so two passes over one `/tmp/dsh-wsl-compat` is a race and
+ * not a rerun. The gate runs this driver once per plane in the same job, and a fixed root would have
+ * had the src pass's teardown pull the tree out from under the lib pass. The process id is in there
+ * too so two concurrent invocations on one machine cannot collide either.
+ */
+const TAG = `${plane()}-${process.pid}`
+const SHAPE_DIR = `/tmp/dsh-distro-shape-${TAG}`
+const FIXTURE = `/tmp/dsh-distro-shape-tree-${TAG}`
 
 const results = []
 let currentSection = 'startup'
