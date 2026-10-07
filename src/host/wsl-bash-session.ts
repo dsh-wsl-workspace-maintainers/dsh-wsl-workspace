@@ -443,12 +443,22 @@ export class WslBashSession {
         // The spill file also gets the bytes that never left memory, so the path the model is given
         // really is the complete stream.
         this.spillWindow('stderr', this.err, this.err.length)
-        this.spillWindow('stdout', this.out, done.recordStart)
-        const stdout = stripRecords(this.out.subarray(0, done.recordStart)).toString('utf8')
         // stderr travels on its own pipe, so the completion record on stdout can arrive first: the wait
-        // has to happen *before* the window is taken, or it waits for nothing (measured on the src plane:
+        // has to happen **before** stdout is taken, or it waits for nothing (measured on the src plane:
         // `echo oops >&2` came back `(no output)` and those bytes landed in the next call's window).
         await this.settleStderr()
+        // …and the spill of stdout has to happen **after** that wait too, not before it. WSL1 measured
+        // this: `seq 1 200000` produced a spill file holding 194341 of the 200000 lines, while WSL2
+        // produced all 200000. The two differ only in how finely the 9P pipe fragments the stream, so
+        // the extra chunks that arrive *during* the stderr wait are the ones missing — they were below
+        // `recordStart` when the spill was taken, and above it by the time the slice was read, so they
+        // reached neither the answer nor the file. 36 kB, about half a pipe chunk.
+        //
+        // `this.out.length`, not `done.recordStart`: the record is still in the window, and the slice
+        // below strips it, so spilling to the record's offset throws away the bytes after it rather than
+        // the record. What the model is told the file holds has to be what the file holds.
+        this.spillWindow('stdout', this.out, this.out.length)
+        const stdout = stripRecords(this.out.subarray(0, done.recordStart)).toString('utf8')
         const stderr = this.takeStderr(frame.payload, frame.stdinPayload)
         const truncated = this.outTruncated
         this.out = this.out.subarray(done.nextOffset)
