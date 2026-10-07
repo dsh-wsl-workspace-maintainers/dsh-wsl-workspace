@@ -66,8 +66,25 @@ try {
   })
   report.stage = 'booted'
 
-  // ── what the host actually did with every row it was given ──────────────────────────────
-  const ownFiber = [...(ctx.get('loader')?.entries?.() ?? [])].find(e => e?.options?.id === 'dsh-wsl-workspace')?.fiber
+  // `state: FAILED` says something threw and not what. Subscribing to `internal/status` is too late —
+  // the transitions happen inside `runProfile` — so the error is read off the fiber afterwards, which
+  // means a row that failed quietly stops being a colour with no sentence attached.
+  const rowFailures = () => [...(ctx.get('loader')?.entries?.() ?? [])]
+    .filter(entry => entry?.fiber !== undefined && entry.fiber.state === 3)
+    .map(entry => {
+      // Every step guarded: `fiber.error` is a getter that can itself throw, and a probe that throws
+      // is recorded as the string `THREW: …`, which is not JSON. Letting that reach the parent turns
+      // a diagnostic into a crash — the failure mode this file keeps having to defend against.
+      let error = '(no error recorded)'
+      try {
+        const raw = entry.fiber.error
+        error = raw === undefined ? '(no error recorded)' : String(raw?.message ?? raw).slice(0, 300)
+      } catch (inner) {
+        error = `reading fiber.error threw: ${String(inner?.message ?? inner).slice(0, 160)}`
+      }
+      return { entry: entry?.options?.id ?? '(unnamed)', error }
+    })
+
   probe('rows', () => [...(ctx.get('loader')?.entries?.() ?? [])].map(entry => ({
     id: entry?.options?.id,
     // `fiber === undefined` means the entry never got a fiber at all — a different failure from
@@ -131,6 +148,7 @@ try {
     ['loader', 'dshHomePath', 'profileContext', 'pluginPackages'].filter(name => ctx.get(name) !== undefined)))
 
   probe('webServerPort', () => String(ctx.get('webServer')?.port))
+  probe('rowFailures', () => JSON.stringify(rowFailures()))
 
   // ── the property: every service the sources reach for, in the realm that will run them ────
   //
@@ -145,6 +163,13 @@ try {
   //   4 `ctx.get(name)` resolves in that row's own realm.
   // A property written against level 1 would pass today with the plugin doing nothing, which is why
   // this checks level 4 and prints the others beside it.
+  // This plugin's own rows, named by the plan rather than by a literal. The row ids moved from
+  // `dsh-wsl-workspace` to `wsl-index` when every entry became its own row, and a stale literal here
+  // made every service look unreachable in its own realm while the report said nothing about why.
+  const ownFibers = (plan.pluginRowIds ?? [])
+    .map(id => [...(ctx.get('loader')?.entries?.() ?? [])].find(entry => entry?.options?.id === id)?.fiber)
+    .filter(fiber => fiber !== undefined)
+
   probe('requirements', () => JSON.stringify((plan.requirements ?? []).map(requirement => {
     const atRoot = ctx.get(requirement.service)
     // The same question asked again **inside this plugin's own realm**. Asking only the root is how
@@ -152,13 +177,19 @@ try {
     // right there at the root, so a root-level check reports it reachable while the plugin's own
     // context throws `cannot get property "<name>" without inject` the first time it is used. Two
     // realms, two answers, and only the second one is the one the code will feel.
-    const ownRealm = ownFiber === undefined ? null : ownFiber.ctx.get(requirement.service)
+    // Reachable in its own realm means: reachable in **every** one of this plugin's rows, because a
+    // service that only some entries can see is a service some entry will throw on.
+    const ownRealm = ownFibers.length === 0
+      ? undefined
+      : ownFibers.every(fiber => fiber.ctx.get(requirement.service) !== undefined)
+        ? 'object'
+        : 'ABSENT'
     return {
       service: requirement.service,
       module: requirement.module,
       how: requirement.how,
       resolvedAtRoot: atRoot !== undefined ? typeof atRoot : 'ABSENT',
-      resolvedInOwnRealm: ownRealm !== undefined ? typeof ownRealm : 'ABSENT',
+      resolvedInOwnRealm: ownRealm === undefined ? 'UNKNOWN' : ownRealm,
       reachable: atRoot !== undefined && ownRealm !== undefined,
     }
   })))

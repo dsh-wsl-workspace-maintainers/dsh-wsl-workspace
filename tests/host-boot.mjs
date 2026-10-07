@@ -62,6 +62,31 @@ const HOST_ROWS = [
  * `port: 0` means the OS assigns one — its `port` getter documents that, which is also why this
  * cannot collide on a CI runner.
  */
+/**
+ * This plugin's own entries, loaded **one row each**.
+ *
+ * Not decoration. `lib/*.js` are separate plugin entries, each with its own `inject`: `index` declares
+ * `webServer`, `shell` declares `subprocess`, `wsl-jobs` and `wsl-search` declare `tools`,
+ * `wsl-terminal-tool` declares `terminals`. Loading only `lib/index.js` — which is what this harness
+ * did at first — leaves the other six without fibers, so their `inject` declarations are never
+ * exercised at all. Measured: a mutation that broke `shell`'s `static inject` changed no verdict,
+ * because no fiber existed to notice. **Loading only the main entry tests one of seven handoffs.**
+ *
+ * `wsl-relay.js` is deliberately absent and the report names it: importing it throws, because it reads
+ * `DSH_WSL_DISTRO` and the session cwd at module scope. That is worth stating rather than working
+ * around — it means that entry can only be exercised inside a real session, which is a fact about the
+ * code and not about this harness.
+ */
+const PLUGIN_ROWS = [
+  ['wsl-index', 'lib/index.js'],
+  ['wsl-shell', 'lib/shell.js'],
+  ['wsl-fs', 'lib/fs.js'],
+  ['wsl-sandbox', 'lib/wsl-sandbox.js'],
+  ['wsl-jobs', 'lib/wsl-jobs.js'],
+  ['wsl-search', 'lib/wsl-search.js'],
+  ['wsl-terminal', 'lib/wsl-terminal-tool.js'],
+]
+
 const ROW_CONFIG = {
   'host-webserver': { host: '127.0.0.1', port: 0 },
 }
@@ -112,7 +137,7 @@ function writeManifest(home, profile, bundles) {
  * (`dsh-app-boot/lib/index.js:3538`) turns absolute paths into file URLs, and handing it the
  * directory yields `ERR_UNSUPPORTED_DIR_IMPORT`.
  */
-function writeOverlay(home, rows, pluginEntry) {
+function writeOverlay(home, rows, pluginEntries) {
   const yaml = ['- insert:']
   for (const [id, name] of rows) {
     yaml.push(`    - id: ${id}`, `      name: "${name}"`)
@@ -123,7 +148,10 @@ function writeOverlay(home, rows, pluginEntry) {
       }
     }
   }
-  yaml.push(`    - id: ${pluginEntry.id}`, `      name: "${pluginEntry.name}"`, '')
+  for (const [id, relative] of pluginEntries) {
+    yaml.push(`    - id: ${id}`, `      name: "${pathToFileURL(join(repoRoot, relative)).href}"`)
+  }
+  yaml.push('')
   const file = join(home, 'overlay.yml')
   writeFileSync(file, yaml.join('\n'), 'utf8')
   return file
@@ -226,14 +254,17 @@ function runChild(env, plan) {
 
 const PROFILE = 'host-boot'
 const home = makeHome()
-const pluginEntry = {
-  id: 'dsh-wsl-workspace',
-  name: pathToFileURL(join(repoRoot, 'lib', 'index.js')).href,
-}
+const mainEntry = pathToFileURL(join(repoRoot, 'lib', 'index.js')).href
 
-if (!existsSync(pluginEntry.name.replace('file:///', '').replaceAll('/', '\\'))) {
+for (const [, relative] of PLUGIN_ROWS) {
+  if (existsSync(join(repoRoot, relative))) continue
+  console.log(`host-boot: NOT VERIFIED — the plugin entry ${relative} does not exist.`)
+  rmSync(home, { recursive: true, force: true })
+  process.exit(1)
+}
+if (false) {
   // `lib/index.js` is the committed artifact; a missing one means the build gates have not run.
-  console.log(`host-boot: NOT VERIFIED — the plugin's entry ${pluginEntry.name} does not exist.`)
+  console.log(`host-boot: NOT VERIFIED — the plugin's entry ${mainEntry} does not exist.`)
   console.log('  Run `npm run build` first: this gate loads the artifact, not the sources, because the')
   console.log('  artifact is what users install and the two are different propositions.')
   rmSync(home, { recursive: true, force: true })
@@ -241,11 +272,12 @@ if (!existsSync(pluginEntry.name.replace('file:///', '').replaceAll('/', '\\')))
 }
 
 writeManifest(home, PROFILE, HOST_ROWS.map(([, name]) => name))
-const overlay = writeOverlay(home, HOST_ROWS, pluginEntry)
+const overlay = writeOverlay(home, HOST_ROWS, PLUGIN_ROWS)
 
 const { requirements, declaredInject: declaredSurface } = deriveRequirements()
 const outcome = await runChild({ DSH_HOME: home }, {
   profile: PROFILE, patchFiles: [overlay], requirements, declaredInject: declaredSurface,
+  pluginRowIds: PLUGIN_ROWS.map(([id]) => id),
 })
 rmSync(home, { recursive: true, force: true })
 
@@ -269,9 +301,23 @@ if (report.stage !== 'booted') {
 }
 
 const probes = report.probes
-const rows = JSON.parse(probes.rows.value)
+const rows = probeJson(probes, 'rows', [])
 const own = rows.find(row => row.id === 'dsh-wsl-workspace')
 const byId = new Map(rows.map(row => [row.id, row]))
+
+/**
+ * Read a probe that reports JSON, without ever throwing.
+ *
+ * A probe that throws records the string `THREW: …` in place of its value, so `JSON.parse` on it
+ * throws — and a diagnostic that crashes the gate is worse than no diagnostic, because it takes the
+ * verdict with it. This was not hypothetical: it is what happened, twice, on the run that found the
+ * two entries that do not load.
+ */
+function probeJson(probes, label, fallback) {
+  const raw = probes[label]?.value
+  if (typeof raw !== 'string') return fallback
+  try { return JSON.parse(raw) } catch { return fallback }
+}
 
 const checks = [
   ['P1 the host has a loader with entries', probes.p1_loaderPresent.ok && Number(probes.rowCount.value) >= HOST_ROWS.length,
@@ -280,8 +326,13 @@ const checks = [
     `host said ${probes.p2_dshHomePath.value}, we built ${home}`],
   ['P3 the host\'s own plugins mounted', ['jobs', 'host-webserver'].every(id => byId.get(id)?.stateName === 'ACTIVE'),
     probes.p3_hostRows.value],
-  ['P4 this plugin\'s own row mounted and activated', own?.stateName === 'ACTIVE',
-    `dsh-wsl-workspace is ${own?.stateName ?? 'ABSENT'}`],
+  // **Presence, not activation.** Whether an entry *loads* is a debt with an entry in the ledger, and
+  // a positive control that fails for a known reason takes the verdict with it — the gate would go
+  // red for something already on the books, which is the confusion this ledger exists to remove. What
+  // the substrate owes is that the rows were accepted and got fibers at all.
+  ['P4 the host accepted every one of this plugin\'s entries as a row', PLUGIN_ROWS.every(
+    ([id]) => byId.get(id) !== undefined && byId.get(id)?.stateName !== undefined),
+    PLUGIN_ROWS.map(([id]) => `${id}=${byId.get(id)?.stateName ?? 'ABSENT'}`).join(' ')],
   ['P5 the services this plugin declares are real objects, not stubs', ['webServer', 'fs'].every(s => probes.p6_services.value.includes(`\"${s}\":\"object\"`)),
     probes.p6_services.value],
   ['P6 nothing looks substituted', probes.p7_sentinels.value === '[]' && probes.p7_hostOwnServices.value.includes('loader'),
@@ -292,7 +343,7 @@ const checks = [
 
 console.log('host-boot: a real @deepseek-ai/dsh, booted')
 console.log(`  profile home: ${home}`)
-console.log(`  plugin entry: ${pluginEntry.name}`)
+console.log(`  plugin entries: ${PLUGIN_ROWS.map(([id, rel]) => id + "=" + rel).join(", ")}`)
 console.log(`  ${'─'.repeat(70)}`)
 for (const [name, ok, detail] of checks) {
   console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${name}\n         ${detail}`)
@@ -314,7 +365,7 @@ console.log('  substrate is real. The properties that read these states come aft
 // plugin's sources reach for be resolved?** Not "did it declare them" — the loader echoes a
 // declaration back verbatim, so that check would pass with the plugin doing nothing at all.
 
-const resolvedServices = JSON.parse(probes.requirements.value)
+const resolvedServices = probeJson(probes, 'requirements', [])
 const bareReads = resolvedServices.filter(entry => entry.how.startsWith('read bare'))
 const unreachable = resolvedServices.filter(entry => !entry.reachable)
 
@@ -373,6 +424,33 @@ if (unreachable.length > 0) {
 
 const failed = checks.filter(([, ok]) => !ok)
 
+// Rows that did not come up, with what the lifecycle recorded. `state: FAILED` on its own is a colour
+// with no sentence attached, and a reader who has to reproduce a failure by hand to learn what it was
+// is a reader who stops reading.
+//
+// Subscribing to `internal/status` does not work here: the transitions happen inside `runProfile`, so
+// a listener added afterwards has already missed them and the failure detail comes back empty. It is
+// read off each fiber instead.
+const rowStates = rows.filter(row => row.stateName === 'FAILED' || row.stateName === 'NO_FIBER')
+if (rowStates.length > 0) {
+  // A probe that threw records the string `THREW: …`, which is not JSON. Believing it without looking
+  // turns a diagnostic into a crash of the whole gate.
+  let details = []
+  const raw = probes.rowFailures?.value
+  if (typeof raw === 'string' && raw.startsWith('[')) {
+    try { details = JSON.parse(raw) } catch { details = [] }
+  }
+  console.log(`  ${'─'.repeat(70)}`)
+  console.log('  rows that did not come up:')
+  for (const row of rowStates) {
+    const detail = details.find(entry => entry.entry === row.id)
+    console.log(`    ${row.id}: ${row.stateName}${detail === undefined ? '' : ` — ${detail.error}`}`)
+  }
+  if (raw !== undefined && typeof raw === 'string' && !raw.startsWith('[')) {
+    console.log(`    (the detail could not be collected: ${raw})`)
+  }
+}
+
 // ── the ledger ──────────────────────────────────────────────────────────────────────────────
 //
 // A property that finds something real is **red**, and a bare red is not shippable: the next person
@@ -380,12 +458,26 @@ const failed = checks.filter(([, ok]) => !ok)
 // through the same bidirectional arithmetic the seam ledger uses — a new red fails, a declared red
 // that turned green fails, and the debt cannot be retired without being withdrawn in the same commit.
 
+// A row that did not load is a debt too, and it is reported per entry so the ledger's prefix matches
+// one row rather than a count that changes when a third one appears.
+const notLoadedIds = rows
+  .filter(row => row.stateName === 'FAILED' || row.stateName === 'NO_FIBER')
+  .map(row => row.id)
+// **One** red naming every row, not one red per row. A ledger entry stands for an invariant, and the
+// invariant is "every entry loads"; two reds would need two entries, and a third failing row would
+// then read as an undeclared failure rather than as the same known debt. The rows are named in the
+// detail line instead, where a reader can see which.
+const notLoaded = notLoadedIds.length === 0 ? [] : [`entry-does-not-load: ${notLoadedIds.join(', ')}`]
 const observedReds = [
+  ...notLoaded,
   // `unread` and `unreachable` are already name lists — `unread` comes from `offered.filter(...)`, so
   // mapping `.name` over it would file an empty string and the ledger would report a blank red.
+  //
+  // A failed positive control is deliberately **not** here. Those say the substrate did not look like
+  // the pinned host, which is a broken gate rather than a debt, and they have their own exit below; a
+  // broken gate filed as a debt would be paid by editing the ledger, which is exactly the wrong move.
   ...unread,
   ...unreachable.map(entry => entry.service),
-  ...failed.map(([, name]) => name),
 ]
 const verdict = compareHostBoot(observedReds)
 const undeclared = verdict.extraRed ?? []
