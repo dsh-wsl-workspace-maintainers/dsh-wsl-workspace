@@ -24,6 +24,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync 
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { bareContextReads, declaredInject, hostMentions, offeredJobChannels } from './parity/derive.mjs'
+import { HOST_BOOT_REDS, compareHostBoot, premises } from './host-boot-debt.mjs'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const CHILD = join(repoRoot, 'tests', 'support', 'boot-child.mjs')
@@ -371,13 +372,52 @@ if (unreachable.length > 0) {
 }
 
 const failed = checks.filter(([, ok]) => !ok)
-if (failed.length > 0 || unreachable.length > 0 || unread.length > 0) {
-  console.error(`\nhost-boot: RED — ${failed.length} positive control(s) failed, `
-    + `${unreachable.length} service(s) unreachable, ${unread.length} channel(s) unread.`)
-  if (failed.length > 0) console.error('  The substrate did not look like the pinned host, so nothing downstream can be trusted.')
-  if (unreachable.length > 0) console.error('  A service the sources reach for did not resolve in the realm that will run it.')
-  if (unread.length > 0) console.error('  A member handed to the host has no reader on the other side.')
+
+// ── the ledger ──────────────────────────────────────────────────────────────────────────────
+//
+// A property that finds something real is **red**, and a bare red is not shippable: the next person
+// to read CI cannot tell a broken gate from a working one. So every red this gate can produce goes
+// through the same bidirectional arithmetic the seam ledger uses — a new red fails, a declared red
+// that turned green fails, and the debt cannot be retired without being withdrawn in the same commit.
+
+const observedReds = [
+  // `unread` and `unreachable` are already name lists — `unread` comes from `offered.filter(...)`, so
+  // mapping `.name` over it would file an empty string and the ledger would report a blank red.
+  ...unread,
+  ...unreachable.map(entry => entry.service),
+  ...failed.map(([, name]) => name),
+]
+const verdict = compareHostBoot(observedReds)
+const undeclared = verdict.extraRed ?? []
+
+console.log(`  ${'─'.repeat(70)}`)
+console.log('  the rules these checks stand for:')
+for (const line of premises()) console.log(`    ${line}`)
+console.log(`  ${'─'.repeat(70)}`)
+console.log(`  ledger: ${verdict.ok ? 'every red observed is on the books' : 'MISMATCH'}`
+  + ` (${observedReds.length} observed, ${HOST_BOOT_REDS.length} declared)`)
+
+// Green means two different things here and the report has to say which: every check passed, or every
+// red that appeared is one the ledger already accounts for. The second is the whole reason the
+// ledger exists — a known defect should not make CI unreadable, and it should become *unreadable*
+// again the moment it is paid without being withdrawn.
+if (failed.length > 0) {
+  console.error(`\nhost-boot: RED — ${failed.length} positive control(s) failed. `
+    + 'The substrate did not look like the pinned host, so nothing downstream can be trusted.')
   process.exit(1)
 }
-console.log(`\nhost-boot: GREEN — 7/7 positive controls, ${resolvedServices.length} service(s) reachable.`)
+if (!verdict.ok) {
+  console.error(`\nhost-boot: RED — the ledger does not match what the gate observed.`)
+  for (const name of undeclared) console.error(`    undeclared red: ${name}`)
+  for (const id of verdict.missing ?? []) console.error(`    declared red did not appear: ${id}`)
+  for (const id of verdict.moved ?? []) console.error(`    declared red moved: ${id}`)
+  console.error('  Either a new defect is present, or a known one was paid without being withdrawn.')
+  process.exit(1)
+}
+console.log(`\nhost-boot: GREEN — 7/7 positive controls, ${resolvedServices.length} service(s) reachable, `
+  + `${observedReds.length} red(s) exactly as declared.`)
+if (observedReds.length > 0) {
+  console.log('  The declared reds are on the books with a repair. This gate will go red again if one')
+  console.log('  is paid without being withdrawn, which is the only way a debt retires here.')
+}
 process.exit(0)

@@ -83,7 +83,16 @@ jobs:
       # one red-by-design step below. #47's profile-shaped arms.
       - name: profile-shaped isolation (#47 call-time peer imports)
         run: npm run test:profile
-      # LAST, on purpose. A failing step skips everything after it, and this step is red by
+      # A real @deepseek-ai/dsh, booted. Placement follows the two rules this job now states rather
+      # than the older "put the red one last" reflex: a known red is **filed** in a ledger, so it
+      # blocks nothing; and ordering only matters where one step's measurement needs another's result.
+      # `test:host` needs `ci/install-pinned` to have built the tree (satisfied above) and nothing
+      # after it reads its output, so it could sit anywhere — it is here because it is the slowest
+      # thing this job does and wants to fail while the context is still fresh.
+      - name: a real host, booted, and three properties read against it
+        run: npm run test:host
+      # LAST, on purpose — but by dependency, not by redness. A failing step skips everything
+      # after it, and this one is red by
       # design until #44 §6 is fixed — frame 36797162445 proves the cost of getting this wrong:
       # with the seam step in the middle, `typecheck does not grow past its recorded baseline`
       # and `clean npm install of the packed tarball` both came back `skipped`. A known red is
