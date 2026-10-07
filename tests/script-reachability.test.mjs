@@ -108,6 +108,35 @@ function pathsNamedByScripts(seedFiles, dir = join(repoRoot, 'scripts'), found =
   return new Set([...found].filter(path => path.startsWith('tests/')))
 }
 
+/**
+ * Repository paths this repository **generates**, read out of `.gitignore`.
+ *
+ * A generated file is not a dangling reference: `tests/smoke-built.ts` is named by `test:wsl` and
+ * is absent from a fresh clone by design, because `scripts/make-smoke-built.mjs` writes it first.
+ * Calling that a missing file is the tool's blind spot again, in a second shape — the first draft
+ * of this gate reported it, and it was green on the maintainer's Windows tree only because the file
+ * had been generated there at some point. The ubuntu job saw a clean checkout and went red.
+ *
+ * So the exemption is **derived from the ignore list**, which is the file that already states what
+ * is generated. A written list of generated paths would be a second copy of the tree, and would be
+ * wrong the same way the hand-written tool lists were: it lists what somebody remembered generating.
+ */
+function generatedPaths() {
+  const source = readFileSync(join(repoRoot, '.gitignore'), 'utf8')
+  const patterns = source.split('\n')
+    .map(line => line.trim())
+    // Comments carry the *reason* a path is ignored, which is exactly why they must not be read as
+    // patterns — `.gitignore` line 13 is the entry, the two lines above it are its explanation.
+    .filter(line => line !== '' && !line.startsWith('#'))
+  const exact = new Set(patterns.filter(pattern => !pattern.includes('*') && !pattern.endsWith('/')))
+  return {
+    /** Whether `path` is one of the ignored entries this repository declares as generated. */
+    isGenerated: path => exact.has(path),
+    /** How many entries were read, so a caller can tell "no exemptions" from "no list". */
+    size: exact.size,
+  }
+}
+
 /** Test files under `tests/`, the shape the `test:unit` bucket is written in. */
 function testFiles(dir = join(repoRoot, 'tests'), found = []) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -141,6 +170,13 @@ test('the extractor reads the targets out of a script, and skips what is not a p
 test('every script that names a file names a file that exists', () => {
   // The defect that motivated this gate, checked against the manifest rather than a remembered
   // list of scripts: a `&&` chain into a file no branch carries fails here before it reaches CI.
+  const generated = generatedPaths()
+  // Positive control: the ignore list was read, so "generated files are excused" is a decision
+  // rather than an accident of an empty set. `tests/smoke-built.ts` is the file this is for.
+  assert.ok(generated.size > 0, 'no generated paths were read from .gitignore')
+  assert.ok(generated.isGenerated('tests/smoke-built.ts'),
+    'the generated-file exemption does not cover the file it exists for')
+
   const dangling = []
   for (const script of scripts()) {
     for (const target of script.targets) {
@@ -148,6 +184,7 @@ test('every script that names a file names a file that exists', () => {
       // dependency, which belongs to `node_modules` and to the peer-dependency declaration.
       if (target === '-e' || target === '--version' || target === '-') continue
       if (!target.startsWith('.') && !target.startsWith('/') && !target.includes('/')) continue
+      if (generated.isGenerated(target)) continue
       if (!existsSync(join(repoRoot, target))) dangling.push({ script: script.name, target })
     }
   }
@@ -185,9 +222,15 @@ test('the unit bucket registers test files, and every test file is registered so
   assert.ok(mentioned.has('tests/tech-debt-exposure.test.ts'),
     'the recursive scan found no suite registered inside a runner script, so it is not reading them')
 
-  const absent = [...mentioned].filter(file => !existsSync(join(repoRoot, file)))
+  const generated = generatedPaths()
+  // A generated file is absent from a clean checkout **by design**, so it is excused here for the
+  // same reason it is excused above — and by the same derived list, not a second one. This is the
+  // case the ubuntu job found: `tests/smoke-built.ts` exists on the maintainer's tree only because
+  // `make-smoke-built.mjs` has been run there, and is missing from a fresh clone.
+  const absent = [...mentioned].filter(file => !existsSync(join(repoRoot, file)) && !generated.isGenerated(file))
   assert.deepEqual(absent, [],
-    `the buckets name file(s) that are not in the tree:\n${absent.map(file => `  ${file}`).join('\n')}`)
+    `the buckets name file(s) that are not in the tree and are not generated:\n`
+    + absent.map(file => `  ${file}`).join('\n'))
 
   // Every `*.test.*` file is named by some bucket. No exemption list: the earlier draft carried one,
   // and it named files this branch does not even have — a list of exceptions is just a second copy
