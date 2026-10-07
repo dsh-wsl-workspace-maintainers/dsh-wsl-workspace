@@ -47,7 +47,12 @@ export function read(relative) {
  * @param {string} name the constant's identifier
  */
 export function hostConst(file, name) {
-  const source = read(file)
+  // Blanked first, so a `/* const NAME = … */` left above the real declaration cannot be the answer.
+  // A line comment is already safe (the `const` would not start the line); a **block** comment is
+  // not, and it is the case that turns a changed constant into a green gate: the real value moves to
+  // 8192, the old 4096 survives in a comment above it, and a regex that does not know about comments
+  // keeps deriving 4096 and keeps agreeing with a panel that was never updated.
+  const source = stripStringsAndComments(read(file))
   const pattern = new RegExp(`(?:^|\\n)(?:export )?const ${name}\\s*=\\s*([^\\n]+?)\\s*;?\\s*(?://[^\\n]*)?$`, 'm')
   const match = pattern.exec(source)
   if (match === null) {

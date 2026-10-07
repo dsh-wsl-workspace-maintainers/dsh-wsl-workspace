@@ -253,14 +253,14 @@ try {
     `distro=${distro} user=${user} rc=${probe.rc} ${JSON.stringify((probe.note || probe.err).slice(0, 80))}`)
 
   if (probe.rc !== 0) {
-    console.log('\ndistro-shape-real: RED — the substrate did not answer, so nothing below could be '
-      + 'measured. This is a fixture premise, not a product failure.')
-    process.exitCode = 1
-    if (results.length !== 9) {
-      console.error(`distro-shape-real: RED — ran ${results.length} checks, expected 9; a short run must not report green`)
-      process.exitCode = 1
-    }
-    process.exit(process.exitCode ?? 0)
+    // Thrown, not exited. `process.exit()` here would skip the catch below — so `abortedAfter`
+    // would stay null and the verdict block would never run at all, which is the one shape this
+    // driver exists to avoid: a log that shows a red premise and then simply stops, with no tally
+    // and no "the run was incomplete" line for a reader to notice. Throwing reaches the same
+    // conclusion *and* gets summarised.
+    throw new Error(`the named distribution did not answer (rc=${probe.rc}, `
+      + `${JSON.stringify((probe.note || probe.err).slice(0, 120))}). This is a fixture premise, `
+      + 'not a product failure — nothing below could be measured.')
   }
 
   const setup = await bash(`

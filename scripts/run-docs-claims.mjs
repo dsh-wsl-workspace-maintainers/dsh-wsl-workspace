@@ -34,18 +34,31 @@ for (const claim of CLAIMS) {
   try {
     verdict = await claim.run()
   } catch (error) {
-    // A throw is never a pass: the derivation could not read its subject, which is the one outcome
-    // that must not be mistaken for agreement.
-    verdict = { ok: false, detail: `could not be evaluated: ${String(error?.message ?? error)}` }
+    // A throw is never a pass, and — this is the part that was wrong at first — it is not a
+    // "the product still disagrees" either. A declared claim that cannot be evaluated used to land
+    // in `owed` and take the gate green with it, so a refactor that moved the very constant a
+    // declared red is derived from silenced the only signal that would have said so. Measured, not
+    // imagined: aiming `objectBody` at a key that does not exist printed
+    // `could not be evaluated: …` and then `docs-claims: GREEN`, exit 0.
+    verdict = { ok: false, evaluated: false, detail: `could not be evaluated: ${String(error?.message ?? error)}` }
   }
-  observations.push({ id: claim.id, declared: claim.debt !== null, ...verdict })
+  observations.push({
+    id: claim.id,
+    declared: claim.debt !== null,
+    evaluated: verdict.evaluated !== false,
+    ...verdict,
+  })
 }
 
 const declared = observations.filter(o => o.declared)
 const undeclared = observations.filter(o => !o.declared)
-const owed = declared.filter(o => !o.ok)
-const paid = declared.filter(o => o.ok)
-const regressions = undeclared.filter(o => !o.ok)
+// The fourth state, and the one the header below always promised: a claim that could not be run at
+// all. It is not a regression (nothing regressed) and it is not a debt (nobody owes it) — it is a
+// gate that did not run, which cannot be allowed to read as agreement.
+const unevaluable = observations.filter(o => !o.evaluated)
+const owed = declared.filter(o => o.evaluated && !o.ok)
+const paid = declared.filter(o => o.evaluated && o.ok)
+const regressions = undeclared.filter(o => o.evaluated && !o.ok)
 
 console.log(`docs-claims: ${observations.length} claim(s) — ${GREEN_CLAIMS.length} must hold, `
   + `${DECLARED_RED_CLAIMS.length} declared red`)
@@ -58,8 +71,15 @@ if (regressions.length > 0) {
   console.log('  FAILED: none')
 }
 
+if (unevaluable.length > 0) {
+  console.error(`\nNOT EVALUATED (${unevaluable.length}) — the gate could not read what it claims to `
+    + 'check. This is neither a regression nor a debt; it is an unmeasured claim, and it is red '
+    + 'because a gate that did not run must not read as agreement:')
+  for (const o of unevaluable) console.error(`  ∅ ${o.id}${o.declared ? ' (declared red)' : ''}\n      ${o.detail}`)
+}
+
 if (owed.length > 0) {
-  console.log(`\nOWED (${owed.length}) — declared red, still true, and the product still says otherwise:`)
+  console.log(`\nOWED (${owed.length}) — declared red, evaluated, and still true:`)
   for (const o of owed) {
     const claim = DECLARED_RED_CLAIMS.find(c => c.id === o.id)
     console.log(`  ○ ${o.id}`)
@@ -82,16 +102,18 @@ if (jsonPath !== undefined && jsonPath !== '') {
     declaredRed: DECLARED_RED_CLAIMS.length,
     held: undeclared.filter(o => o.ok).length,
     regressions: regressions.map(o => ({ id: o.id, detail: o.detail })),
+    notEvaluated: unevaluable.map(o => ({ id: o.id, detail: o.detail })),
     owed: owed.map(o => ({ id: o.id, detail: o.detail })),
     retired: paid.map(o => ({ id: o.id, detail: o.detail })),
   }, null, 2)}\n`, 'utf8')
 }
 
-const red = regressions.length > 0 || paid.length > 0
+const red = regressions.length > 0 || paid.length > 0 || unevaluable.length > 0
 if (red) {
-  console.error(`\ndocs-claims: RED — expected 0 regressions and 0 retired declarations, `
-    + `saw ${regressions.length} and ${paid.length}`)
+  console.error(`\ndocs-claims: RED — expected 0 regressions, 0 retired declarations and 0 unevaluated `
+    + `claims; saw ${regressions.length}, ${paid.length} and ${unevaluable.length}`)
 } else {
-  console.log(`\ndocs-claims: GREEN — ${owed.length} red(s) are exactly the declared ones`)
+  console.log(`\ndocs-claims: GREEN — ${owed.length} red(s) are exactly the declared ones, and every `
+    + 'claim was evaluated')
 }
 process.exit(red ? 1 : 0)

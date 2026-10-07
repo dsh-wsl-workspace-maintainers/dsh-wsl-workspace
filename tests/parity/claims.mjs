@@ -32,9 +32,6 @@ import { findClaims, quote, statesNumberVerdict } from './assertions.mjs'
 
 const SKILLS = 'src/host/wsl-skills.ts'
 
-/** A panel sentence may name the opt-in that makes it accurate; those are true as written. */
-const namesTheOptIn = line => line.includes('DSH_WSL_PTY_SHELL')
-
 /**
  * Sentences that deny `bash` has a `run_in_background` parameter — the shape that shipped wrong.
  * A directional predicate: "`bash` is a PTY-backed shell…" does not match, and neither does a
@@ -47,13 +44,40 @@ const DENIES_RUN_IN_BACKGROUND = [
 ]
 
 /**
+ * A sentence may name the opt-in that makes it accurate; those are true as written.
+ *
+ * **One predicate per claim, never a shared one.** `DSH_WSL_PTY_SHELL` selects which *shell* is
+ * mounted and has nothing to do with `run_in_background`, which selects *synchronous or background*.
+ * A single shared exemption suppressed a sentence that denied the parameter and mentioned the
+ * variable in passing — measured, and it would have retired a real user-visible red on the strength
+ * of an unrelated word. Each claim now passes the exemption that means something for its own
+ * subject, and `namesTheBackgroundOptIn` is deliberately the *narrower* of the two: it accepts only a
+ * sentence that scopes the parameter itself.
+ */
+const namesTheOptIn = line => line.includes('DSH_WSL_PTY_SHELL')
+const scopesTheParameterItself = line =>
+  /(只有在|only |only under|opt[ -]?in)[^。.]{0,40}(那一档|档|tier|this parameter|the parameter)/i.test(line)
+  || /run_in_background[^。.]{0,40}(只有在|only)/i.test(line)
+
+/**
  * Sentences that claim a cache lifetime. The skills provider has no TTL: it re-checks on a poll
  * cadence, so any "cached for N seconds" wording describes a mechanism that was replaced.
+ *
+ * A claim about the lifetime has to survive its own negation, because **the negation is how the
+ * debt gets paid**: a maintainer following `repair` may well write "not cached for 10 seconds — it
+ * re-checks every 3 s", which is correct and was previously reported as a fresh instance of the
+ * defect. `deniesTheLifetime` is that exemption, and it is narrow on purpose: it wants a negation
+ * of *this* mechanism, not any sentence that happens to contain the word.
  */
 const CLAIMS_CACHE_TTL = [
   /缓存\s*\d+\s*秒/,
   /cached[^.]{0,40}for\s*\d+\s*seconds?/i,
 ]
+
+/** A sentence that denies having a cache lifetime, rather than asserting one. */
+const deniesTheLifetime = line =>
+  /(不|没有|无|不再|并非|没有)\s*(缓存|cached?)/i.test(line)
+  || /\bnot\s+cached\b|\bno\s+cache\b|\bnever\s+cached\b/i.test(line)
 
 /**
  * Does the mounted `bash` tool declare `run_in_background`?
@@ -342,7 +366,7 @@ export const CLAIMS = [
       const panel = await panels()
       const hits = []
       for (const lang of ['zh', 'en']) {
-        hits.push(...findClaims(panel[lang].lines, DENIES_RUN_IN_BACKGROUND, namesTheOptIn)
+        hits.push(...findClaims(panel[lang].lines, DENIES_RUN_IN_BACKGROUND, scopesTheParameterItself)
           .hits.map(h => `${lang} ${h.key}: ${quote(h.line)}`))
       }
       return {
@@ -376,7 +400,7 @@ export const CLAIMS = [
       const panel = await panels()
       const hits = []
       for (const lang of ['zh', 'en']) {
-        hits.push(...findClaims(panel[lang].lines, CLAIMS_CACHE_TTL)
+        hits.push(...findClaims(panel[lang].lines, CLAIMS_CACHE_TTL, deniesTheLifetime)
           .hits.map(h => `${lang} ${h.key}: ${quote(h.line)}`))
       }
       return {

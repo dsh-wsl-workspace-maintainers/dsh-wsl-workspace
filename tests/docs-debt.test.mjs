@@ -126,13 +126,27 @@ test('an object body that is not there throws, and a nested one is not mistaken 
   assert.match(parameters, /run_in_background:\s*\{/)
 })
 
-test('the runner\'s two failure conditions are both reachable', () => {
-  // `owed`  = declared and failing  -> reported, not a failure
-  // `retired` = declared and passing -> a failure
-  // A registry cannot be checked for either without both possibilities existing; this asserts the
-  // predicates the runner uses are the ones this file believes it is shipping.
-  const declared = DECLARED_RED_CLAIMS
-  assert.ok(declared.every(claim => claim.debt !== null))
-  assert.ok(GREEN_CLAIMS.every(claim => claim.debt === null))
-  assert.equal(declared.length + GREEN_CLAIMS.length, CLAIMS.length)
+test('the four outcomes a claim can have are all reachable from this registry', async () => {
+  // An earlier version of this file asserted `declared.every(c => c.debt !== null)` and
+  // `GREEN_CLAIMS.every(c => c.debt === null)` and `declared.length + GREEN.length === CLAIMS.length`.
+  // All three hold for *any* `CLAIMS` array, because those two exports are filters of it — a test
+  // that cannot fail is worse than no test, since it reads as coverage. What actually makes the
+  // outcomes reachable is that a real debt exists and is really failing, so that is what is checked:
+  // evaluating every declared red here must either fail (the debt is still owed) or throw (the gate
+  // cannot read its subject). Both are non-green; neither is silently green.
+  assert.ok(DECLARED_RED_CLAIMS.length >= 1, 'no declared red exists, so `owed` and `retired` are unreachable')
+  for (const claim of DECLARED_RED_CLAIMS) {
+    let verdict
+    try {
+      verdict = await claim.run()
+    } catch (error) {
+      // Throwing is the fourth state and the runner reports it as its own red; here it only has to
+      // be distinguished from "passes", which is the mistake that let a broken derivation report
+      // GREEN while printing `could not be evaluated`.
+      assert.fail(`declared red ${claim.id} threw rather than being evaluated: ${error?.message ?? error}`)
+    }
+    assert.equal(verdict.ok, false,
+      `declared red ${claim.id} evaluated as passing — the debt was paid, so remove its declaration `
+      + 'from tests/parity/claims.mjs in the same commit')
+  }
 })
