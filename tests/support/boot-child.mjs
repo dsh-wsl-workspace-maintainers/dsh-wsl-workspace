@@ -278,6 +278,35 @@ try {
   // takes. Nothing here knows what any defect is: it registers a job, asks the host to read it, and
   // reports what came back. If one comes back empty and the other does not, the asymmetry is the
   // host's, established by the host rather than by our reading of its source.
+  // ── the host's own auditor, on this plugin's preset ──────────────────────────────────────
+  // `auditRows` and `entryListProblem` are exported by `@deepseek-ai/dsh-agent-preset-registry` and
+  // are the host's **own** definition of whether a preset tree is well-formed. Using them is the whole
+  // point: this property asks the counterparty whether the tree is acceptable, rather than asking
+  // whether it matches something written here.
+  try {
+    // By path, not by bare specifier: this package is in `ci/deps` as a transitive dependency and is
+    // not pinned, so the root cannot resolve it by name — and a harness that cannot import its own
+    // oracle should say so rather than quietly skipping the check.
+    const registryModule = await import('../../ci/deps/node_modules/@deepseek-ai/dsh-agent-preset-registry/lib/index.js')
+    const yaml = (await import('js-yaml')).default
+    const document = registry === undefined ? null : await registry.readDocument('wsl-standard')
+    const rows = document === null ? null : yaml.load(String(document.content ?? ''))
+    report.probes.hostAudit = {
+      ok: true,
+      value: JSON.stringify({
+        listProblem: registryModule.entryListProblem?.(rows, 'wsl-standard') ?? null,
+        entryTypes: Array.isArray(rows) ? rows.map(row => ({
+          id: row?.id,
+          group: row?.group ?? false,
+          isolate: row?.isolate === undefined ? null : Object.keys(row.isolate),
+          nested: Array.isArray(row?.config) ? row.config.length : 0,
+        })) : null,
+      }),
+    }
+  } catch (error) {
+    report.probes.hostAudit = { ok: false, value: `THREW: ${String(error?.message ?? error).slice(0, 200)}` }
+  }
+
   probe('jobRoundTrip', () => {
     const jobs = ctx.get('jobs')
     if (jobs === undefined) return 'ABSENT'

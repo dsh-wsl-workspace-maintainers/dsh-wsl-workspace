@@ -76,6 +76,10 @@ const HOST_ROWS = [
   // (`presets.filter(preset => preset.broken === undefined && …)`). Measured chain, three hops from
   // a provider that looked optional.
   ['shell-env', '@deepseek-ai/dsh-shell-env'],
+  // The skill registry. `dsh-skill-filesystem` waits on it, and the host's own audit prints
+  // `skill-filesystem: pending (waiting for service: skills)` without it — which is the shape of a
+  // provider whose absence is invisible until something reads the roster.
+  ['skills', '@deepseek-ai/dsh-skill'],
 ]
 
 /**
@@ -375,6 +379,7 @@ function probeJson(probes, label, fallback) {
 let isolationHolds = false
 let pluginChannelReadable = false
 let hostChannelReadable = false
+let hostAcceptsPreset = false
 
 const checks = [
   ['P1 the host has a loader with entries', probes.p1_loaderPresent.ok && Number(probes.rowCount.value) >= HOST_ROWS.length,
@@ -428,6 +433,16 @@ const presetProblems = probeJson(probes, 'presetProblems', [])
 if (probes.presetRegistry !== undefined) {
   console.log(`  the host's preset registry: ${probes.presetRegistry.value}`)
   console.log(`  presets it ended up holding: ${roster.length === 0 ? '(none)' : roster.map(entry => `${entry.id}[${entry.plugins ?? '?'} rows${entry.broken === null ? '' : ` BROKEN: ${entry.broken}`}]`).join(', ')}`)
+  // ── the host's own verdict on this plugin's preset ──────────────────────────────────────
+  // The counterparty's own acceptance, not our reading of its rules. A non-null `listProblem` is the
+  // host saying this preset tree is malformed, and nothing written here gets to overrule it.
+  let hostAudit = null
+  try { hostAudit = JSON.parse(probes.hostAudit?.value ?? 'null') } catch { hostAudit = null }
+  const hostAccepts = hostAudit !== null && hostAudit.listProblem === null
+  hostAcceptsPreset = hostAccepts
+  console.log(`  the host's own auditor on wsl-standard: ${probes.hostAudit?.value ?? '(not probed)'}`)
+  console.log(`    ${hostAccepts ? 'ok  ' : 'FAIL'} the host accepts this preset tree`)
+
   // ── the dynamic round trip, through the host's own reader ────────────────────────────────
   let roundTrip = null
   try { roundTrip = JSON.parse(probes.jobRoundTrip.value) } catch { /* reported below */ }
@@ -593,6 +608,9 @@ const observedReds = [
   // the channel zero times in its sources; the dynamic half watched the host read the same channel and
   // get nothing. Two witnesses of one fact, and a ledger entry stands for the fact — emitting a red
   // per witness would need an entry per witness, so paying the debt would half-fix the gate.
+  // The host rejecting the tree we contributed is not a debt of ours to negotiate: it is the
+  // counterparty refusing the handover, which is the loudest signal this system can produce.
+  ...(!hostAcceptsPreset && hostAudit !== null ? [`host-rejects-the-preset: ${hostAudit.listProblem}`] : []),
   ...(!pluginChannelReadable && unread.includes('readOutput')
     ? ['readOutput: unread in the host sources, and not readable by the host reader']
     : []),
