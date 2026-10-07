@@ -407,6 +407,42 @@ export class WslShellExecutor extends ShellExecutor {
 
     let stdoutOffset = 0
     let stderrOffset = 0
+
+    /**
+     * The non-consuming observers `ShellProcess.observed` is required to carry.
+     *
+     * `observed` is **not optional** in the host's `ShellProcess` contract, and the host spells out
+     * what it is for: "Independent observers read here at their own offsets without stealing bytes
+     * from `readOutput`." That is precisely what issue #56 needs — `dsh-jobs-local@0.2.x` drains a
+     * job's ring through offset readers and never calls `readOutput`, so a producer that offered
+     * only `readOutput` shipped an empty `job_output`. This executor offered neither, and the 0.2.x
+     * registry silently got an empty ring.
+     *
+     * The offsets live **here** rather than being derived from `stdoutOffset`/`stderrOffset` above,
+     * because those track the consuming cursor. Sharing them would make the two readers steal bytes
+     * from each other: whichever ran first would advance the other's start. The host asks for
+     * independence explicitly, so the cursors are independent too.
+     *
+     * A rejected spawn leaves the subprocess service with nothing buffered, so `readFrom` yields an
+     * empty delta forever. The failure note is served as the **whole stderr stream** instead — once,
+     * to whichever observer asks first — because a reader cannot be told "nothing happened, here is
+     * why" any other way, and a job that never ran is exactly the case a user needs to see.
+     */
+    let spawnFailureObserved = false
+    const readObserved = (
+      which: 'stdout' | 'stderr',
+      from: number,
+    ): { text: string; nextOffset: number; lossy: boolean; spillPath?: string } => {
+      const reader = collected[which]
+      const read = reader.readFrom(from)
+      if (which === 'stderr' && read.text.length === 0 && !spawnFailureObserved) {
+        const note = consumeSpawnFailure()
+        if (note !== '') return { text: note, nextOffset: note.length, lossy: false }
+      }
+      if (which === 'stderr' && read.text.length > 0) spawnFailureObserved = true
+      return read
+    }
+
     const proc: ShellProcess = {
       status: 'running',
       exitCode: null,
@@ -436,6 +472,10 @@ export class WslShellExecutor extends ShellExecutor {
           ...out.spillPath !== undefined ? { stdoutSpillPath: out.spillPath } : {},
           ...err.spillPath !== undefined ? { stderrSpillPath: err.spillPath } : {},
         }
+      },
+      observed: {
+        stdout: { readFrom: from => readObserved('stdout', from) },
+        stderr: { readFrom: from => readObserved('stderr', from) },
       },
       kill: (): boolean => {
         if (proc.status !== 'running') return false
