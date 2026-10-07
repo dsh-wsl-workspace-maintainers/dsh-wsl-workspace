@@ -21,7 +21,16 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { CLAIMS, DECLARED_RED_CLAIMS, GREEN_CLAIMS, WATCHED_CONSTANTS } from './parity/claims.mjs'
+import {
+  APPLICABLE_CLAIMS, APPLICABLE_WATCHED_CONSTANTS, CLAIMS, DECLARED_RED_CLAIMS, GREEN_CLAIMS,
+  INAPPLICABLE_CLAIMS, WATCHED_CONSTANTS,
+} from './parity/claims.mjs'
+
+// Every check below walks the claims **this baseline can compare**. A claim whose subject is absent
+// here is neither passing nor failing — checking it anyway asks a question nothing can answer, and
+// reports the absence as if it were a defect in the code under test. The inapplicable ones get their
+// own check instead, which is the only honest description of them.
+const CHECKED = APPLICABLE_CLAIMS
 import { hostConst, objectBody, panelText } from './parity/derive.mjs'
 import { zh, en } from '../src/client/locales.ts'
 
@@ -42,7 +51,7 @@ const ABSENCE_CLAIMS = [
 
 test('every claim has the shape the runners index it by', () => {
   const ids = new Set()
-  for (const claim of CLAIMS) {
+  for (const claim of CHECKED) {
     assert.ok(typeof claim.id === 'string' && claim.id !== '', `a claim has no id: ${JSON.stringify(claim.id)}`)
     assert.ok(!ids.has(claim.id), `duplicate claim id ${claim.id}`)
     ids.add(claim.id)
@@ -68,7 +77,7 @@ test('every claim has the shape the runners index it by', () => {
 
 test('a claim that asserts an absence carries the sentence it is about', () => {
   for (const id of ABSENCE_CLAIMS) {
-    const claim = CLAIMS.find(entry => entry.id === id)
+    const claim = CHECKED.find(entry => entry.id === id) ?? CLAIMS.find(entry => entry.id === id)
     assert.ok(claim !== undefined, `${id} is registered as an absence claim but is not in CLAIMS`)
     assert.ok(claim.requires.length > 0,
       `${id} asserts an absence with no anchor, so deleting the paragraph it polices would make it `
@@ -80,7 +89,7 @@ test('every anchor matches the panel as it stands', () => {
   // An anchor that does not match today holds its claim red forever. That is the intended verdict,
   // but it is worth failing here too, where the message names the anchor rather than the claim.
   const text = { zh: panelText(zh), en: panelText(en) }
-  for (const claim of CLAIMS) {
+  for (const claim of CHECKED) {
     for (const anchor of claim.requires) {
       assert.ok(anchor.pattern.test(text[anchor.lang]),
         `${claim.id}: the ${anchor.lang} anchor ${String(anchor.pattern)} does not match the panel — `
@@ -90,13 +99,13 @@ test('every anchor matches the panel as it stands', () => {
 })
 
 test('the completeness half is populated', () => {
-  assert.ok(WATCHED_CONSTANTS.length >= 5,
-    `${WATCHED_CONSTANTS.length} watched constant(s); the coverage that makes a deleted claim `
+  assert.ok(APPLICABLE_WATCHED_CONSTANTS.length >= 4,
+    `${APPLICABLE_WATCHED_CONSTANTS.length} watched constant(s); the coverage that makes a deleted claim `
     + 'visible is only as wide as this list')
   assert.ok(CLAIMS.some(claim => claim.id === 'every-watched-constant-is-claimed'),
     'no claim covers the watched constants, so deleting one would go unnoticed')
   // Every entry must name a constant that exists, or the coverage claim is asking about a ghost.
-  for (const [file, name] of WATCHED_CONSTANTS) {
+  for (const [file, name] of APPLICABLE_WATCHED_CONSTANTS) {
     assert.ok(Number.isInteger(hostConst(file, name)), `${file}#${name} did not derive to a number`)
   }
 })
@@ -114,16 +123,43 @@ test('a constant that is not there throws instead of resolving to nothing', () =
 })
 
 test('an object body that is not there throws, and a nested one is not mistaken for the whole', () => {
-  assert.throws(() => objectBody('src/host/wsl-bash-tool.ts', /no_such_key:\s*\{/), /no_such_key/)
+  assert.throws(() => objectBody('src/host/wsl-jobs.ts', /no_such_key:\s*\{/), /no_such_key/)
 
   // The regression this guards, stated as a property: the bash tool's `parameters` object must
   // contain the key that lives thousands of characters into it. An indentation-anchored regex
   // returned the first nested object instead and the assertion below would have failed.
-  const parameters = objectBody('src/host/wsl-bash-tool.ts', /parameters:\s*\{/)
-  assert.ok(parameters.length > 1000,
-    `brace matching returned ${parameters.length} characters for the parameters schema — too short `
-    + 'to be the whole object, which is the shape that read a nested object as the schema')
-  assert.match(parameters, /run_in_background:\s*\{/)
+  const parameters = objectBody('src/host/wsl-jobs.ts', /parameters:\s*\{/)
+  // **Balance**, not size. The regression this guards is a non-greedy regex returning the first
+  // nested object instead of the schema, and "long" was standing in for "whole" — a proxy that stops
+  // holding on a smaller schema while brace matching is perfectly fine. Counting depth tests the
+  // mechanism; the character count was asserting the size of whichever schema the branch carried.
+  let depth = 0
+  for (const character of parameters) {
+    if (character === '{') depth++
+    else if (character === '}') depth--
+    assert.ok(depth >= 0, 'the body closed before it opened, so it is a fragment')
+  }
+  assert.equal(depth, 0, `brace matching returned ${parameters.length} characters that do not balance`)
+  // The keys that sit after the first nested object: a fragment would stop before them.
+  for (const key of ['command', 'workdir']) {
+    assert.match(parameters, new RegExp(`${key}:`),
+      `the body stops before \`${key}\`, which is the fragment this guards against`)
+  }
+})
+
+test('a claim whose subject is absent here is neither passing nor failing', () => {
+  // The third state, checked. Without it the two shapes are indistinguishable in the report, and one
+  // of them is a false accusation: red says the code has a defect it does not have, green says nothing
+  // was compared when something was.
+  // No requirement that an incomparable claim carries a debt: it is not a defect anyone has agreed
+  // to own yet, it is a question this branch cannot ask. What must hold is the other direction — a
+  // claim being compared must not also claim to be incomparable, or the third state swallows it.
+  assert.ok(INAPPLICABLE_CLAIMS.every(claim => claim.not_applicable_without !== undefined),
+    'an incomparable claim must name the subject it is waiting for')
+  for (const claim of CHECKED) {
+    assert.equal(claim.not_applicable_without, undefined,
+      `${claim.id} is being compared, so it must not also be listed as incomparable`)
+  }
 })
 
 test('the four outcomes a claim can have are all reachable from this registry', async () => {

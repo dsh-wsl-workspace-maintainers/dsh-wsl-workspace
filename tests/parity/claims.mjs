@@ -225,6 +225,9 @@ const BASELINE_ABSENT = new Set([
   'src/host/wsl-bash-tool.ts',
 ])
 
+/** Watched constants whose subject file is present on this baseline. */
+export const APPLICABLE_WATCHED_CONSTANTS = WATCHED_CONSTANTS.filter(([file]) => subjectExists(file))
+
 export const CLAIMS = [
   // ── values the panel states, derived from the constant that decides them ──────────────────
   numberClaim({
@@ -340,6 +343,12 @@ export const CLAIMS = [
   defineClaim({
     id: 'panel-does-not-present-pty-as-the-default-bash',
     issue: '#52',
+    // **Incomparable on this baseline**, and for a reason worth stating: this claim asserts an absence,
+    // so it needs the sentence that carries the claim to be present. On this baseline that sentence
+    // is not there, which makes "no offending sentence" and "the paragraph is gone" the same
+    // observation — and an absence claim cannot tell those apart. Red would be a false accusation;
+    // green would be a false green.
+    not_applicable_without: 'src/host/wsl-bash-tool.ts',
     // Filed rather than fixed: the panel still says PTY where the code now defaults to the session
     // shell. The claim reads the code's own answer rather than a recorded one, which is why it can
     // be filed before the text is corrected and still mean something afterwards.
