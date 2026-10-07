@@ -23,7 +23,7 @@ import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { bareContextReads, declaredInject } from './parity/derive.mjs'
+import { bareContextReads, declaredInject, hostMentions, offeredJobChannels } from './parity/derive.mjs'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const CHILD = join(repoRoot, 'tests', 'support', 'boot-child.mjs')
@@ -332,16 +332,51 @@ console.log('    it is invisible to a fake, which has no realms to be missing in
 console.log('  Not compared: `src/client/**`. Those modules run in the client runtime and declare')
 console.log('    `slots` / `locale` / `sessions` / `workspaces`, which this host boot does not load — so')
 console.log('    asking it would be asking a question it was never given. Stated, not skipped.')
+
+// ── the producer/consumer property ────────────────────────────────────────────────────────
+//
+// This one needs no boot at all, and that is worth noticing: the defect it looks for is a contract
+// whose shape drifted between two packages, and both sides' sources are in front of us.
+//
+// The question is mechanical — *for each member this plugin hands the host, does the consuming
+// package still name it?* — and the answer comes from counting occurrences in
+// `dsh-jobs-local` / `dsh-jobs` / `dsh-tool-jobs`. Nothing here is a hand-written list, so if the
+// host stops reading a channel the count falls to zero on its own, with no edit to this file.
+
+const channels = offeredJobChannels()
+const offered = [...new Set([...channels.spec, ...channels.runResult])]
+const mentions = hostMentions(offered)
+const unread = offered.filter(name => mentions.counts[name] === 0)
+
+console.log(`  ${'─'.repeat(70)}`)
+console.log('  every member this plugin hands the host, and whether the host still names it:')
+for (const name of offered) {
+  const count = mentions.counts[name]
+  const where = name === 'run' ? 'on the spec' : channels.runResult.includes(name) ? 'from run()' : 'on the spec'
+  console.log(`  ${count === 0 ? 'FAIL' : 'ok  '} ${name.padEnd(14)} ${String(count).padStart(4)} mention(s)   ${where}`)
+}
+console.log(`  searched: ${mentions.packages.join(', ')}`)
+if (unread.length > 0) {
+  console.log(`  ${'─'.repeat(70)}`)
+  console.log(`  ${unread.length} member(s) the host does not name at all:`)
+  for (const name of unread) {
+    console.log(`    ${name} — offered ${channels.runResult.includes(name) ? 'from run()' : 'on the spec'}, zero readers`)
+  }
+  console.log('    A member with no reader is not a slower path; it is a channel the far side cannot')
+  console.log('    see. Whatever reads it will report the job as having produced nothing.')
+}
 if (unreachable.length > 0) {
   console.error(`\n  ${unreachable.length} service(s) the sources reach for are NOT resolvable:`)
   for (const entry of unreachable) console.error(`    ${entry.service} — ${entry.how}`)
 }
 
 const failed = checks.filter(([, ok]) => !ok)
-if (failed.length > 0 || unreachable.length > 0) {
-  console.error(`\nhost-boot: RED — ${failed.length} positive control(s) failed, ${unreachable.length} service(s) unreachable.`)
+if (failed.length > 0 || unreachable.length > 0 || unread.length > 0) {
+  console.error(`\nhost-boot: RED — ${failed.length} positive control(s) failed, `
+    + `${unreachable.length} service(s) unreachable, ${unread.length} channel(s) unread.`)
   if (failed.length > 0) console.error('  The substrate did not look like the pinned host, so nothing downstream can be trusted.')
   if (unreachable.length > 0) console.error('  A service the sources reach for did not resolve in the realm that will run it.')
+  if (unread.length > 0) console.error('  A member handed to the host has no reader on the other side.')
   process.exit(1)
 }
 console.log(`\nhost-boot: GREEN — 7/7 positive controls, ${resolvedServices.length} service(s) reachable.`)

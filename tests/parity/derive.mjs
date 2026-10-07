@@ -408,3 +408,122 @@ export function dynamicContextReads(file) {
   visit(sf)
   return [...found.entries()].map(([name, line]) => ({ name, line })).sort((a, b) => a.name.localeCompare(b.name))
 }
+
+// ── the producer/consumer derivation ─────────────────────────────────────────────────────────
+//
+// The plugin hands the host a job and expects the host to be able to read that job's output. Which
+// member carries it is a **contract between two packages**, and a contract whose shape changed
+// without either side noticing is invisible from inside either.
+//
+// So this asks a mechanical question of the *consumer's own source*: for each member name the
+// producer offers, does the consuming package mention it at all? Not "does the plugin's test say so"
+// — whether `@deepseek-ai/dsh-jobs-local`, `@deepseek-ai/dsh-jobs` and `@deepseek-ai/dsh-tool-jobs`
+// still name `readOutput` anywhere. Measured on the pinned 0.2.0-rc.2 tree: `spec.output` appears
+// three times and `readFrom` three times, and `readOutput` **zero times in all three packages**.
+//
+// Deriving the reader list from the consumer's text rather than hardcoding it is the whole point: a
+// list written by hand would be this repository's own second copy of the contract, which is the
+// failure this whole branch exists to remove.
+
+/** The host packages that consume a job's output, and where their entry point lives. */
+const JOB_CONSUMERS = [
+  ['@deepseek-ai/dsh-jobs-local', 'ci/deps/node_modules/@deepseek-ai/dsh-jobs-local/lib/index.js'],
+  ['@deepseek-ai/dsh-jobs', 'ci/deps/node_modules/@deepseek-ai/dsh-jobs/lib/index.js'],
+  ['@deepseek-ai/dsh-tool-jobs', 'ci/deps/node_modules/@deepseek-ai/dsh-tool-jobs/lib/index.js'],
+]
+
+/**
+ * How many times each of `names` occurs across the job-consuming host packages.
+ *
+ * A count rather than a boolean because one occurrence is a name in a comment or a string and two
+ * is usually code; the caller reports the counts so a reader can judge, and a package whose sources
+ * cannot be read raises rather than reporting zero — "no reader" and "could not look" must not look
+ * the same, which is the mistake `run-docs-claims.mjs` made with an unevaluated claim.
+ */
+export function hostMentions(names) {
+  const counts = Object.fromEntries(names.map(name => [name, 0]))
+  const read = []
+  for (const [pkg, relative] of JOB_CONSUMERS) {
+    let source
+    try {
+      source = readFileSync(join(repoRoot, relative), 'utf8')
+    } catch (error) {
+      throw new Error(`parity/derive: cannot read ${pkg}'s entry (${relative}) `
+        + `(${error?.code ?? error?.message}). A consumer whose source is unreadable cannot be `
+        + 'searched for a reader, and reporting "no reader" for it would be a fabricated finding.')
+    }
+    read.push(pkg)
+    for (const name of names) {
+      // Word-boundary counted, so `readOutput` is not found inside `readOutputChannels`.
+      const matches = source.match(new RegExp(`\\b${name}\\b`, 'g'))
+      counts[name] += matches === null ? 0 : matches.length
+    }
+  }
+  return { counts, packages: read }
+}
+
+/**
+ * The channels `src/host/wsl-jobs.ts` offers: members placed on the `spec` it hands over, and
+ * members of the object its `run()` returns.
+ *
+ * Read from the source with the TypeScript parser for the same reason the reachability
+ * derivations do: a hand-rolled scanner would take `src/shell.ts:279`'s regex-in-template for a
+ * string opener and delete the answer.
+ */
+export function offeredJobChannels(file = 'src/host/wsl-jobs.ts') {
+  const ts = typescript()
+  const sf = ts.createSourceFile('probe.ts', read(file), ts.ScriptTarget.ESNext, true)
+
+  const specMembers = new Set()
+  const runResultMembers = new Set()
+
+  /** Property names of an object *type* literal or an object literal, syntactically. */
+  const memberNames = container => {
+    const names = []
+    const members = ts.isTypeLiteralNode(container) ? container.members : container.properties
+    for (const member of members ?? []) {
+      const name = member.name
+      if (name === undefined) continue
+      if (ts.isIdentifier(name) || ts.isStringLiteral(name)) names.push(name.text)
+    }
+    return names
+  }
+
+  const visit = node => {
+    // `start(spec: { … })` — the parameter's type literal is the shape the host will read.
+    // Walked syntactically rather than through `ts.getTypeAtLocation`, which needs a Program and a
+    // checker: this file only ever builds a SourceFile, and asking for the checker here would mean
+    // type-checking the whole plugin on every call.
+    if (ts.isParameter(node) && node.name.getText(sf) === 'spec' && node.type
+      && ts.isTypeLiteralNode(node.type)) {
+      for (const name of memberNames(node.type)) specMembers.add(name)
+    }
+    // `run() { return { … } }` — the object literal it returns is one place the channel set is
+    // written. The other is the **declared** contract, `run(): { … }` on the registry interface,
+    // and that one is the more honest of the two: it is what a reader is told to expect rather than
+    // what one implementation happens to return today. Both are collected, because they can disagree
+    // and that disagreement is worth seeing.
+    if ((ts.isMethodDeclaration(node) || ts.isMethodSignature(node))
+      && node.name.getText(sf) === 'run') {
+      if (node.type && ts.isTypeLiteralNode(node.type)) {
+        for (const name of memberNames(node.type)) runResultMembers.add(name)
+      }
+      const body = ts.isMethodDeclaration(node) ? node.body : undefined
+      if (body) {
+        for (const statement of body.statements) {
+          if (!ts.isReturnStatement(statement) || statement.expression === undefined) continue
+          if (ts.isObjectLiteralExpression(statement.expression)) {
+            for (const name of memberNames(statement.expression)) runResultMembers.add(name)
+          }
+        }
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sf)
+
+  return {
+    spec: [...specMembers].sort(),
+    runResult: [...runResultMembers].sort(),
+  }
+}
