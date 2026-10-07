@@ -252,14 +252,33 @@ export function startBackgroundJob(
     ...args.stdin === undefined ? {} : { stdin: args.stdin },
     ...dshEnv === undefined ? {} : { dshEnv },
   }
+  // The 0.2.x jobs registry drains the job's output ring only from `spec.output`
+  // pull-sources; it never touches the `readOutput` that `run()` returns. A
+  // producer that set only the latter shipped an empty `job_output` on
+  // 0.2.0-rc.2 (issue #56). So expose both: `output` pull-sources over the
+  // process's own per-stream readers, and `readOutput` for the 0.1.x registry.
+  // `proc` is captured in this outer scope because `run()` assigns it *before*
+  // the registry ever calls a source's `read()` — start() invokes run()
+  // synchronously, then arms the pump on later ticks.
+  let proc: ShellProcessFace | undefined
+  const readStream = (which: 'stdout' | 'stderr') => (from: number): { text: string; nextOffset: number; lossy: boolean; spillPath?: string } => {
+    const reader = proc?.observed[which]
+    if (reader === undefined) return { text: '', nextOffset: from, lossy: false }
+    return reader.readFrom(from)
+  }
   const jobId = jobs.start({
     kind: 'bash',
     label: args.command,
     // `owner` is a session id on 0.1.7+ and the agent object before that;
     // see `ownerOf`. Getting it wrong is a loud failure either way.
     ...ownerOf(jobs, exec.agent),
+    output: [
+      { read: readStream('stdout') },
+      { channel: 'stderr', read: readStream('stderr') },
+    ],
     run: () => {
       const process = shell.start(shell.resolve(request))
+      proc = process
       return {
         cancel: () => {
           process.kill()
