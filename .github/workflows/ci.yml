@@ -6,6 +6,14 @@ on:
     branches: [main, 'ci/**']
   pull_request:
   workflow_dispatch:
+  # Nightly, off the hour nobody watches: the full plane/user grid. Every pull request gets the
+  # 30-second anti-rot smoke below and nothing more, because 16 measured cells cost more than a
+  # review should wait for. This is where the drivers that smoke skips — seven of the eight —
+  # actually get measured, and where the two planes are compared against each other rather than
+  # one of them being assumed. `17 4` rather than `0 4` so this does not land in the same minute as
+  # every other scheduled job on the planet.
+  schedule:
+    - cron: '17 4 * * *'
 
 permissions:
   contents: read
@@ -327,6 +335,7 @@ jobs:
           # in the plane/user matrix) are reported *not run*, never as passes.
           exit $FAIL
       - name: the 2x2 plane/user matrix runs from a script, not a scratch directory (anti-rot)
+        if: github.event_name != 'schedule'
         run: |
           # `scripts/compatibility/plane-matrix.mjs` exists so the matrix cannot rot the way
           # `scripts/repro-e2e.mjs` did — by having nothing reference it. This step is the reference:
@@ -339,6 +348,19 @@ jobs:
           RC=0
           node scripts/compatibility/plane-matrix.mjs --ci-as-root-only --drivers fs-real || RC=$?
           echo "plane-matrix (root column only) rc=$RC"
+          exit $RC
+      # The same matrix, every driver, on the nightly run. A matrix nothing measures is a matrix
+      # that decays: a driver can break, a floor can be met by a shorter run, and the pull-request
+      # smoke would keep saying green because it only ever looks at `fs-real`. Sixteen cells here
+      # (2 planes × 1 user × 8 drivers) — the GitHub runner has one WSL user, so the ruler column is
+      # still dropped and the report still says so in its last line, which is the declaration the
+      # `--ci-as-root-only` path makes rather than hides.
+      - name: the full grid, every driver (nightly only)
+        if: github.event_name == 'schedule'
+        run: |
+          RC=0
+          node scripts/compatibility/plane-matrix.mjs --ci-as-root-only || RC=$?
+          echo "plane-matrix (all drivers, root column) rc=$RC"
           exit $RC
       - name: every gate must say which plane it loaded
         if: always()
