@@ -523,13 +523,14 @@ if (probes.presetRegistry !== undefined) {
   // The counterparty's own acceptance, not our reading of its rules. A non-null `listProblem` is the
   // host saying this preset tree is malformed, and nothing written here gets to overrule it.
   try { hostAudit = JSON.parse(probes.hostAudit?.value ?? 'null') } catch { hostAudit = null }
-  const hostAccepts = hostAudit !== null && hostAudit.listProblem === null
+  const auditObserved = hostAudit !== null && !String(probes.hostAudit?.value ?? '').startsWith('THREW:')
+  const hostAccepts = auditObserved && hostAudit.listProblem === null
   hostAcceptsPreset = hostAccepts
   realmMounted = realmMounts.length > 0
   realmClean = realmMounts.length > 0 && !anyLeak
   realmHoldsFs = realmHoldsFsValue
   console.log(`  the host's own auditor on wsl-standard: ${probes.hostAudit?.value ?? '(not probed)'}`)
-  console.log(`    ${hostAccepts ? 'ok  ' : 'FAIL'} the host accepts this preset tree`)
+  console.log(`    ${auditObserved ? (hostAccepts ? 'ok  ' : 'FAIL') : 'NOT MEASURED — auditor did not run'} the host accepts this preset tree`)
 
   // ── the dynamic round trip, through the host's own reader ────────────────────────────────
   let roundTrip = null
@@ -554,6 +555,17 @@ if (probes.presetRegistry !== undefined) {
   // document the host is holding, and it is the only place the claim becomes true rather than
   // intended.
   const wslPreset = String(probes.wslPresetDocument?.value ?? '')
+  // A probe that did not run leaves an empty string, and a check that reads `''` reports FAIL — so a
+  // child that lost a race printed five FAILs and a green gate, which is the worst of both: alarming
+  // and meaningless. **Absent is not red.** The preset section reports itself unmeasured and the
+  // verdict below skips it, exactly as the mounted-realm section does.
+  const presetObserved = typeof probes.wslPresetDocument?.value === 'string'
+    && probes.wslPresetDocument.value.length > 0
+    && !probes.wslPresetDocument.value.startsWith('THREW:')
+  if (!presetObserved) {
+    console.log('    NOT MEASURED — the preset document was not read this run, so its isolation is unverified.')
+    console.log(`      probe: ${probes.wslPresetDocument?.value ?? '(absent)'}`)
+  }
   const presetLines = wslPreset.split('\n').map(line => line.trim())
   const hasWorldGroup = presetLines.some(line => line.startsWith('group:') && line.includes('true'))
   const isolateAt = presetLines.findIndex(line => line.startsWith('isolate:'))
@@ -567,12 +579,15 @@ if (probes.presetRegistry !== undefined) {
   const pointsAtOwnShell = wslPreset.includes('lib/shell.js')
   const pointsAtOwnFs = wslPreset.includes('lib/fs.js')
   console.log(`  the plugin's own preset, as the host holds it (${wslPreset.length} bytes):`)
-  console.log(`    ${hasWorldGroup ? 'ok  ' : 'FAIL'} the WSL world is a group`)
+  const mark = observed => (observed ? 'ok  ' : 'FAIL')
+  if (presetObserved) {
+  console.log(`    ${mark(hasWorldGroup)} the WSL world is a group`)
   console.log(`    ${hasIsolate ? 'ok  ' : 'FAIL'} the group isolates its members`)
   console.log(`    ${isolatesFs ? 'ok  ' : 'FAIL'} fs is inside the isolated set`)
   console.log(`    ${pointsAtOwnShell ? 'ok  ' : 'FAIL'} the bash slot points at lib/shell.js`)
-  console.log(`    ${pointsAtOwnFs ? 'ok  ' : 'FAIL'} the fs slot points at lib/fs.js`)
-  isolationHolds = hasWorldGroup && hasIsolate && isolatesFs && pointsAtOwnShell && pointsAtOwnFs
+  console.log(`    ${mark(pointsAtOwnFs)} the fs slot points at lib/fs.js`)
+  }
+  isolationHolds = !presetObserved || (hasWorldGroup && hasIsolate && isolatesFs && pointsAtOwnShell && pointsAtOwnFs)
   if (childStderrTail.length > 0) {
     console.log('  what the child logged (plugin effects report here):')
     for (const line of childStderrTail.slice(0, 10)) console.log(`    ${line}`)
