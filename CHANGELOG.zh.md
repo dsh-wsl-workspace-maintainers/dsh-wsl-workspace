@@ -4,6 +4,16 @@
 
 本文件为中文记录（0.4.3 及更早为摘要）；英文原文见 [CHANGELOG.md](CHANGELOG.md)。
 
+## 0.7.7 — 2026-10-07
+
+- **DSH 0.2.x 下 `bash_background` 的 `job_output` 始终为空（issue #56）。** `bash_background`（以及复用同一生产者的 `bash` 的 `run_in_background: true`）能正常起任务、`job_list` 也能追踪，但 `job_output` 每次读取都返回 `(no new output)`——运行中、结束后如此，完成通告也不带正文。命令**确实**执行了、stdout 也落了盘，所以死的是读取通道，不是任务本身。
+
+  根因是注册表在两个版本线之间的契约变更。`@deepseek-ai/dsh-jobs-local@0.2.x` 只从 `spec.output` 这个 pull-source 数组填充任务输出环（`start()` 在后续 tick 逐一 drain 每个 source 的 `read(from)`），**从不**读取 `run()` 返回的 `readOutput`。而本插件的生产者只设置了 `readOutput`（即 0.1.x 契约），于是 `spec.output` 为空、pump 从未被武装，输出环始终为空。单元测试用的假注册表实现的是旧的 `run()`-`readOutput` 语义，所以测试全绿、真实 0.2.0-rc.2 宿主却红。
+
+  生产者现在**双通道齐发**，各自版本线读取自己理解的那一个：`spec.output` 内两个 pull-source——`stdout` 与一个带 `stderr` 标签的 source——各自从 shell 进程自身的逐流 `observed` reader 读取（与 `readOutput` 所 drain 的是同一组独立游标，互不抢字节），同时保留 `run()` 返回的 `readOutput` 给 0.1.x 注册表使用。`spillPath` 原样透传，因此溢出流仍会报告其 spill 文件，`stderr` 也借由 channel 标签留在自己的通道上。
+
+  新增一条单元门禁，复刻 0.2.x 的 drain 循环去拉取生产者产出的 `output` source，在旧生产者（无 source，或 source 不吐字节）上必定失败，故此类回归无法再静默复现。
+
 ## 0.7.6 — 2026-10-01
 
 - **DSH Desktop 上一个 WSL 变体都生成不出来（issue #47）**。生成器在调用时向宿主借两样东西：条目清单的方言，和解析它的 YAML 引擎；前提写的是"宿主和插件共用一棵 `node_modules`"。Desktop 把宿主打在归档包里，而 Node 找裸包名是沿文件系统一层层往上走，这条路永远走不到宿主里面。于是第一个健康的源预设就抛错，抛出循环，循环之后的一切——包括对已退役机制残留物的清扫——一起被跳过。界面上只剩"未找到健康的 wsl preset"这一句，原因躺在宿主控制台里被 `catch` 吞掉。这一条在本机用**真包**复现，不是推断：按伞形依赖提升的那个版本建好方言、再经兄弟插件提升的那个版本去加载，会失败在加载器内部，报出的话既没有包名也没有版本和路径。

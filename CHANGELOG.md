@@ -2,6 +2,16 @@
 
 All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](README.md); the Chinese record is [CHANGELOG.zh.md](CHANGELOG.zh.md).
 
+## 0.7.7 — 2026-10-07
+
+- **`bash_background`'s `job_output` was always empty on DSH 0.2.x (issue #56).** `bash_background` (and `bash`'s `run_in_background: true`, which shares the same producer) started the job and `job_list` tracked it, but `job_output` returned `(no new output)` on every read — during the run, after completion, and the completion notice carried no body. The command *did* run and its stdout landed on disk, so the read channel was dead, not the task.
+
+  The root cause is a registry contract change between release lines. `@deepseek-ai/dsh-jobs-local@0.2.x` fills the job's output ring **only** from the `spec.output` pull-source array (`start()` drains each source's `read(from)` on later ticks); it never inspects the `readOutput` that `run()` returns. This plugin's producer, however, only set `readOutput` (the 0.1.x contract), so `spec.output` was empty, the pump was never armed, and the ring stayed empty. The fake registry the unit tests used implemented the old `run()`-`readOutput` semantics, so the suite stayed green while a real 0.2.0-rc.2 host went red.
+
+  The producer now feeds **both** channels, and each release line reads the one it understands: a `spec.output` array of two pull-sources — `stdout` and a `stderr`-tagged source — each reading from the shell process's own per-stream `observed` readers (the same independent cursors `readOutput` already drained, so the two never steal bytes from each other), plus the `run()`-returned `readOutput` kept for the 0.1.x registry. `spillPath` flows through unchanged, so an overflowed stream still reports its spill file, and `stderr` stays on its own lane via the channel tag.
+
+  A unit gate now mirrors the 0.2.x drain loop against the produced `output` sources and would have failed on the old producer (no sources, or none yielding the bytes), so this regression cannot silently return.
+
 ## 0.7.6 — 2026-10-01
 
 - **A DSH Desktop profile generated no WSL variant at all (issue #47).** The variant

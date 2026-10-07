@@ -71,6 +71,12 @@ interface ToolsRegistryFace {
   register(tool: unknown): void
 }
 
+/** One captured output stream, read incrementally from a byte offset. */
+interface OutputReader {
+  /** Return the bytes written since `fromByte`, plus the offset just past them. */
+  readFrom(fromByte: number): { text: string; nextOffset: number; lossy: boolean; spillPath?: string }
+}
+
 /** One background process handle, as this plugin's shell provider returns it. */
 interface ShellProcessFace {
   readonly status: 'running' | 'completed' | 'killed'
@@ -79,6 +85,12 @@ interface ShellProcessFace {
   readonly done: Promise<void>
   readOutput(): { delta: string; lossy: boolean; stdoutSpillPath?: string; stderrSpillPath?: string }
   kill(): boolean
+  /**
+   * Per-stream readers the 0.2.x registry drains through the `output` pull
+   * sources below. The 0.1.x registry instead consumes `run()`'s returned
+   * `readOutput`, so both are exposed and each release reads the one it knows.
+   */
+  readonly observed: { stdout: OutputReader; stderr: OutputReader }
 }
 
 /** The `ctx.shell` face: resolve a request, then start it in the background. */
@@ -100,6 +112,13 @@ interface JobsFace {
     kind: string
     label: string
     owner?: unknown
+    /**
+     * Pull-sources the 0.2.x registry drains into the job's output ring. Each
+     * source's `read(from)` returns the bytes written since `from` plus the next
+     * cursor; an optional `channel` keeps the stream on its own lane. The 0.1.x
+     * registry ignores this and reads `run()`'s `readOutput` instead (issue #56).
+     */
+    output?: Array<{ channel?: string; read(from: number): { text: string; nextOffset: number; lossy: boolean; spillPath?: string } }>
     run(): {
       cancel(reason?: string): void
       done: Promise<{ status: 'completed' | 'killed' | 'failed'; detail?: string }>
@@ -238,23 +257,42 @@ export function apply(ctx: Context, config?: Config): void {
         ...workdir === undefined ? {} : { workdir },
         ...dshEnv === undefined ? {} : { dshEnv },
       }
-      const jobId = jobs.start({
-        kind: 'bash',
-        label: args.command,
-        // `owner` is a session id on 0.1.7+ and the agent object before that;
-        // see `ownerOf`. Getting it wrong is a loud failure either way.
-        ...ownerOf(jobs, exec.agent),
-        run: () => {
-          const process = shell.start(shell.resolve(request))
-          return {
-            cancel: () => {
-              process.kill()
-            },
-            done: process.done.then(() => outcomeOf(process)),
-            readOutput: () => renderRead(process.readOutput()),
-          }
+  // The 0.2.x registry drains the job's output ring only from `spec.output`
+  // pull-sources; it never touches the `readOutput` that `run()` returns. A
+  // producer that set only the latter shipped an empty `job_output` on
+  // 0.2.0-rc.2 (issue #56). So expose both: `output` pull-sources over the
+  // process's own per-stream readers, and `readOutput` for the 0.1.x registry.
+  // `proc` is captured in this outer scope because `run()` assigns it *before*
+  // the registry ever calls a source's `read()` — start() invokes run()
+  // synchronously, then arms the pump on later ticks.
+  let proc: ShellProcessFace | undefined
+  const readStream = (which: 'stdout' | 'stderr') => (from: number): { text: string; nextOffset: number; lossy: boolean; spillPath?: string } => {
+    const reader = proc?.observed[which]
+    if (reader === undefined) return { text: '', nextOffset: from, lossy: false }
+    return reader.readFrom(from)
+  }
+  const jobId = jobs.start({
+    kind: 'bash',
+    label: args.command,
+    // `owner` is a session id on 0.1.7+ and the agent object before that;
+    // see `ownerOf`. Getting it wrong is a loud failure either way.
+    ...ownerOf(jobs, exec.agent),
+    output: [
+      { read: readStream('stdout') },
+      { channel: 'stderr', read: readStream('stderr') },
+    ],
+    run: () => {
+      const process = shell.start(shell.resolve(request))
+      proc = process
+      return {
+        cancel: () => {
+          process.kill()
         },
-      })
+        done: process.done.then(() => outcomeOf(process)),
+        readOutput: () => renderRead(process.readOutput()),
+      }
+    },
+  })
       return { jobId: String(jobId) }
     },
     presentCall: (args: { command: string }) => ({

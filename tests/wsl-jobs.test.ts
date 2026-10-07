@@ -14,6 +14,17 @@ import { apply, outcomeOf, renderRead, TOOL_NAME } from '../src/host/wsl-jobs.ts
 
 const CONFIG = { timeoutMs: 15_000 }
 
+/** A fake captured-stream reader, matching the `observed` shape the producer hands the 0.2.x registry. */
+interface FakeReader {
+  readFrom(from: number): { text: string; nextOffset: number; lossy: boolean; spillPath?: string }
+}
+function makeReader(chunks: string[]): FakeReader {
+  const full = chunks.join('')
+  // The real reader tracks a read cursor; this one just replays the whole
+  // stream from the requested offset, which is all a finished job needs.
+  return { readFrom: (from: number) => ({ text: full.slice(from), nextOffset: full.length, lossy: false }) }
+}
+
 /** A fake `ctx` carrying the three services the tool reads. */
 function harness(overrides = {}) {
   const registered = new Map()
@@ -25,6 +36,7 @@ function harness(overrides = {}) {
     done: Promise.resolve(),
     readOutput: () => ({ delta: 'hello\n', lossy: false }),
     kill: () => true,
+    observed: { stdout: makeReader([]), stderr: makeReader([]) },
     ...overrides.process,
   }
   const shell = {
@@ -196,4 +208,48 @@ test('mounts with schema defaults when the row carries no config at all', () => 
   const empty = new Map()
   apply({ get: name => name === 'tools' ? { register: tool => empty.set(tool.name, tool) } : undefined }, {})
   assert.deepEqual([...empty.keys()], [TOOL_NAME])
+})
+
+test('feeds 0.2.x pull-source output so job_output is not empty (issue #56)', async () => {
+  // The 0.2.x registry drains bytes only from `spec.output` pull-sources; it
+  // never calls `run()`'s `readOutput`. The fake below mirrors that drain loop,
+  // so a producer that set only `readOutput` (the pre-fix shape) would surface
+  // here as an empty ring instead of the bytes the command wrote — exactly the
+  // `job_output` → `(no new output)` failure on DSH 0.2.0-rc.2.
+  const captured = { output: undefined as unknown }
+  const { tool } = harness({
+    process: {
+      status: 'completed',
+      exitCode: 0,
+      signal: null,
+      done: Promise.resolve(),
+      readOutput: () => ({ delta: 'legacy-only\n', lossy: false }),
+      observed: {
+        stdout: makeReader(['tick 1\n', 'tick 2\n']),
+        stderr: makeReader(['warn\n']),
+      },
+      kill: () => true,
+    },
+    jobs: {
+      start: spec => {
+        captured.output = spec.output
+        // Mirror the 0.2.x pump: start() calls run() to register the process
+        // (assigning the producer's closure capture) before any source is read.
+        spec.run({})
+        return 'bash-7'
+      },
+    },
+  })
+  await tool.execute({ command: 'echo' }, EXEC)
+  const sources = captured.output as Array<{ channel?: string; read(from: number): { text: string; nextOffset: number; lossy: boolean; spillPath?: string } }>
+  assert.ok(Array.isArray(sources) && sources.length === 2, 'producer exposes stdout + stderr pull sources')
+  assert.equal(sources[0].channel, undefined, 'stdout carries no channel tag')
+  assert.equal(sources[1].channel, 'stderr', 'stderr is tagged so the registry keeps it on its own channel')
+  const first = sources[0].read(0)
+  assert.equal(first.text, 'tick 1\ntick 2\n', 'stdout source yields the process output')
+  assert.equal(first.nextOffset, 'tick 1\ntick 2\n'.length, 'the cursor advances past what was read')
+  const after = sources[0].read(first.nextOffset)
+  assert.equal(after.text, '', 'a read past the end yields nothing')
+  const err = sources[1].read(0)
+  assert.equal(err.text, 'warn\n', 'the stderr source yields its own stream')
 })
