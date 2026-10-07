@@ -267,6 +267,57 @@ try {
     report.probes.presetDocument = { ok: false, value: `THREW: ${String(error?.message ?? error).slice(0, 200)}` }
   }
 
+  // ── the dynamic half: hand the host a job and read it back with the host's own reader ----------
+  //
+  // Two registrations of the same work, differing only in **which channel the output travels on**:
+  //
+  //   `run()` returning `readOutput()` — the shape `src/host/wsl-jobs.ts` offers;
+  //   `spec.output[]` pull-sources — the shape `@deepseek-ai/dsh-jobs` documents and reads.
+  //
+  // Both are read back with `jobs.read()`, the registry's own reader — the same path `job_output`
+  // takes. Nothing here knows what any defect is: it registers a job, asks the host to read it, and
+  // reports what came back. If one comes back empty and the other does not, the asymmetry is the
+  // host's, established by the host rather than by our reading of its source.
+  probe('jobRoundTrip', () => {
+    const jobs = ctx.get('jobs')
+    if (jobs === undefined) return 'ABSENT'
+    const MARKER = 'DSH_HOST_CONTRACT_MARKER'
+    const makeSpec = withSpecOutput => {
+      const spec = {
+        kind: 'bash',
+        // The marker is **only** in the output channel. It also appeared in `label` at first, which
+        // made every read look successful because the label is always echoed back — a probe that
+        // cannot fail is worse than no probe.
+        label: 'contract probe',
+        run: () => ({
+          cancel: () => {},
+          done: Promise.resolve({ status: 'completed' }),
+          readOutput: () => `${MARKER}\n`,
+        }),
+      }
+      if (!withSpecOutput) return spec
+      return {
+        ...spec,
+        output: [{
+          channel: 'stdout',
+          read: fromByte => ({ text: `${MARKER}\n`, nextOffset: fromByte + MARKER.length + 1, lossy: false }),
+        }],
+      }
+    }
+    // Only the **chunks** count. `JSON.stringify` of the whole view matches the marker in `label`
+    // and in the job id, which is how the first version of this probe reported both channels readable.
+    const carries = value => Array.isArray(value?.chunks) && value.chunks.length > 0
+    && value.chunks.some(chunk => String(chunk?.text ?? '').includes(MARKER))
+    const viaRun = jobs.read(jobs.start(makeSpec(false)))
+    const viaSpec = jobs.read(jobs.start(makeSpec(true)))
+    return JSON.stringify({
+      viaRunReadOutput: carries(viaRun),
+      viaSpecOutput: carries(viaSpec),
+      runReadView: JSON.stringify(viaRun ?? null).slice(0, 160),
+      specReadView: JSON.stringify(viaSpec ?? null).slice(0, 160),
+    })
+  })
+
   probe('presetDeclaredSurface', () => JSON.stringify(plan.declaredInject ?? []))
 
   probe('ownRowInject', () => JSON.stringify(byId.get('dsh-wsl-workspace')?.declaredInject ?? []))

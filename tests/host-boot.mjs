@@ -373,6 +373,8 @@ function probeJson(probes, label, fallback) {
 // a `const` inside that block would be out of scope by the time the ledger is computed, which is the
 // same class of mistake as reading a probe's value before its shape has been checked.
 let isolationHolds = false
+let pluginChannelReadable = false
+let hostChannelReadable = false
 
 const checks = [
   ['P1 the host has a loader with entries', probes.p1_loaderPresent.ok && Number(probes.rowCount.value) >= HOST_ROWS.length,
@@ -426,6 +428,23 @@ const presetProblems = probeJson(probes, 'presetProblems', [])
 if (probes.presetRegistry !== undefined) {
   console.log(`  the host's preset registry: ${probes.presetRegistry.value}`)
   console.log(`  presets it ended up holding: ${roster.length === 0 ? '(none)' : roster.map(entry => `${entry.id}[${entry.plugins ?? '?'} rows${entry.broken === null ? '' : ` BROKEN: ${entry.broken}`}]`).join(', ')}`)
+  // ── the dynamic round trip, through the host's own reader ────────────────────────────────
+  let roundTrip = null
+  try { roundTrip = JSON.parse(probes.jobRoundTrip.value) } catch { /* reported below */ }
+  if (probes.jobRoundTrip !== undefined) {
+    console.log(`  the host's own reader, on two registrations of the same work: ${probes.jobRoundTrip.value}`)
+    // The declaration: a value handed to the host must come back through the reader the host
+    // actually uses. A channel the far side never reads is not a slower path, it is a lost value.
+    // Two different questions, and conflating them was the first version's bug: `spec.output` is the
+    // channel **the host reads**, so it is a positive control on the harness — if that fails, the
+    // harness is broken, not the plugin. `run().readOutput` is the channel **this plugin offers**,
+    // and its readability is the finding.
+    hostChannelReadable = roundTrip?.viaSpecOutput === true
+    pluginChannelReadable = roundTrip?.viaRunReadOutput === true
+    console.log(`    ${hostChannelReadable ? 'ok  ' : 'FAIL'} the host can read its own channel (spec.output) — harness control`)
+    console.log(`    ${pluginChannelReadable ? 'ok  ' : 'note'} the host can read the channel this plugin offers (run().readOutput)`)
+  }
+
   // ── the isolation, as the host holds it ─────────────────────────────────────────────────
   // The plugin's whole claim about `fs` and `shell` is that they live inside a WSL world group with
   // `isolate`, so the host's own tools cannot reach past them. That claim is checkable against the
@@ -566,6 +585,17 @@ const notLoadedIds = rows
 const notLoaded = notLoadedIds.length === 0 ? [] : [`entry-does-not-load: ${notLoadedIds.join(', ')}`]
 const observedReds = [
   ...notLoaded,
+  // The dynamic half of the same debt, filed under the same entry: the plugin offers a channel the
+  // host's own reader does not drain. The two halves agree by construction — the static half counted
+  // the host naming it zero times, and this one watched the host read it and get nothing — so they
+  // are one invariant with two witnesses, not two debts.
+  // One red for the invariant, naming **both** witnesses. The static half counted the host naming
+  // the channel zero times in its sources; the dynamic half watched the host read the same channel and
+  // get nothing. Two witnesses of one fact, and a ledger entry stands for the fact — emitting a red
+  // per witness would need an entry per witness, so paying the debt would half-fix the gate.
+  ...(!pluginChannelReadable && unread.includes('readOutput')
+    ? ['readOutput: unread in the host sources, and not readable by the host reader']
+    : []),
   // A preset whose isolation did not survive the round trip is the L2 finding: `fs` and `shell` would
   // be reachable by the host's own tools, which is the whole thing the group exists to prevent. One
   // red, named by what failed, because a debt is an invariant rather than a row count.
@@ -580,7 +610,11 @@ const observedReds = [
   // A failed positive control is deliberately **not** here. Those say the substrate did not look like
   // the pinned host, which is a broken gate rather than a debt, and they have their own exit below; a
   // broken gate filed as a debt would be paid by editing the ledger, which is exactly the wrong move.
-  ...unread,
+  // `unread` is deliberately **not** listed here even though every member is a real finding: each of
+  // its members that the round trip also witnessed is represented by the combined red below, and
+  // listing both would file one fact twice. A member with no dynamic witness still gets filed, so
+  // nothing is lost — it just gets one entry rather than two.
+  ...unread.filter(name => !(name === 'readOutput' && !pluginChannelReadable)),
   ...unreachable.map(entry => entry.service),
 ]
 const verdict = compareHostBoot(observedReds)

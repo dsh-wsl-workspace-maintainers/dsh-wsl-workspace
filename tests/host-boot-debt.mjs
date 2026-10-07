@@ -40,6 +40,12 @@ export const HOST_BOOT_REDS = [
       'is `spec.output`, a list of pull-sources whose `read(from)` is called on the process\'s',
       'per-stream observed readers. So the member this plugin offers is a channel the host cannot',
       'see, and whatever reads such a job will report it as having produced nothing.',
+      '',
+      'Confirmed dynamically, with the host as the counterparty rather than by reading its source:',
+      'registering the same work twice through the real registry and reading it back with',
+      '`jobs.read()` — the path `job_output` takes — returns `chunks: []` for `run().readOutput` and',
+      'the full marker for `spec.output`. The harness control is that the host reads its own channel',
+      'fine, so the empty result is about this plugin\'s channel and not about the harness.',
     ].join(' '),
     repair: [
       'Offer the channel the host reads, not the one it used to: put pull-sources on `spec.output`',
