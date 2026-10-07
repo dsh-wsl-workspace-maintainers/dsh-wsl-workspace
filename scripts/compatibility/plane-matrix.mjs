@@ -4,7 +4,7 @@
 //   node scripts/compatibility/plane-matrix.mjs
 //   node scripts/compatibility/plane-matrix.mjs --ci-as-root-only --drivers fs-real
 //
-// 2 planes × 2 users × 6 drivers = 24 cells. Each cell gets its OWN fixture root, because
+// 2 planes × 2 users × 8 drivers = 32 cells. Each cell gets its OWN fixture root, because
 // `ci.yml:186-188` already established that these drivers create rather than clean their tree:
 // two passes over one `/tmp/dsh-wsl-compat` is a race, not a rerun, so a shared root turns a real
 // defect into a flake and a flake into a dismissal.
@@ -92,6 +92,14 @@ const DRIVERS = [
   // throws rather than falling back to src/. A silent fallback is the exact false green #44 §1 is
   // about; adding the tsdown entry changes what users install, so it is a maintainer decision.
   { name: 'skills-real', floor: { kind: 'passLines', value: 3, at: 'skills-real.mjs:104-106' }, libPlane: 'no-lib-entry' },
+  // relay-profile-real.mjs:126 prints one `relay-profile-real: GREEN …` line, after every
+  // `assert.match` in its three arms has passed — so the marker is the evidence it reached its own
+  // end, and a non-zero exit is caught above it either way.
+  { name: 'relay-profile-real', floor: { kind: 'greenLine', marker: 'relay-profile-real: GREEN', value: 1, at: 'relay-profile-real.mjs:126' } },
+  // distro-shape-real reports `9/9 checks passed`: five premises about the substrate and the shapes,
+  // then the four cells holding the panel's two busybox claims to their GNU controls. It runs on
+  // both planes — the script bytes come from whichever plane's `wsl-search` module is under test.
+  { name: 'distro-shape-real', floor: { kind: 'checks', value: 9, at: 'distro-shape-real.mjs EXPECTED_CHECKS = 9' } },
 ]
 
 const requestedNames = flag('--drivers')?.split(',').map(s => s.trim()).filter(Boolean)
@@ -178,7 +186,9 @@ for (const plane of planes) {
       const counted = /(\d+)\/(\d+) checks passed/.exec(output)
       const reached = driver.floor.kind === 'checks'
         ? (counted === null ? 0 : Number(counted[2]))
-        : output.split('\n').filter(l => l.startsWith('PASS ')).length
+        : driver.floor.kind === 'greenLine'
+          ? output.split('\n').filter(l => l.includes(driver.floor.marker)).length
+          : output.split('\n').filter(l => l.startsWith('PASS ')).length
       cell.reached = reached
       cell.log = logPath
 

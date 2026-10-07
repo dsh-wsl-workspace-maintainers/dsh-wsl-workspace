@@ -58,7 +58,7 @@ const DRIVERS = [
   { name: 'skills-real', script: 'skills-real.mjs', floor: { kind: 'passLines', value: 3 }, libPlane: 'no-lib-entry' },
   { name: 'search-real', script: 'search-real.mjs', floor: { kind: 'passLines', value: 2 } },
   { name: 'relay-real', script: 'relay-real.mjs', floor: { kind: 'passLines', value: 2 } },
-  { name: 'relay-profile-real', script: 'relay-profile-real.mjs', floor: { kind: 'greenLine', marker: 'relay-profile-real: GREEN', value: 1 } },
+  { name: 'relay-profile-real', script: 'relay-profile-real.mjs', floor: { kind: 'greenLine', marker: 'relay-profile-real: GREEN', value: 1, at: 'relay-profile-real.mjs:126' } },
   { name: 'distro-shape-real', script: 'distro-shape-real.mjs', floor: { kind: 'checks', value: 9 } },
   { name: 'tool-bash-real', script: 'tool-bash-real.mjs', floor: { kind: 'checks', value: 10 } },
   { name: 'bash-session-real', script: 'bash-session-real.mjs', floor: { kind: 'checks', value: 73 } },
