@@ -87,7 +87,7 @@ jobs:
           retention-days: 7
 
   wsl-gate:
-    name: real-WSL hard gates (windows + WSL${{ matrix.wslVersion }} Ubuntu)
+    name: real-WSL hard gates (windows + WSL${{ matrix.wslVersion }} Ubuntu, ${{ matrix.plane }} plane)
     runs-on: windows-latest
     timeout-minutes: 35
     needs: lint-build
@@ -99,8 +99,28 @@ jobs:
     # call burning its 20 s and 60 s deadlines.
     strategy:
       fail-fast: false
+      # Two axes, and the second one is a latency fix rather than a new claim.
+      #
+      # The src and lib passes are independent processes that already own separate fixture roots, and
+      # they were being run one after the other inside a single job. On WSL1 that serial pair is 430 s
+      # of the job's 565 s gate step (measured, run 37727075063), and the job is the whole critical
+      # path of the workflow — 12 min 23 s against WSL2's 7 min 14 s. Split across runners they run at
+      # the same time with no contention to account for.
+      #
+      # Why not two background processes in one job: these gates assert their own timings
+      # (`stays.ms < 3_000` for the pager cell, `sleeping.ms > 3_500` for the quiet-command sentinel),
+      # and the pager cell has already flaked once at 6 187 ms against its 3 000 ms bound **on the WSL1
+      # runner with nothing else running**. Two shells against one 9P share is load that runner is not
+      # obliged to carry. A local A/B on WSL2 (cold serial 140 s / warm serial 131 s / two planes
+      # concurrent 131 s, per-check timings unchanged) says concurrency does not distort the readings
+      # *there*; WSL1 is the environment with the thin margin and it cannot be measured off a runner,
+      # so the split is the form of parallelism that does not depend on winning that bet.
+      #
+      # `plane-matrix.mjs` records the same judgement for its 32 cells: its own root per cell, and
+      # still one at a time.
       matrix:
         wslVersion: [1, 2]
+        plane: [src, lib]
     defaults:
       run:
         shell: bash
@@ -166,7 +186,12 @@ jobs:
         run: npm run build
       - name: win32-semantics unit files (wsl-skills + fs-policy assume drive-shaped cwd)
         run: npm run test:win32
-      - name: run every WSL gate, collect all failures in one frame
+      - name: run the src-plane gates
+        # The src pass — the behaviour the gates had before `lib` was ever loaded. `lib/` is what
+        # ships (issue #44 §1), so this half is the comparison arm rather than the product claim: it is
+        # kept because a difference between the planes is exactly the signal the second pass exists to
+        # catch, and it now runs on its own runner instead of standing in front of the lib pass.
+        if: matrix.plane == 'src'
         run: |
           # GitHub's bash runs with -e: every guard below must be compound,
           # or the first red kills the loop and the remaining gates go dark
@@ -203,6 +228,11 @@ jobs:
           run_one tool-bash-real node --experimental-strip-types scripts/compatibility/tool-bash-real.mjs
           run_one bash-session-real node --experimental-strip-types scripts/compatibility/bash-session-real.mjs
           MSYS_NO_PATHCONV=1 WSL_COMPAT_ROOT=/tmp/dsh-wsl-parity node --experimental-strip-types scripts/compatibility/bash-parity-real.mjs > logs/bash-parity-real.log 2>&1 || { echo "rc=$?"; tail -8 logs/bash-parity-real.log || true; FAIL=1; }
+          exit $FAIL
+      - name: run the lib-plane gates against the shipped bundle
+        if: matrix.plane == 'lib'
+        run: |
+          FAIL=0
           # The same gates against the shipped bundle. The default plane stays `src` until
           # this pass has been green twice (issue #44 §1); a run is only credited to a plane
           # if its log carries the matching `plane-module:` line, checked below. Each pass
@@ -241,8 +271,11 @@ jobs:
           # rather than falling back to src. Adding the entry changes what users install, so it
           # is a maintainer decision, not a night-run side effect.
           exit $FAIL
-      - name: every gate must say which plane it loaded
-        if: always()
+      - name: every gate must say which plane it loaded (src)
+        # `always()` so that a red gate still gets its attribution check, and the matrix condition on
+        # top because this job only produced one plane's logs — asking for the other's would fail on a
+        # missing file and turn the split itself into a red.
+        if: always() && matrix.plane == 'src'
         run: |
           RC=0
           # The module key is what plane.mjs prints (`fs`, `search`, …), not the driver's file
@@ -255,6 +288,12 @@ jobs:
           node scripts/verify-plane-log.mjs logs/tool-bash-real.log src shell || RC=1
           node scripts/verify-plane-log.mjs logs/bash-session-real.log src wsl-bash-tool || RC=1
           node scripts/verify-plane-log.mjs logs/bash-parity-real.log src wsl-bash-tool || RC=1
+          echo "plane evidence collected"
+          exit $RC
+      - name: every gate must say which plane it loaded (lib)
+        if: always() && matrix.plane == 'lib'
+        run: |
+          RC=0
           node scripts/verify-plane-log.mjs logs/lib-fs-real.log lib fs || RC=1
           node scripts/verify-plane-log.mjs logs/lib-search-real.log lib search || RC=1
           node scripts/verify-plane-log.mjs logs/lib-relay-real.log lib relay || RC=1
@@ -273,6 +312,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: wsl-gate-logs-wsl${{ matrix.wslVersion }}
+          name: wsl-gate-logs-wsl${{ matrix.wslVersion }}-${{ matrix.plane }}
           path: logs/
           retention-days: 7
