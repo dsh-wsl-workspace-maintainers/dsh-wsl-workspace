@@ -28,9 +28,20 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
  *   preview; six declared releases have no such service.
  * @param options.records - the workspace records the host route answers with.
  */
-function fixture({ legacy = false, late = false, startService = legacy ? 'legacy' : 'ui', sidebarRight = false, records = [] } = {}) {
+/**
+ * The deadline every host call gets inside these tests.
+ *
+ * The product asks for 30 000 ms. Waiting that long to reach the timeout branch would put half a
+ * minute on every run for one assertion, so the sandbox intercepts `AbortSignal.timeout` and clamps
+ * to this. It is a shortened clock, not a stubbed signal: what fires is the real `abort` event on a
+ * real `AbortSignal`, so the code path under test is the one a user reaches.
+ */
+const TEST_DEADLINE_MS = 60
+
+function fixture({ legacy = false, late = false, startService = legacy ? 'legacy' : 'ui', sidebarRight = false, records = [], apiHttpStatus = null, apiHangs = false } = {}) {
   let plugin, dialog, subscriber, tick;
   const effects = [], calls = [], opened = [], pending = [];
+  const apiSignals = [];
   const summary = legacy
     ? { blank: true, cwd: '\\\\wsl.localhost\\Ubuntu\\tmp\\fixture', agentPreset: 'standard' }
     : { blank: true, cwd: '\\\\wsl.localhost\\Ubuntu\\tmp\\fixture', projectionValues: { agentPreset: 'standard' } };
@@ -118,9 +129,72 @@ function fixture({ legacy = false, late = false, startService = legacy ? 'legacy
     },
     console,
     document: { getElementById: () => ({}), querySelector: () => ({}) },
+    // `api.ts` gives every host call a deadline, so the client needs this global. Two things about
+    // how it is supplied:
+    //
+    //  · **It is the platform's own implementation, not a stub.** A fake answering `{aborted: false}`
+    //    for ever would keep these tests green while proving nothing about the semantics the product
+    //    relies on — the same shape of false green this file's siblings exist to prevent.
+    //  · **Only the clock is shortened.** `AbortSignal.timeout` is intercepted so a 30-second deadline
+    //    becomes 60 ms, which is what lets a test actually reach the timeout branch instead of waiting
+    //    half a minute for it. Everything else — the class, `aborted`, the `abort` event, the
+    //    `reason` — is the real thing, so `instanceof AbortSignal` still holds and the branch under
+    //    test is the branch the product runs.
+    AbortSignal: new Proxy(AbortSignal, {
+      get: (target, key) => key === 'timeout'
+        ? ms => target.timeout(Math.min(ms, TEST_DEADLINE_MS))
+        : Reflect.get(target, key, target),
+    }),
     // The plugin's host API calls: only the workspace record read has a shape
     // under test, and every other route answers an empty list.
+    //
+    // `init.signal` is recorded and honoured rather than ignored: the deadline the product attaches
+    // to a call is a claim until something drives it, and a fake that drops the argument cannot tell
+    // a call that carries a deadline from one that carries none.
     fetch: async (_url, init) => {
+      apiSignals.push(init.signal);
+      if (apiHangs) {
+        // Fetch rejects with an error named `AbortError` when its signal aborts, and the product
+        // tells that apart from a transport refusal by name, so the fake has to as well. The plain
+        // timer is this realm's, and exists because the deadline's own timer is unref'd — without
+        // something ref'd the event loop would empty and the test would end mid-call.
+        //
+        // The second timer is a bound on the fake itself, and it is not decoration: without it, a
+        // product that has **lost** its deadline leaves this promise unsettled for ever, the test
+        // never returns, and the runner cancels the tests after it
+        // (`cancelledByParent … the event loop has already resolved`). Measured by reverting
+        // `api.ts` — four unrelated tests went red from that cascade. A fake that can hang the suite
+        // is a fake that reports the defect as damage somewhere else.
+        return await new Promise((_resolve, reject) => {
+          const keepAlive = setTimeout(() => {}, 60_000)
+          const giveUp = setTimeout(() => {
+            clearTimeout(keepAlive)
+            reject(new Error(
+              `the fixture waited ${TEST_DEADLINE_MS * 20} ms and the call was never aborted: `
+              + 'the product attached no deadline to it',
+            ))
+          }, TEST_DEADLINE_MS * 20)
+          const abort = () => {
+            clearTimeout(keepAlive)
+            clearTimeout(giveUp)
+            const error = new Error('The operation was aborted')
+            error.name = 'AbortError'
+            reject(error)
+          }
+          if (init.signal?.aborted === true) abort()
+          else init.signal?.addEventListener('abort', abort, { once: true })
+        })
+      }
+      if (apiHttpStatus !== null) {
+        // A non-2xx answer, with a body that is not JSON: a proxy's error page is the real case, and
+        // it is exactly what used to be reported as "non-JSON" with the status lost.
+        return {
+          ok: false,
+          status: apiHttpStatus,
+          statusText: 'Internal Server Error',
+          json: async () => { throw new Error('the body is an error page, not JSON'); },
+        };
+      }
       const method = JSON.parse(init.body).method;
       return { ok: true, json: async () => ({ ok: true, value: method === 'listWorkspaceRecords' ? records : [] }) };
     },
@@ -134,6 +208,7 @@ function fixture({ legacy = false, late = false, startService = legacy ? 'legacy
     selected: () => calls.filter(c => c[0] === 'select').map(c => c[1]),
     creates: () => calls.filter(c => c[0] === 'create').length,
     starts: () => calls.filter(c => c[0] === 'start').map(c => c[1]),
+    apiSignals: () => apiSignals,
   };
 }
 
@@ -225,6 +300,40 @@ test('current: create & open never falls back to the legacy starter', async () =
   const error = await f.dialog.createWorkspace('/home/mille/ws', 'mille', 'Ubuntu');
   assert.equal(error, undefined);
   assert.deepEqual(f.starts(), ['w1']);
+  f.dispose();
+});
+
+// Issue #44 §6: the two ways a host call used to fail without saying so. Both are about the shape
+// of the answer rather than the transport: the call reached the host, the host said something, and
+// the dialog reported neither what it said nor that it had said anything at all.
+//
+// `createWorkspace` is the vehicle because it is the one entry point these fixtures already drive
+// through `api.ts` — it makes a host call and hands the message back, which is exactly the seam the
+// two defects sat on.
+
+test('a host call that never answers is reported as a timeout, not awaited for ever', async () => {
+  // Before the deadline existed, a request that never settled left the dialog waiting on a promise
+  // that could not resolve: no message, no error, and Retry as the only way out — which a user has
+  // no reason to press, because nothing told them anything was wrong.
+  const f = fixture({ legacy: false, apiHangs: true });
+  await flush();
+  const error = await f.dialog.createWorkspace('/home/mille/ws', 'mille', 'Ubuntu');
+  // The product's own sentence, naming the deadline it asked for. The sandbox clamps the *clock* to
+  // `TEST_DEADLINE_MS`; it does not change what the message says, so this also pins that the two
+  // have not drifted apart.
+  assert.match(String(error), /did not answer within 30s/)
+  f.dispose();
+})
+
+test('a non-2xx answer names its status instead of reporting a parse failure', async () => {
+  // A proxy answering an error page: the body is not JSON, so the old code failed inside
+  // `response.json()` and reported "non-JSON" — which is true, and names the symptom while losing
+  // the status that says what actually happened.
+  const f = fixture({ legacy: false, apiHttpStatus: 500 });
+  await flush();
+  const error = await f.dialog.createWorkspace('/home/mille/ws', 'mille', 'Ubuntu');
+  assert.match(String(error), /HTTP 500/)
+  assert.doesNotMatch(String(error), /non-JSON/)
   f.dispose();
 });
 
