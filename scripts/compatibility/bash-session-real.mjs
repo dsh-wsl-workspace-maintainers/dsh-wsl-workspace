@@ -309,6 +309,15 @@ try {
   check('the re-run is announced as a second execution',
     hasCtty && canAct ? announcedTwice : !/run once more on a pseudo-terminal/.test(starved.rendered),
   JSON.stringify({ hasCtty, canAct, announcedTwice, head: starved.rendered.slice(0, 90) }))
+  // The ask the remaining keyboard cells use. `starved` above cannot share it: it is the call that
+  // *decides* `canAct`, so its 20 s is paid once per run and buys the branch every later cell takes.
+  // Where the kernel gives the tool nothing to act on, each of those cells asserts that the call ended
+  // at the deadline it was handed and named the reading it relied on — a property of the deadline's
+  // *existence*, not of its length, so 8 s proves it as well as 20. Measured on the WSL1 frame of
+  // #169: five cells burned 103.5 s of the driver's 215 s there, while the same nine readings totalled
+  // 11.9 s on WSL2 where the tool acts. This is the shape `longAskMs` below already uses, and the
+  // remaining 36 s of it belongs to `starved`, which cannot know its own branch in advance.
+  const waitAskMs = canAct ? 20_000 : 8_000
   // A long silent wait that is NOT a keyboard wait must be left completely alone: `sleep 4` produces no
   // bytes, uses no CPU, sleeps in the terminal's foreground job — and is distinguishable only by where
   // it is asleep. This is the false-positive sentinel; if the rule ever broadens to "quiet means stuck",
@@ -331,7 +340,7 @@ try {
     JSON.stringify({ asked, told, tail: password.rendered.slice(-56) }))
   // The veto: `tty: false` must keep the ordinary pipe even for a command that then sits waiting. The
   // stop still happens (the shell would otherwise be unusable) but the re-run must not.
-  const vetoed = await call(`sh -c 'read x < /dev/tty; echo GOT=$?'`, { tty: false, timeoutMs: 20_000 })
+  const vetoed = await call(`sh -c 'read x < /dev/tty; echo GOT=$?'`, { tty: false, timeoutMs: waitAskMs })
   check('tty:false vetoes the re-run and keeps the command on the pipe',
     !hasCtty ? !/run once more on a pseudo-terminal/.test(vetoed.rendered)
       : canAct ? (!/run once more on a pseudo-terminal/.test(vetoed.rendered)
@@ -344,7 +353,7 @@ try {
   // the terminal blocks the session shell itself, so there is no child process to find. Measured while
   // it happened (2026-10-06): the shell's own row is `Ss+ wchan=wait_woken fd0=/dev/tty` with CPU flat,
   // and before the walk included that row the call merely timed out at 30 s and rebuilt the shell.
-  const builtinRead = await call(`read -r line < /dev/tty; echo LINE=[$line]`, { timeoutMs: 20_000 })
+  const builtinRead = await call(`read -r line < /dev/tty; echo LINE=[$line]`, { timeoutMs: waitAskMs })
   check('a builtin that reads the terminal is ended and re-run, not left to the deadline',
     !hasCtty ? !/ended by restarting the shell/.test(builtinRead.rendered)
       : canAct ? (builtinRead.value?.timedOut === false && builtinRead.text.includes('LINE=[]')
@@ -381,7 +390,7 @@ try {
   // The reading that killed the old rule's first day: `bash -c 'sudo true'` sat to its deadline because
   // the decision read the first word. Nothing reads a word any more — the walk finds the process — so a
   // waiting command inside a wrapper is caught by the same code as one on its own.
-  const nested = await call(`bash -c 'read x < /dev/tty; echo GOT=$?'`, { timeoutMs: 20_000 })
+  const nested = await call(`bash -c 'read x < /dev/tty; echo GOT=$?'`, { timeoutMs: waitAskMs })
   check('a waiting command inside a wrapper is caught without reading a single word',
     !hasCtty ? !/first attempt was stopped/.test(nested.rendered)
       : canAct ? (nested.value?.timedOut === false && nested.text.includes('GOT=')
@@ -459,7 +468,7 @@ try {
   // not escalated at all, sat out the configured two minutes, and handed the model the screen's raw
   // escapes — 121 703 ms for nothing (`D:\Temp` evidence sheet, turn 22). Bytes arriving first must not
   // blind the watchdog, so this cell writes a line and *then* waits for a keyboard.
-  const compound = await call(`printf 'x\\n'; sh -c 'read y < /dev/tty; echo GOT=$?'`, { timeoutMs: 20_000 })
+  const compound = await call(`printf 'x\\n'; sh -c 'read y < /dev/tty; echo GOT=$?'`, { timeoutMs: waitAskMs })
   check('a wait after some output is still caught',
     !hasCtty ? (compound.text.includes('x') && compound.text.includes('GOT='))
       : canAct ? (compound.text.includes('x') && compound.text.includes('GOT=') && compound.ms < 20_000
@@ -588,7 +597,7 @@ try {
   // are carried onto it. Measured before the fix: the restart happened, functions were left behind,
   // and the call answered as if nothing had been lost.
   await call('big=$(printf "x%.0s" $(seq 1 70000)); eval "dshhugefn2() { : $big; }"')
-  const starveReport = await call('read -r line < /dev/tty; echo LINE=[$line]', { timeoutMs: 20_000 })
+  const starveReport = await call('read -r line < /dev/tty; echo LINE=[$line]', { timeoutMs: waitAskMs })
   // The half that does not move between kernels is the report of what the rebuild left behind — that is
   // the seam the cell was written for. What moves is the *reason* sentence: where the kernel exposes the
   // wait the call was stopped and the body says so, where it does not the body carries the reading it
