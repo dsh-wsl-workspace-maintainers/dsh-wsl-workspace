@@ -54,6 +54,23 @@ something to act on, the gate step did **not** move (122 s → 122 s, 116 → 11
 gates — it is provisioning and the steps around them; §3's per-gate line is what makes that separation
 free instead of something a later reader has to reconstruct.
 
+### 1c. A frame on the other code line, which sizes the noise (PR #68's frame, `1d3e5ac`, success)
+
+PR #68 (the session-shell exit answer) is based on `main`, so it runs **without** §2's shorter asks and
+without §3's elapsed line. Against #169, which is the same asks:
+
+| | WSL1 src | WSL1 lib | WSL2 src | WSL2 lib | run wall | billed |
+|---|---|---|---|---|---|---|
+| #169 (main-line, long asks) | 448 s | 444 s | 331 s | 318 s | 474 s | 1,612 s |
+| #68 (main + 3 census rows, long asks) | 555 s | 457 s | 430 s | 312 s | 578 s | 1,821 s |
+
+The three new census rows cost ~3 s measured locally (1 346 + 1 498 + 1 308 ms, replacing nothing), so
+they are not what moved. What moved is up to **+107 s on one job and −6 s on another, same code line**, which
+is runner-to-runner drift, not signal. That is the size of the noise any job-total claim has to clear — and
+it is why §1b's "12 s spread" is scoped to the two frames of *this* branch, and why the saving in this file
+is written as a step's elapsed (`286 → 224 s`) rather than as a wall number. §3's line is the only thing on
+this branch that can tell those two stories apart, and it is not on `main` yet.
+
 ## 2. The one finding worth acting on, and its size
 
 `bash-session-real` prints a millisecond reading for its keyboard-wait cells. On the WSL1 frame five
