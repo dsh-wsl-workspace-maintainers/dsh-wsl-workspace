@@ -195,11 +195,13 @@ export async function listDistros(wslPath = 'wsl.exe'): Promise<string[]> {
 export async function defaultDistro(): Promise<string | undefined> {
   try {
     const value = await execFileResult('reg.exe', ['query', LXSS_KEY, '/v', 'DefaultDistribution'], {
+      encoding: 'buffer',
       timeout: DISCOVERY_TIMEOUT_MS,
     })
     const guid = /DefaultDistribution\s+REG_SZ\s+(\{[0-9a-fA-F-]+\})/i.exec(textOf(value.stdout))?.[1]
     if (guid === undefined) return undefined
     const name = await execFileResult('reg.exe', ['query', `${LXSS_KEY}\\${guid}`, '/v', 'DistributionName'], {
+      encoding: 'buffer',
       timeout: DISCOVERY_TIMEOUT_MS,
     })
     const distro = /DistributionName\s+REG_SZ\s+(.+)/i.exec(textOf(name.stdout))?.[1]?.trim()
@@ -225,14 +227,16 @@ export function defaultDistroSync(): string | undefined {
   syncDefaultResolved = true
   try {
     const value = execFileSync('reg.exe', ['query', LXSS_KEY, '/v', 'DefaultDistribution'], {
+      encoding: 'buffer',
       timeout: DISCOVERY_TIMEOUT_MS,
     })
-    const guid = /DefaultDistribution\s+REG_SZ\s+(\{[0-9a-fA-F-]+\})/i.exec(String(value))?.[1]
+    const guid = /DefaultDistribution\s+REG_SZ\s+(\{[0-9a-fA-F-]+\})/i.exec(textOf(value))?.[1]
     if (guid === undefined) return undefined
     const name = execFileSync('reg.exe', ['query', `${LXSS_KEY}\\${guid}`, '/v', 'DistributionName'], {
+      encoding: 'buffer',
       timeout: DISCOVERY_TIMEOUT_MS,
     })
-    const distro = /DistributionName\s+REG_SZ\s+(.+)/i.exec(String(name))?.[1]?.trim()
+    const distro = /DistributionName\s+REG_SZ\s+(.+)/i.exec(textOf(name))?.[1]?.trim()
     syncDefault = distro === undefined || distro === '' ? undefined : distro
   } catch {
     syncDefault = undefined

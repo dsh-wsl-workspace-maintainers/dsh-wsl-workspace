@@ -141,7 +141,10 @@ function checkRuntimeDependencies(scratch) {
 }
 
 console.log(`verify-install: packing ${manifest.name}@${manifest.version} ...`)
-if (runNpm(['pack', '--silent'], repo) !== 0) fail('npm pack failed')
+const pack = runNpm(['pack', '--silent'], repo, 'inherit')
+if (pack.status !== 0) {
+  fail(`npm pack failed with exit ${pack.status}${pack.error === undefined ? '' : ` (${pack.error.message})`}`)
+}
 
 // `npm pack` prints the tarball name on stdout, which inherited stdio swallowed;
 // the deterministic name is the manifest's.
@@ -154,9 +157,9 @@ cleanup = () => {
 try {
   writeFileSync(join(scratch, 'package.json'), JSON.stringify({ name: 'verify-install', private: true, version: '1.0.0' }, null, 2))
   console.log('verify-install: installing the tarball with plain npm (no pnpm, no peers present) ...')
-  const status = runNpm(['install', tarball, '--no-audit', '--no-fund', '--prefer-online'], scratch)
-  if (status !== 0) {
-    fail(`plain \`npm install ${manifest.name}@${manifest.version}\` failed with exit ${status} - a user installing this package with npm cannot complete the install`)
+  const install = runNpm(['install', tarball, '--no-audit', '--no-fund', '--prefer-online'], scratch, 'inherit')
+  if (install.status !== 0) {
+    fail(`plain \`npm install ${manifest.name}@${manifest.version}\` failed with exit ${install.status} - a user installing this package with npm cannot complete the install`)
   }
   const installed = JSON.parse(readFileSync(join(scratch, 'node_modules', manifest.name, 'package.json'), 'utf8'))
   if (installed.version !== manifest.version) fail(`installed version ${installed.version} is not ${manifest.version}`)
