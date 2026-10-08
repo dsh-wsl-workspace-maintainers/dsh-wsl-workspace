@@ -236,7 +236,7 @@ try {
   const hostModule = m => m.default ?? m
   const sessionName = sessionTool.TOOL_NAME ?? 'bash'
   const hostOneShot = hostModule(await import(
-    pathToFileURL(join('D:/MyProject/dsh-wsl-workspace', 'ci', 'deps', 'node_modules', '@deepseek-ai', 'dsh-tool-bash', 'lib', 'index.js')).href,
+    pathToFileURL(join(repoRoot, 'ci', 'deps', 'node_modules', '@deepseek-ai', 'dsh-tool-bash', 'lib', 'index.js')).href,
   ))
   const isSession = tool?.name !== undefined || sessionName === 'bash'
   rows.push({
