@@ -37,6 +37,28 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const SHELL_EXECUTOR = join(repoRoot, 'lib', 'shell.js')
 const DISTRO = process.env.DSH_WSL_DISTRO ?? 'Ubuntu'
 
+/**
+ * A promise that is not allowed to hang the gate.
+ *
+ * The executor's API takes no abort signal, so a shell that never answers takes the whole job with
+ * it. That is not hypothetical: run #151 sat `in_progress` for eight hours on a job whose
+ * `timeout-minutes: 35` never fired, and the one thing a gate can promise about such a run is that it
+ * does not add a second way to wait for ever. The race bounds the wait; it cannot cancel the work
+ * underneath, which is why the timer is `unref`'d and the probe still exits explicitly at the end.
+ * @param promise - the work to bound.
+ * @param ms - how long it may take.
+ * @param label - what to name if the budget runs out.
+ * @returns the promise's value, or a rejection naming the budget.
+ */
+const within = (promise, ms, label) => {
+  let timer
+  const budget = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} did not answer within ${ms}ms`)), ms)
+    timer.unref?.()
+  })
+  return Promise.race([promise, budget]).finally(() => clearTimeout(timer))
+}
+
 const report = (rows, verdict) => {
   console.log(JSON.stringify({ verdict, distro: DISTRO, rows }, null, 2))
   const failed = rows.filter(row => row.ok === false)
@@ -99,8 +121,8 @@ try {
   const MARKER = 'W51PROBE5b2e77'
   try {
     const request = executor.resolve({ command: `sh -c "echo ${MARKER}"` })
-    const process_ = await executor.execute(request)
-    const result = await process_.result()
+    const process_ = await within(executor.execute(request), 60_000, 'executor.execute')
+    const result = await within(process_.result(), 30_000, 'ShellRunResult.result')
     // `ShellRunResult.stdout` is a `CollectedOutput`, not a string — coercing it with `String()`
     // yields `[object Object]`, which is how a probe reports "no marker" about output that arrived.
     // Read the field the interface actually declares, and print the whole object when the shape is

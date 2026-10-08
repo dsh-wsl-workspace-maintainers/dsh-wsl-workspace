@@ -211,7 +211,7 @@ try {
         command: 'printf "UNAME=%s\nHOME_IS_ROOT=%s\n" "$(uname -s)" "$( [ -f /etc/lsb-release ] && echo yes || echo no )"; cat /proc/sys/kernel/ostype 2>/dev/null',
         description: 'census: provenance',
       },
-      { signal: new AbortController().signal },
+      { signal: AbortSignal.timeout(60_000) },
     )
     const text = JSON.stringify(probe ?? '')
     const inWsl = text.includes('Linux') && text.includes('HOME_IS_ROOT')
