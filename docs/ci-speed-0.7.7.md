@@ -32,6 +32,20 @@ Inside one WSL1 job (448 s):
 Inside the gates step (276 s of measured group spans): `bash-session-real` **215 s**, `relay-real`
 **30 s**, every other gate ≤ 4 s. The same two drivers on WSL2: 48 s and 30 s.
 
+### 1b. The same four jobs after §2 and §3 (frame **#172**, `af71802`, success)
+
+| | WSL1 src | WSL1 lib | WSL2 src | WSL2 lib | run wall | billed |
+|---|---|---|---|---|---|---|
+| #169 before | 448 s | 444 s | 331 s | 318 s | 474 s | 1,612 s |
+| #172 after | **377 s** | **369 s** | 299 s | 347 s | **407 s** | 1,471 s |
+| gates step | 286 → **224 s** | 275 → **216 s** | 122 → 122 s | 116 → 114 s | | |
+
+The WSL2 columns are the control this change did not need to ask for: where the kernel gives the tool
+something to act on, the gate step did **not** move (122 s → 122 s, 116 s → 114 s), which is what
+"only the non-acting arm asked a shorter deadline" predicts. The WSL2 lib job's 318 → 347 s is not the
+gates — it is provisioning and the steps around them; §3's per-gate line is what makes that separation
+free instead of something a later reader has to reconstruct.
+
 ## 2. The one finding worth acting on, and its size
 
 `bash-session-real` prints a millisecond reading for its keyboard-wait cells. On the WSL1 frame five
@@ -55,19 +69,27 @@ file (`a waiting command inside a wrapper`, `a rebuild triggered by a terminal w
 not to be over 8 s in this frame. The one 20 s cell that *does* decide `canAct` (`starved`) is left
 alone, because it is the call that discovers which arm the run is on.
 
-Expected on the critical path: **−36 s per WSL1 job** (286 s → ~250 s, run 474 s → ~438 s). It is a
-wall-clock change, not a cost change: both WSL1 jobs keep running in parallel, so nothing gets cheaper
-per unit except the 72 s of windows time the two jobs stop burning.
+Predicted here before the frame: **−36 s per WSL1 job**, from the three tabled cells alone. Measured on
+#172 (§1b): **−62 s** on WSL1 src (286 → 224 s) and **−59 s** on WSL1 lib (275 → 216 s) — the two
+further-down cells did burn seconds after all, just not enough to clear 8 s individually in #169, which
+is why the arithmetic under-called it. Run wall 474 → **407 s**, billed 1,612 → 1,471 s. The shape of
+the saving is unchanged: it is wall-clock relief on the critical path, and 121 s of windows time per
+frame, not a cheaper unit of work.
 
 **How this is verified:** the non-acting arm cannot be exercised on a machine whose `/proc` answers —
-so the WSL1 job on this PR's own frame *is* the experiment. The acting arm was re-run locally
-(`bash-session-real`, plane=src, Ubuntu/WSL2): **73/73**, unchanged.
+so the WSL1 job on this PR's own frame *is* the experiment, and #172 is green with the five cells'
+assertions intact. The acting arm was re-run locally (`bash-session-real`, both planes, Ubuntu/WSL2):
+**73/73 and 73/73**, unchanged — and the WSL2 gate step not moving (122 s → 122 s) is the same fact
+reported by a runner rather than by a laptop.
 
 ## 3. The gate step now says who took the time
 
 `run_one` in `ci.yml` printed `rc=` and the gate's verdict lines but no elapsed, so §1's numbers cost
 downloading four log artifacts and parsing their JSON readings. Each gate now prints
-`elapsed=Ns` next to its rc. Costs nothing, and the next analysis of this lane reads one step log.
+`elapsed=Ns` next to its rc — and it paid for itself on the very next frame: #172's WSL1 src step
+attributes itself to one line, `elapsed=153s` on `bash-session-real` and `elapsed=31s` on
+`relay-real`, with everything else ≤ 4 s. The next analysis of this lane reads one step log instead of
+four artifacts.
 
 ## 4. Options measured but not taken, with their price
 
@@ -77,7 +99,7 @@ downloading four log artifacts and parsing their JSON readings. Each gate now pr
 | Cache `ci/deps` (the 521 host packages) | ~10–15 s per job, 4 jobs | The step is 17 s with `npm ci` from a warm `~/.npm`; the cache key must cover `ci/pinned-deps.json` too or it goes stale exactly when pins move — the failure §6.3 of the slimming analysis measured. Worth doing as its own change with the pins↔lock assertion in the same commit |
 | Start the lanes without `needs: lint-build` | −18 s of wall | That 18 s is the cheap gate that stops the four windows jobs from running at all when the committed `lib/` is not what HEAD says. Trading 3.8% of wall for ~25 minutes of windows time per bad frame is a bad exchange |
 | Reuse the distro listing in *pin the distro…* (it runs `wsl -l -v` twice) | ~10–15 s, but only on the WSL2 jobs | Not the critical path (WSL2 is 331 s vs 448 s); do it when touching that step for another reason |
-| `relay-real`, 30 s on both planes | unknown | Not attributed yet — after §3 it will be, since the step prints its own elapsed and the driver's phases are the next thing to time. Guessing at a driver that boots two PTY relays is how you end up cutting a real wait |
+| `relay-real`, now the second-largest gate: 31 s on WSL1 and 30 s on WSL2 (#172's own `elapsed=` line) | unknown — 124 s of billed time per frame, but it is not the critical path | **Attributed to the driver, not through it.** §3 tells us the driver costs 31 s; it does not say which of its phases does, and the driver boots two PTY relays through a 9P share whose first touch is a mount. The next change here is a phase reading inside `relay-real`, and only after that a number to move. Guessing at a wait is how you cut the one that was load-bearing |
 | Cut cells from `bash-session-real` (73 checks, ~1.7 s of real spawn each) | seconds per check | That is coverage, and this repository's ruling is that coverage is not trimmed to make a frame faster |
 
 ## 5. Standing claim this file keeps honest
@@ -86,5 +108,7 @@ The four windows jobs exist because two kernel shapes answer the keyboard-wait q
 because `lib/` is what ships. §2 shortens the waiting **only** where the wait was not the claim; the
 cell that must still wait a long deadline to prove it (`a longer deadline does not buy a keyboard wait
 back`) keeps its 8 s ask on that branch and its 60 s ask where the tool can act. If a future frame shows
-one of the four changed cells red on WSL1 with `timedOut !== true`, that is the change being wrong, not
-the runner being flaky.
+one of the five changed cells red on WSL1 with `timedOut !== true`, that is the change being wrong, not
+the runner being flaky. **Frame #172 tested that sentence and did not trigger it**: green on both WSL1
+planes, with the same cells still reporting a timeout at the deadline they were handed and a witness
+clause in the body.
