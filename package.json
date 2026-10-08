@@ -35,7 +35,8 @@
     "prepack": "npm run build",
     "prepublishOnly": "node scripts/verify-install.mjs && node scripts/verify-lib-sync.mjs",
     "test:docs-claims": "node --experimental-strip-types scripts/run-docs-claims.mjs",
-    "test:host-probe": "node tests/support/w51-probe.mjs"
+    "test:host-probe": "node tests/support/w51-probe.mjs",
+    "test:command-census": "node tests/support/w51-command-census.mjs"
   },
   "exports": {
     ".": "./lib/index.js",
