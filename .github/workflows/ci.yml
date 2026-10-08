@@ -11,7 +11,16 @@ permissions:
   contents: read
 
 concurrency:
-  group: checks-${{ github.ref }}
+  # One group per **branch**, not per ref. A push carries `refs/heads/<branch>` and a pull_request
+  # carries `refs/pull/<n>/merge`, so grouping on `github.ref` put the two events in different groups
+  # and every push ran the whole workflow twice — eight WSL jobs where four were meant, on runners that
+  # were already saturated. The duplicated run is also the one that stalls: runs #151/#153 sat with
+  # jobs `in_progress` and no output while their twin (#152/#154, same content) finished in 7 min 48 s.
+  #
+  # `head_ref` is the source branch on a pull_request and empty on a push; `ref_name` is the branch
+  # name on a push. Either way both events land on the same key, so the second one cancels the first
+  # and a push reports exactly one run.
+  group: checks-${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
