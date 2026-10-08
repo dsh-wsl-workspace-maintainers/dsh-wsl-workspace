@@ -25,20 +25,15 @@
 
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
+// `@deepseek-ai/dsh-launch-environment` is a peer of `dsh-app-boot`, so it belongs in
+// `ci/pinned-deps.json` — that is what makes `ci/install-pinned.mjs` install it into `ci/deps` and
+// link it into the repo root. Before it was pinned, a bare import resolved on the maintainer junction
+// and nowhere else, which is why this file briefly carried a path import instead.
+import { createLaunchEnvironmentSnapshot } from '@deepseek-ai/dsh-launch-environment'
 import { runProfile } from '@deepseek-ai/dsh/profile-boot'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
-
-// `@deepseek-ai/dsh-launch-environment` is deliberately absent from `ci/pinned-deps.json`, so
-// `ci/install-pinned.mjs` never links it into the repo root and a bare import resolves only where
-// someone has hand-copied it — the runner proved it with `Cannot find package … imported from
-// tests\support\w51-probe.mjs`. Load it by path from the tree it actually lives in, relative to this
-// file: this module once carried an absolute path to one machine's checkout and could not run anywhere
-// else, which is the same failure wearing a different hat.
-const LAUNCH_ENVIRONMENT = pathToFileURL(join(repoRoot, 'ci', 'deps', 'node_modules',
-  '@deepseek-ai', 'dsh-launch-environment', 'lib', 'index.js')).href
-const { createLaunchEnvironmentSnapshot } = await import(LAUNCH_ENVIRONMENT)
 const SHELL_EXECUTOR = join(repoRoot, 'lib', 'shell.js')
 const DISTRO = process.env.DSH_WSL_DISTRO ?? 'Ubuntu'
 
