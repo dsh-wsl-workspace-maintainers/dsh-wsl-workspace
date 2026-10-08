@@ -38,10 +38,18 @@ Inside the gates step (276 s of measured group spans): `bash-session-real` **215
 |---|---|---|---|---|---|---|
 | #169 before | 448 s | 444 s | 331 s | 318 s | 474 s | 1,612 s |
 | #172 after | **377 s** | **369 s** | 299 s | 347 s | **407 s** | 1,471 s |
+| #174 repeat (docs-only, `9c2bff0`) | 365 s | 372 s | 296 s | 465 s | 490 s | 1,566 s |
 | gates step | 286 → **224 s** | 275 → **216 s** | 122 → 122 s | 116 → 114 s | | |
 
+Two frames of the same code, so the two claims separate cleanly. **The WSL1 jobs are steady**: 377/369 s
+then 365/372 s, a 12 s spread, and that is the claim this branch makes — §2's per-cell numbers come from
+the step log, not from a job total. **The run wall is not**: 407 s then 490 s, because `wall = max(jobs)`
+and the WSL2 lib job drifted 347 → 465 s on the steps *around* the gates. So the sentence to carry forward
+is "−62 s on each WSL1 gate step", not "−67 s of wall"; the second is one frame's arithmetic and the third
+frame says it does not reproduce.
+
 The WSL2 columns are the control this change did not need to ask for: where the kernel gives the tool
-something to act on, the gate step did **not** move (122 s → 122 s, 116 s → 114 s), which is what
+something to act on, the gate step did **not** move (122 s → 122 s, 116 → 114 s), which is what
 "only the non-acting arm asked a shorter deadline" predicts. The WSL2 lib job's 318 → 347 s is not the
 gates — it is provisioning and the steps around them; §3's per-gate line is what makes that separation
 free instead of something a later reader has to reconstruct.
@@ -72,9 +80,10 @@ alone, because it is the call that discovers which arm the run is on.
 Predicted here before the frame: **−36 s per WSL1 job**, from the three tabled cells alone. Measured on
 #172 (§1b): **−62 s** on WSL1 src (286 → 224 s) and **−59 s** on WSL1 lib (275 → 216 s) — the two
 further-down cells did burn seconds after all, just not enough to clear 8 s individually in #169, which
-is why the arithmetic under-called it. Run wall 474 → **407 s**, billed 1,612 → 1,471 s. The shape of
-the saving is unchanged: it is wall-clock relief on the critical path, and 121 s of windows time per
-frame, not a cheaper unit of work.
+is why the arithmetic under-called it. Run wall 474 → **407 s**, billed 1,612 → 1,471 s — with the second
+frame of the same code (#174, §1b) showing that the wall number does not reproduce (407 → 490 s, on a
+WSL2 job that drifted), while the two WSL1 jobs and their gate steps do. The shape of the saving is
+unchanged: it is relief on the WSL1 arm, and 121 s of windows time per frame, not a cheaper unit of work.
 
 **How this is verified:** the non-acting arm cannot be exercised on a machine whose `/proc` answers —
 so the WSL1 job on this PR's own frame *is* the experiment, and #172 is green with the five cells'
