@@ -9,6 +9,8 @@ replaced it.
 | Path | Language | What it is | Status |
 |---|---|---|---|
 | [design.zh.md](./design.zh.md) | zh | Design decisions and round-by-round history (M1 → fifth round) | Background; two claims it makes were reversed later — see its header |
+| [standards.zh.md](./standards.zh.md) | zh | **提交之前必须成立的硬规则**（S1–S8）：假绿的三种形态、`node --check` 的边界、还债必须同提交改账本、`lib/` 与 `src/` 同步、类型基线、推送前的检查清单。每条都对应本项目真实发生过、且本可本地拦下的失败 | Active; read this before committing |
+| [lessons.zh.md](./lessons.zh.md) | zh | **按 tag 取用的经验库**：13 个 tag（假绿、运行时引用、账本、CI 红循环、CI 延迟、真机强度分级、本机环境、协作…）。顶部有索引表，`grep '<tag>'` 定位后**只读那一节** | Active; read on demand |
 | [CHECK-CATALOG.md](./CHECK-CATALOG.md) | en | The single inventory of every test, gate and manual pass: command, prerequisites, CI home, and what still needs a human | Active — added by #41, and it lists this index's own gate in bucket A |
 | [compatibility-evidence.md](./compatibility-evidence.md) | en | Per-release verification evidence, appended run by run | Active |
 | [tty-triage.md](./tty-triage.md) | en | Triage sheet for `bash` calls: which symptom belongs to the pipe, to the pseudo-terminal, or to the host's PTY tier, with the one re-run that settles each | Active — every line it names is asserted by a cell in `scripts/compatibility/bash-session-real.mjs` |
