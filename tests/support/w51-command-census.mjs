@@ -30,7 +30,7 @@
 
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 // `@deepseek-ai/dsh-launch-environment` is a peer of `dsh-app-boot`, so it belongs in
 // `ci/pinned-deps.json` — that is what makes `ci/install-pinned.mjs` install it into `ci/deps` and
 // link it into the repo root. Before it was pinned, a bare import resolved on the maintainer junction
