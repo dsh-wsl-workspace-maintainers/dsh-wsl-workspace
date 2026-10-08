@@ -172,7 +172,12 @@ for (const probe of probes) {
   const differs = JSON.stringify(theirs.signature) !== JSON.stringify(ours.signature)
   const row = probe.row === undefined ? undefined : rows.find(entry => entry.id === probe.row)
   const aligned = row !== undefined && /^aligned/.test(row.verdict)
+  // The spill poll's verdict rides on the detail. It is what distinguishes "the two worlds really
+  // disagree" from "the file was still being written when this cell read it", which is the difference
+  // between a product defect and a measurement taken too early — and the two look identical in the
+  // signature alone. Only the lines that print a detail carry it, so a green cell stays quiet.
   const detail = `${JSON.stringify(theirs.signature)} vs ${JSON.stringify(ours.signature)}`
+    + ` — spill: host ${describeSpill(theirs.spill)}, session ${describeSpill(ours.spill)}`
   if (differs && row === undefined) {
     check(`${probe.name}: every difference is declared`, false, `undocumented: ${detail} — add a row to docs/bash-parity.md and name it in this probe`)
   } else if (differs && aligned) {
@@ -191,35 +196,78 @@ async function ask(world, probe) {
   try {
     const value = await world.tool.execute(args, { signal: AbortSignal.timeout(90_000), agent: world.owner })
     // A spill file is the subprocess's own handle to close, and the tool's answer does not wait for
-    // its last write. On the lib plane of the WSL frame this cell counted 197,852 lines for
-    // `seq 1 200000` — the file was still growing when it was read. Wait for the size to hold still,
-    // and keep the whole-stream promise as the assertion.
-    await settleSpill(value?.stdout?.spillPath)
+    // its last write — the file goes on growing for a moment after `execute` resolves. Wait for the
+    // size to hold still, keep the whole-stream promise as the assertion, and carry the poll's own
+    // verdict out so a failure can say whether the file had finished when it was read.
+    const spill = await settleSpill(value?.stdout?.spillPath)
     const rendered = (world.tool.output?.render?.(args, value) ?? []).map(part => String(part?.text ?? '')).join('')
-    return { signature: signature(value, rendered, probe.normalize) }
+    return { signature: signature(value, rendered, probe.normalize), spill }
   } catch (error) {
-    return { signature: { kind: 'threw', error: String(error?.message ?? error).slice(0, 60) } }
+    return { signature: { kind: 'threw', error: String(error?.message ?? error).slice(0, 60) }, spill: undefined }
   }
 }
 
 /**
  * Read a spill file only once it has stopped growing.
+ *
+ * The tool's answer does not wait for the spill's last write — the file belongs to the subprocess and
+ * goes on growing for a moment after `execute` resolves — so the cell waits for the size to hold still.
+ *
+ * **One equal pair is not stability.** The first version returned as soon as two samples 100 ms apart
+ * matched, and a single delayed write satisfies that: on the WSL1 frame this cell has now read a file
+ * that was still being written at least twice (`seq 1 200000` counted as 197,852 and again as 193,756
+ * lines) and each time reported it as a product difference. A run of equal samples costs 150 ms on a
+ * settled file and cannot be fooled by one stall.
+ *
+ * **And a file that never settles is named as such.** The caller gets `settled: false` rather than a
+ * plausible number, so a failure message can say which side it is on instead of printing "the two
+ * worlds disagree" about a file that nobody had finished writing.
  * @param path - the spill path the tool reported, when there was one.
+ * @returns whether the size held still, the last size seen, and how many samples were taken.
  */
 async function settleSpill(path) {
-  if (typeof path !== 'string' || path === '') return
+  if (typeof path !== 'string' || path === '') return { settled: true, size: 0n, samples: 0 }
+  // 4 samples 50 ms apart: the size has to stand still for 150 ms, not merely match once.
+  const STABLE_SAMPLES = 4
+  const INTERVAL_MS = 50
+  const MAX_MS = 5_000
   let previous = -1n
-  for (let attempt = 0; attempt < 30; attempt += 1) {
-    let size = 0n
+  let equal = 0
+  let size = 0n
+  let samples = 0
+  const until = Date.now() + MAX_MS
+  while (Date.now() < until) {
     try {
       size = statSync(path).size
     } catch {
-      return
+      // No file to read is the tool's own answer — a spill that failed to open reports no path — so
+      // there is nothing to wait for.
+      return { settled: true, size: 0n, samples }
     }
-    if (size === previous) return
-    previous = size
-    await new Promise(resolve => setTimeout(resolve, 100))
+    samples += 1
+    if (size === previous) {
+      equal += 1
+      if (equal >= STABLE_SAMPLES) return { settled: true, size, samples }
+    } else {
+      equal = 0
+      previous = size
+    }
+    await new Promise(resolve => setTimeout(resolve, INTERVAL_MS))
   }
+  return { settled: false, size, samples }
+}
+
+/**
+ * Say what the spill poll saw, for a failure message.
+ * @param spill - what `settleSpill` returned, when it ran.
+ * @returns a short phrase naming whether the file stopped growing.
+ */
+function describeSpill(spill) {
+  if (spill === undefined) return 'not read'
+  if (spill.samples === 0) return 'no file to read'
+  return spill.settled
+    ? `${spill.size} bytes after ${spill.samples} sample(s)`
+    : `STILL GROWING at ${spill.size} bytes when the 5 s budget ran out (${spill.samples} samples)`
 }
 
 const passed = results.filter(Boolean).length
