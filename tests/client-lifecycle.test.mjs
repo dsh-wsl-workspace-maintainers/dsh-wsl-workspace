@@ -501,6 +501,12 @@ test('the dialog names the failed variant and the host\'s own reason', async () 
   assert.ok(message.includes('wsl-code'), `the message must name the variant, got: ${message}`);
   assert.ok(message.includes('Cannot find module \'js-yaml\''),
     `the message must carry the host's reason verbatim, got: ${message}`);
+  // The `n/m` count, from the host's own tally (`partialOutcome` publishes 5 of 6 sources). Asserted
+  // on the numbers rather than on the key, because the numbers are the fact: the fixture's `t` is the
+  // identity, so the key alone would come back as its own name and would pass even if the client
+  // printed a placeholder.
+  assert.ok(message.includes('5/6'),
+    `the message must carry the host's published count, got: ${message}`);
   // Neither the sentence this case exists to replace, nor a bare key: both
   // would leave the user with the variant and the reason still unknown.
   assert.notEqual(message, 'error.presetMissing');
@@ -551,6 +557,38 @@ test('a host without the outcome still answers from the roster, as before', asyn
     assert.equal(await f.dialog.checkPreset(), undefined);
     f.dispose();
   }
+});
+
+test('a host-marked-broken variant reports its own reason when nothing healthy is left', async () => {
+  // Issue #52's second criterion, in the only state where it is reachable — and the state the old
+  // client answered with the generic sentence. Layer 2 says one healthy `wsl-*` settles the question,
+  // so a broken entry BESIDE a working one is deliberately silent (asserted above). The reason is
+  // shown when there is nothing healthy to fall back on, which is what this pins: the roster's own
+  // `broken` string, verbatim, instead of `error.presetMissing`.
+  //
+  // No outcome either, on purpose. This is the arm that reads the roster rather than the host's
+  // generation record, and it has to work on a host that predates `variantStatus` — which is exactly
+  // the host where the roster is all there is. The case above exercises that arm's silent verdict;
+  // this one exercises its speaking one, which no other case reaches.
+  const f = fixture({
+    legacy: false,
+    roster: [
+      { id: 'standard', isDefault: true },
+      { id: 'wsl-code', broken: 'preset file is not readable' },
+    ],
+    variantStatus: 'absent',
+  });
+  await flush();
+  const message = await f.dialog.checkPreset();
+  assert.equal(typeof message, 'string');
+  assert.ok(message.includes('wsl-code'), `the message must name the variant, got: ${message}`);
+  assert.ok(message.includes('preset file is not readable'),
+    `the message must carry the roster's own reason, got: ${message}`);
+  // Neither the sentence this arm exists to replace nor a bare key, for the same reason as the
+  // outcome arm: both would leave the user with the variant and the reason still unknown.
+  assert.notEqual(message, 'error.presetMissing');
+  assert.notEqual(message, 'error.presetBroken');
+  f.dispose();
 });
 
 test('an outcome older than one already read is not shown', async () => {

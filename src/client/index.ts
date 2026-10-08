@@ -239,10 +239,22 @@ export function apply(ctx: ClientContext): void {
    * the user cannot see anywhere else.
    * @param failed - the host's per-variant failures, already capped host-side.
    * @param truncated - how many failures the host's own cap dropped.
+   * @param count - the host's own tally, when this boot has one. Omitted on the roster path: see
+   *   below for why a number derived from the roster would not be the same number.
    * @returns one message naming every failed variant and its cause.
    */
-  const brokenMessage = (failed: { id: string; reason: string }[], truncated: number): string => {
+  const brokenMessage = (
+    failed: { id: string; reason: string }[],
+    truncated: number,
+    count?: { produced: number; sources: number },
+  ): string => {
     const lines = [t('error.presetBroken')]
+    // The `n/m` count, and **only when the host gave one**. The roster path has no generation record,
+    // and deriving a number from the roster would be a different quantity wearing the same shape:
+    // "did not publish" and "has no roster entry" are not the same set, because a variant that failed
+    // to generate never gets an entry at all. So a host that predates `variantStatus` shows the
+    // failures without a denominator rather than a plausible wrong one.
+    if (count !== undefined) lines.push(`${t('error.presetBrokenCount')}${count.produced}/${count.sources}`)
     for (const failure of failed) {
       lines.push(`${t('error.presetBrokenOne')}${failure.id}：${failure.reason}`)
     }
@@ -300,6 +312,9 @@ export function apply(ctx: ClientContext): void {
         : variants
           .filter((entry: { broken?: string }) => entry.broken !== undefined)
           .map((entry: { id: string; broken?: string }) => ({ id: entry.id, reason: entry.broken as string }))
+      // No count on this arm, and that is not an oversight: the roster says which entries exist, not
+      // how many sources the boot had, so any `n/m` here would be the roster's own arithmetic wearing
+      // the host's vocabulary. The failures are still named.
       if (rosterFailures.length > 0) return brokenMessage(rosterFailures, 0)
       if (outcome !== undefined && (outcome.state === 'partial' || outcome.state === 'failed')) {
         // A boot-level failure has no per-variant attribution, so its own cause
@@ -307,7 +322,7 @@ export function apply(ctx: ClientContext): void {
         const failed = outcome.failed.length > 0
           ? outcome.failed
           : outcome.error !== undefined ? [{ id: 'wsl-*', reason: outcome.error }] : []
-        if (failed.length > 0) return brokenMessage(failed, outcome.truncated)
+        if (failed.length > 0) return brokenMessage(failed, outcome.truncated, outcome)
       }
       return t('error.presetMissing')
     },
