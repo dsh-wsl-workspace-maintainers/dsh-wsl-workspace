@@ -229,24 +229,26 @@ try {
     })
   }
 
-  // Identity by the module's own `TOOL_NAME`, not by guessing from shape: the session tool
-  // **replaces** `bash` in the registry, so the name the registry answers to is the same either way
-  // and cannot tell the two apart. Getting this wrong measures the host's one-shot bash and every row
-  // below becomes a statement about the wrong shell — which is exactly what the first attempt did.
-  const hostModule = m => m.default ?? m
-  const sessionName = sessionTool.TOOL_NAME ?? 'bash'
-  const hostOneShot = hostModule(await import(
-    pathToFileURL(join('D:/MyProject/dsh-wsl-workspace', 'ci', 'deps', 'node_modules', '@deepseek-ai', 'dsh-tool-bash', 'lib', 'index.js')).href,
-  ))
-  const isSession = tool?.name !== undefined || sessionName === 'bash'
+  // Identity by **what the descriptor says it is**, not by the name it answers to. The session tool
+  // replaces `bash`, so the registry's name is identical either way and cannot tell the two apart.
+  //
+  // The first version of this row compared the session module's own `TOOL_NAME` against `'bash'` —
+  // which is that constant's own fallback value, so the comparison was true by construction and the
+  // row proved nothing while reporting green. A row that cannot fail is worse than no row, because it
+  // is counted as coverage. The descriptor is what actually distinguishes them: the session's
+  // `description` opens by naming the distribution and the shell's persistence, and the host's
+  // one-shot bash does not. (Measured on this machine without a distribution: `ctx.tools.get('bash')`
+  // exposes `name`, `description`, `parameters`, `output`, `execute`, `presentCall` — mounting needs
+  // no shell, only executing does.)
+  const registryDescription = typeof tool?.description === 'string' ? tool.description : ''
+  const isSession = /WSL distribution/i.test(registryDescription) && /persistent/i.test(registryDescription)
   rows.push({
     shape: 'WHICH SHELL ANSWERED',
     name: 'the registry entry under test',
     ok: isSession,
     ms: 0,
-    evidence: `session module declares TOOL_NAME=${JSON.stringify(sessionName)}; `
-      + `the host's one-shot bash is named ${JSON.stringify(hostOneShot.name ?? '(unnamed)')}; `
-      + `the registry answered ${JSON.stringify(tool?.name ?? '(no name)')}`,
+    evidence: `the registry answered ${JSON.stringify(tool?.name ?? '(no name)')}, describing itself as `
+      + `${JSON.stringify(registryDescription.slice(0, 110) || '(no description)')}`,
   })
 
 

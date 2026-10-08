@@ -271,6 +271,42 @@ jobs:
           # rather than falling back to src. Adding the entry changes what users install, so it
           # is a maintainer decision, not a night-run side effect.
           exit $FAIL
+      - name: boot a real host and reach WSL through its own registry
+        # The product's **own** loader, booted, and then WSL reached through the registry the host hands
+        # a model. That is the closest this repository gets to opening the app and typing the command:
+        # same `runProfile`, same plugin, same tool descriptor, same `wsl.exe`, and the model's own call
+        # shape rather than a hand-built one.
+        #
+        # These two probes were written for issue #51 and have been **manual-only ever since** —
+        # `test:host-probe` and `test:command-census` are defined in `package.json` and referenced by no
+        # workflow — so until this step the only tests here that boot a real host were the two nobody
+        # ran. The gate tiers next door mount a hand-built cordis world; this one boots the loader.
+        #
+        # Both run at once. Neither asserts a timing bound — elapsed milliseconds are *reported* as
+        # evidence and every assertion is on a string — and each owns its own `DSH_HOME`, so overlap can
+        # slow a reading but cannot change a verdict. Measured together on this machine at ~15 s against
+        # this job's 283 s of gates, which makes the parallelism insurance rather than a rescue: neither
+        # probe's cost can grow into the other's budget.
+        #
+        # On the `lib` plane because that is the artifact this job exists to exercise: the probes load
+        # `lib/wsl-bash-tool.js` and `lib/shell.js`.
+        if: matrix.plane == 'lib'
+        run: |
+          mkdir -p logs
+          FAIL=0
+          DSH_WSL_DISTRO=Ubuntu-24.04 npm run test:host-probe > logs/host-probe.log 2>&1 &
+          PROBE=$!
+          DSH_WSL_DISTRO=Ubuntu-24.04 npm run test:command-census > logs/command-census.log 2>&1 &
+          CENSUS=$!
+          wait "$PROBE" || FAIL=1
+          wait "$CENSUS" || FAIL=1
+          for name in host-probe command-census; do
+            echo "::group::$name"
+            grep -aE '"verdict"|"(ok|shape|name|evidence)"|^FAIL' "logs/$name.log" | head -40 || true
+            tail -5 "logs/$name.log" || true
+            echo "::endgroup::"
+          done
+          exit $FAIL
       - name: every gate must say which plane it loaded (src)
         # `always()` so that a red gate still gets its attribution check, and the matrix condition on
         # top because this job only produced one plane's logs — asking for the other's would fail on a
