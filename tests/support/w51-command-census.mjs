@@ -79,8 +79,12 @@ const CENSUS = [
   {
     shape: 'a real tool reading many files',
     name: 'grep -rn across a tree (what grep/glob do)',
-    command: 'mkdir -p /tmp/w51c && printf "alpha 1\\nbeta 2\\n" > /tmp/w51c/a.txt && printf "alpha 3\\n" > /tmp/w51c/b.txt && grep -rn alpha /tmp/w51c | wc -l',
-    want: ['2'],
+    // `mktemp -d`, not `/tmp/w51c`: a fixed path is a fixture a *previous* run can leave behind, and
+    // then the row answers with someone else's bytes. Measured the hard way on 2026-10-09 — a root-owned
+    // `/tmp/w51c` from an earlier gate run made a later unprivileged run print `2` (the stale count) next
+    // to `Permission denied` on its own write, and the row passed on evidence it had not produced.
+    command: 'D=$(mktemp -d) && printf "alpha 1\\nbeta 2\\n" > $D/a.txt && printf "alpha 3\\n" > $D/b.txt && echo "HITS=$(grep -rn alpha $D | wc -l)"',
+    want: ['HITS=2'],
   },
   {
     shape: 'binary output must not be mangled',
@@ -113,7 +117,7 @@ const CENSUS = [
   {
     shape: 'a process that outlives the call',
     name: 'background job, then read its output',
-    command: '(sleep 0.2; echo BG_DONE_$(( 6 * 8 ))) > /tmp/w51c_bg.txt; sleep 1; cat /tmp/w51c_bg.txt',
+    command: 'F=$(mktemp); (sleep 0.2; echo BG_DONE_$(( 6 * 8 ))) > $F; sleep 1; cat $F; rm -f $F',
     want: ['BG_DONE_48'],
   },
   {
@@ -127,6 +131,36 @@ const CENSUS = [
     name: 'a non-zero exit mid-pipeline must not swallow it',
     command: 'set -o pipefail; (exit 3) | cat; echo "CODE=$?"',
     want: ['CODE=3'],
+  },
+  {
+    // The three rows below are one story, and they have to run in order: a command can end the
+    // persistent shell the way a person typing `exit` ends their own terminal, and that is neither a
+    // cancelled call nor a crash. Measured on the installed 0.7.7 build (real host, real model-shaped
+    // calls, 2026-10-09): `echo out; echo err >&2; exit 3` came back as `Error: tool call aborted`
+    // with **neither** stream, and the fact that the shell had been rebuilt surfaced on the *next*
+    // call, where it reads as that call's own event. A model cannot act on that answer: it looks like
+    // the user pressed stop, so it stops, or retries the same line and ends the shell again.
+    shape: 'work staged before the shell is ended',
+    name: 'a directory and an export made before the exit',
+    command: 'cd /tmp && export W51_EXIT_STAGE=kept && echo STAGED',
+    want: ['STAGED'],
+  },
+  {
+    shape: 'a command that ends the session shell',
+    name: 'bare `exit 3` answers with its own streams and says what it did',
+    command: 'echo out; echo err >&2; exit 3',
+    // The three together are the claim: both streams came back, and the answer says the shell ended.
+    // `[stderr]` is not one of them — that separator is the renderer's, and this row judges the tool's
+    // own return value, where the two streams are separate fields (measured: a row asking for it failed
+    // on a build that was answering correctly).
+    wantAll: ['out', 'err', 'ended the session shell'],
+    note: 'the streams AND the disclosure; an answer with one of the two is the defect',
+  },
+  {
+    shape: 'the shell still works after a call ended it',
+    name: 'the replayed state is the one the exit left behind',
+    command: 'pwd; echo SENT=$W51_EXIT_STAGE',
+    wantAll: ['/tmp', 'SENT=kept'],
   },
   {
     // The product's **own** timeout, passed as the argument a model would pass. The first attempt
@@ -282,14 +316,20 @@ try {
     // The whole answer, text and all, because where the evidence sits in it is the point: a row
     // that produced its marker only in the stderr channel passed for the wrong reason.
     const text = failure ?? JSON.stringify(answer ?? '')
-    const found = row.want.some(needle => text.includes(needle))
+    // `want` is any-of: the row passed if the evidence appeared somewhere. `wantAll` is the other
+    // claim — a row whose answer must carry *several* things at once, because the defect being pinned
+    // is one of them going missing (a bare `exit` answers with its stdout but drops the note saying
+    // the shell ended, or keeps the note and loses the streams).
+    const needles = row.wantAll ?? row.want
+    const found = row.wantAll === undefined ? row.want.some(needle => text.includes(needle))
+      : row.wantAll.every(needle => text.includes(needle))
     const ok = row.expectNegative === true ? found : found
     rows.push({
       shape: row.shape,
       name: row.name,
       ok,
       ms: elapsed,
-      evidence: found ? (row.want.find(needle => text.includes(needle)) ?? '') : text.slice(0, 200),
+      evidence: found ? (needles.find(needle => text.includes(needle)) ?? '') : text.slice(0, 200),
       note: row.note,
     })
     process.stdout.write(`${ok ? 'ok  ' : 'FAIL'}  ${String(elapsed).padStart(6)}ms  ${row.shape}\n`)
