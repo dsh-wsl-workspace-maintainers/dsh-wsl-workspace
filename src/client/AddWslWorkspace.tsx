@@ -320,7 +320,7 @@ export function AddWslWorkspace({ wide, t, describe, checkPreset, listDistros, l
           {error !== null ? (
             <div className="dww-error">
               {error}
-              <button type="button" className="dww-retry" onClick={() => setRetrySeq(sequence => sequence + 1)}>{t('dialog.retry')}</button>
+              <button type="button" className="dww-retry" onClick={() => setRetrySeq((sequence: number) => sequence + 1)}>{t('dialog.retry')}</button>
             </div>
           ) : null}
           <div className="dww-field">
