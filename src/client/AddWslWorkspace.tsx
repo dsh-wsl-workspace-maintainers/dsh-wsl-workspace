@@ -120,12 +120,21 @@ export function AddWslWorkspace({ wide, t, describe, checkPreset, listDistros, l
     }
   }
 
-  useEffect(() => {
-    if (!open) return
-    let cancelled = false
-    setError(null)
+  /**
+   * The whole "open the dialog" pass: preset health, distro list, and the default browse root.
+   *
+   * Extracted from the open effect so **Retry can re-run it** (issue #44 §6, `T8`). It used to be an
+   * inline `useEffect([open])` body, which left Retry with nothing to call but `setError(null)` — the
+   * button cleared the message and the stale answer stayed, so the dialog reported the same failure
+   * it had just been asked to re-check. A Retry that does not retry is worse than no button, because
+   * it looks like the answer was refreshed.
+   *
+   * @param cancelled - reads `true` once the effect that owns this pass has been torn down, so a
+   *   late answer cannot set state on an unmounted dialog.
+   */
+  const runOpenPass = (cancelled: () => boolean): void => {
     // Advisory data for the help panel: never fatal, never blocking the form.
-    void describe().then(value => { if (!cancelled) setSelfDescription(value) }).catch(() => { if (!cancelled) setSelfDescription(null) })
+    void describe().then(value => { if (!cancelled()) setSelfDescription(value) }).catch(() => { if (!cancelled()) setSelfDescription(null) })
     setOpening(true)
     void (async () => {
       let presetIssue: string | undefined
@@ -138,21 +147,42 @@ export function AddWslWorkspace({ wide, t, describe, checkPreset, listDistros, l
       try {
         names = await listDistros()
       } catch {
-        if (cancelled) return
+        if (cancelled()) return
         setOpening(false)
         setError(t('error.loadDistros'))
         return
       }
-      if (cancelled) return
+      if (cancelled()) return
       setDistros(names)
       const first = names[0] ?? ''
       setDistro(first)
       // The default browse root walks from `/`; the input defaults to `/home/`.
       setBrowsing(true)
       setOpening(false)
-      if (presetIssue !== undefined) setError(presetIssue)
+      setError(presetIssue)
       if (first !== '') void refreshBrowse('/', first)
     })()
+  }
+
+  /**
+   * Retry: re-run the open pass, keeping the dialog open. A separate sequence number guards it the
+   * way `browseSeq` guards browsing — a Retry clicked three times must not leave three passes racing
+   * to write the same state, and the last one to answer is not necessarily the last one asked.
+   */
+  const [retrySeq, setRetrySeq] = useState<number>(0)
+  useEffect(() => {
+    if (!open || retrySeq === 0) return
+    let cancelled = false
+    runOpenPass(() => cancelled)
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one pass per retry, against current t.
+  }, [open, retrySeq])
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    setError(null)
+    runOpenPass(() => cancelled)
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- run once per open against current t.
   }, [open])
@@ -290,7 +320,7 @@ export function AddWslWorkspace({ wide, t, describe, checkPreset, listDistros, l
           {error !== null ? (
             <div className="dww-error">
               {error}
-              <button type="button" className="dww-retry" onClick={() => setError(null)}>{t('dialog.retry')}</button>
+              <button type="button" className="dww-retry" onClick={() => setRetrySeq(sequence => sequence + 1)}>{t('dialog.retry')}</button>
             </div>
           ) : null}
           <div className="dww-field">

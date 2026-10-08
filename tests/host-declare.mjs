@@ -19,6 +19,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
+import { resolveRelayNode } from '../src/shared/relay-node.ts'
 
 const require = createRequire(import.meta.url)
 
@@ -235,15 +236,30 @@ if (SESSION_TIER) {
   const doorTool = door.config.find(row => row.id === 'terminal-door-tool')
   assert(doorTool !== undefined && doorTool.name.startsWith('file://'), 'the door tool is a file: URL')
   assert(existsSync(fileURLToPath(doorTool.name)), 'and it points at a real built file')
+  // The one interpreter both branches below compare against, resolved the way the product resolves
+  // it. A fallback would make both assertions below pass for the wrong reason, so it is refused here
+  // rather than surfacing as two confusing mismatches later.
+  const relayNode = await resolveRelayNode()
+  assert(relayNode.fallback === false,
+    `a real node interpreter was found (resolved ${relayNode.path} from ${relayNode.source})`)
   const doorBackend = door.config.find(row => row.id === 'terminal-wsl')
-  assert(doorBackend.config.shellPath === process.execPath.replace(/\\/g, '/'), 'the door\'s interpreter stays a native path')
+  // Assert the interpreter was **resolved**, not that it equals `process.execPath` (issue #44 §4,
+  // `T2`). The old assertion could only pass on the machine that ran it: `process.execPath` is
+  // whatever node happened to launch the test, so on a host where the resolver would legitimately
+  // pick a different node — an Electron build, a `PATH` node, the pinned toolchain under
+  // `ci/deps` — the assertion reports a mismatch that says nothing about whether the declaration is
+  // right. Asking the resolver the same question the declaration asks is the property that holds
+  // everywhere: the world points at the interpreter the plugin would itself pick.
+  assert(doorBackend.config.shellPath === relayNode.path,
+    `the door's interpreter is the one resolveRelayNode() picks (got ${doorBackend.config.shellPath}, resolved ${relayNode.path} from ${relayNode.source})`)
   assert(doorBackend.config.shellArgs[0].endsWith('/lib/wsl-relay.js'), 'the door runs this installation\'s relay')
   assert(!world.config.some(row => row.id === 'persistent-shell'), 'no host PTY group is declared in the session tier')
 } else {
 const shellGroup = world.config.find(row => row.id === 'persistent-shell')
 assert(shellGroup !== undefined, 'the world mounts its own persistent shell')
 const terminal = shellGroup.config.find(row => row.id === 'terminal-wsl')
-assert(terminal.config.shellPath === process.execPath.replace(/\\/g, '/'), 'the interpreter stays a native path')
+assert(terminal.config.shellPath === relayNode.path,
+  `the interpreter is the one resolveRelayNode() picks (got ${terminal.config.shellPath}, resolved ${relayNode.path} from ${relayNode.source})`)
 assert(terminal.config.shellArgs[0].endsWith('/lib/wsl-relay.js'), 'the relay stays a native path')
 assert(!terminal.config.shellArgs[0].startsWith('file://'), 'the relay is not rewritten to a file: URL')
 assert(terminal.config.backendType === 'wsl', 'the persistent shell uses the WSL backend')

@@ -38,29 +38,62 @@ function errorMessage(value: unknown): string {
 }
 
 /**
+ * How long one call may take before it is abandoned.
+ *
+ * Without a ceiling a request that never settles is indistinguishable from a slow one, and the
+ * dialog's Retry button is the only way out — a user who opened the Add-workspace dialog on a host
+ * that is not answering has to click it to learn nothing. 30s is far above any measured local call
+ * (the slowest, a `describe` that boots a profile, is well under 2 s) and far below the point where a
+ * spinner becomes indistinguishable from a hang.
+ */
+const CALL_TIMEOUT_MS = 30_000
+
+/**
  * Perform one POST call and unwrap the envelope.
+ *
+ * Two failure shapes are answered in words rather than in shape. **`response.ok` is checked before
+ * the body is read**: a 500 from a proxy answers HTML, and parsing it would report "non-JSON" —
+ * naming the symptom and hiding the status that says what happened. **The fetch carries a timeout**,
+ * so a request that never settles reports that instead of leaving the caller waiting on a promise
+ * that cannot resolve (issue #44 §6, `T8`).
  * @param method - the Host method name.
  * @param params - the method payload.
- * @returns the unwrapped value, or throws an Error on network or `ok:false`.
+ * @returns the unwrapped value, or throws an Error on transport, timeout, non-2xx, or `ok:false`.
  */
 async function call<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
   let response: Response
+  // `AbortSignal.timeout` is the one whose timer the platform owns, so there is no timer to leak when
+  // the call finishes first — a `setTimeout` + `clearTimeout` pair is where a `return` between them
+  // leaves a handle up until the deadline.
+  const signal = AbortSignal.timeout(CALL_TIMEOUT_MS)
   try {
     response = await fetch(ENDPOINT, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ method, params }),
+      signal,
     })
   } catch (error) {
-    // The transport refused before answering (offline, origin mismatch, 404).
+    // The transport refused before answering (offline, origin mismatch, 404), or the timeout above
+    // fired. The two are told apart by name, because "could not reach the host" and "the host did not
+    // answer in 30 s" call for different things from the reader.
+    if (signal.aborted) {
+      throw new Error(`wsl-workspace: ${method} did not answer within ${CALL_TIMEOUT_MS / 1000}s (${ENDPOINT})`)
+    }
     throw new Error(`wsl-workspace request failed: ${errorMessage(error)}`)
+  }
+  if (!response.ok) {
+    // Named before the body is read, because reading it is what used to lose the status. The status
+    // line is included and the body is not: an HTML error page quoted at a user is worse than no
+    // detail at all.
+    throw new Error(`wsl-workspace: ${method} answered HTTP ${response.status} ${response.statusText}`.trimEnd())
   }
   let envelope: Envelope<T>
   try {
     envelope = (await response.json()) as Envelope<T>
   } catch {
-    // A non-JSON body means a proxy/loader answered instead of the Host route.
-    throw new Error(`wsl-workspace answered non-JSON (${response.status})`)
+    // A non-JSON body on a 2xx means a proxy/loader answered instead of the Host route.
+    throw new Error(`wsl-workspace answered non-JSON on 2xx (${response.status}) — ${ENDPOINT}`)
   }
   if (!envelope.ok) throw new Error(envelope.error)
   return envelope.value

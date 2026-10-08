@@ -33,11 +33,22 @@ const clientDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'cl
  * classNames that are applied without a rule and where that is a decision, not a gap.
  * Each entry must say why the element is intentionally unstyled.
  */
-const UNSTYLED = new Map<string, string>([
-  ['dww-feedback', 'structural wrapper: its children .dww-breadcrumb and .dww-dirlist carry the '
-    + 'rules, and the token has no same-prefix block (`dww-feedback` is not a `block--modifier` '
-    + 'of anything), so it is a container name rather than an unstyled state'],
-])
+// Empty, and kept as a `Map` rather than deleted: the assertion reads this name, so a future
+// unstyled class has somewhere to be declared **with its reason** instead of being either silently
+// missing or silently tolerated.
+//
+// Both entries that were here are gone because the product changed, not because the test was
+// relaxed:
+//
+//   · `dww-feedback` — was exempt as "structural wrapper, its children carry the rules". That was
+//     true of the two children and still is, but the wrapper itself did no grouping: the breadcrumb
+//     sat flush against the listing with nothing tying them into one path-and-tree control. It now
+//     has the `display: flex` / `gap` rule that makes it a container rather than a name.
+//   · `dww-action--wide` — was a `MISSING_MODIFIER_RULES` entry, its rule having been given and then
+//     stripped in `night/test-repair` (65d43a0). Restored here: a modifier exists for no other
+//     reason than to be styled, and the wide button was inheriting the base padding at the dialog's
+//     density while the rail form had its own box.
+const UNSTYLED = new Map<string, string>()
 
 /**
  * BEM modifiers with no rule. Not a permission — every entry must name the product ticket that
@@ -46,21 +57,18 @@ const UNSTYLED = new Map<string, string>([
  * by hand-classification: that is what distinguishes a real unstyled state from a container name
  * like `dww-feedback`.
  *
- * The map below is not empty, and emptying it is not something to be achieved by editing this
- * file: an unregistered modifier with no rule fails the "every applied className has a rule or a
- * stated reason" assertion directly.
- * `dww-action--wide` was given a rule in `night/test-repair` (commit 65d43a0) and its
- * registration deleted in the same commit; that product change was then stripped out of the
- * test-only branch by the owner's ruling ("先修复优化测试，不要动产品代码"), so the rule is gone
- * from `src/client/styles.ts` and the registration is back. The gate reported the deletion as
- * closure and now reports the gap again — same input, opposite verdict, which is what this
- * file is for.
+ * The map below is empty, and emptying it was not achieved by editing this file: an unregistered
+ * modifier with no rule fails the "every applied className has a rule or a stated reason" assertion
+ * directly, so the only way out was to give the modifier the rule it was missing.
+ * `dww-action--wide` had been given one in `night/test-repair` (commit 65d43a0), had its
+ * registration deleted in the same commit, and the product change was then stripped from the
+ * test-only branch by the owner's ruling ("先修复优化测试，不要动产品代码") — which left the rule
+ * gone from `src/client/styles.ts` and the registration back. The gate reported that deletion as
+ * closure and then reported the gap again: same input, opposite verdict, which is what this file is
+ * for. The rule is now in the stylesheet, so this entry is a record of a closed gap rather than a
+ * permission.
  */
-const MISSING_MODIFIER_RULES = new Map<string, string>([
-  ['dww-action--wide', 'no rule: the sidebar button renders identically wide and rail; '
-    + 'product ticket pending (v0.7.5 review finding 8 / issue #44 §6) — the wide-state '
-    + 'geometry is a design decision, not the test layer — to invent'],
-])
+const MISSING_MODIFIER_RULES = new Map<string, string>()
 
 /** True when `token` is a `block--modifier` whose `block` is itself applied somewhere. */
 function isRealModifier(token: string): boolean {

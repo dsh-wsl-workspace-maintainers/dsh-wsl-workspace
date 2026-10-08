@@ -43,6 +43,17 @@ const STYLES = `
   height: 36px;
   color: var(--dsw-alias-label-primary);
 }
+/* The wide counterpart of the rail button: the same control in the dialog's header, where it is
+   laid out by the container rather than by a fixed box. It existed only as the wide/rail branch of
+   the className in AddWslWorkspace.tsx with no rule behind it, so the wide form silently inherited
+   the base .dww-action padding at the dialog's density — which is where the "the dialog's button
+   looks smaller than the sidebar's" report came from. */
+.dww-action--wide {
+  width: auto;
+  min-width: 96px;
+  height: 32px;
+  padding: 0 12px;
+}
 .dww-action svg { flex: none; }
 
 /* The W letter mark of the sidebar action (sized for wide/rail buttons). */
@@ -184,6 +195,16 @@ const STYLES = `
   border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 8px;
   background: var(--dsw-alias-bg-layer-3);
+}
+.dww-feedback {
+  /* The browse block: the path above the listing, as one visual group. It carried a class in
+     AddWslWorkspace.tsx and no rule here, so the breadcrumb sat flush against the list box with
+     nothing tying them together — the two read as unrelated rows rather than as one path-and-tree
+     control. The listing keeps its own border (.dww-dirlist below); this only groups them. */
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
 }
 .dww-breadcrumb {
   padding: 0 4px;

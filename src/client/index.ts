@@ -383,7 +383,17 @@ export function apply(ctx: ClientContext): void {
     const unsubscribe = sessions.list.subscribe(() => maybeBind())
     // Variants are generated at host boot; a page loaded before that would
     // never see them without a periodic refresh.
-    const timer = window.setInterval(refreshRoster, 60_000)
+    //
+    // The workspace registry is on the same tick and for the same reason (issue #44 §6, `T8`): it is
+    // read once at mount and never again, so a workspace registered by a *later* boot — or by another
+    // window, or by a session that just finished creating one — is absent from `wslWindowsPaths` for
+    // the life of the page. A blank WSL session then stays unbound, and the only way to find out is to
+    // reload. Both refreshes are fire-and-forget and each keeps its previous answer on failure, so
+    // putting them on one interval costs one timer rather than two and cannot make either worse.
+    const timer = window.setInterval(() => {
+      refreshRoster()
+      refreshWorkspaces()
+    }, 60_000)
     return () => {
       unsubscribe()
       window.clearInterval(timer)
