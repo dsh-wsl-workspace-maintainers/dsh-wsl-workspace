@@ -206,12 +206,18 @@ jobs:
           # or the first red kills the loop and the remaining gates go dark
           # (frame 3 did exactly that after shell-extra).
           FAIL=0
+          # `$SECONDS` per gate, printed next to its rc: the gate step is a dozen drivers in one
+          # shell, and without this line the only way to learn *which* driver owned the frame's
+          # wall time is to download the log artifacts and read their JSON readings — which is
+          # exactly how the 215-second driver behind this branch's timing note was found.
           run_one() {
             local name="$1"; shift
             local rc=0
+            local t0=$SECONDS
             echo "::group::$name"
             "$@" > "logs/$name.log" 2>&1 || rc=$?
             echo "rc=$rc"
+            echo "elapsed=$(( SECONDS - t0 ))s"
             # `tail -6` alone was not attribution: a driver that runs 45 of 72 cells leaves its
             # summary line, its failing cells above the window, and the frame read as one red with
             # no name attached. Print the verdict line, every FAIL, and the short-run guard's own
