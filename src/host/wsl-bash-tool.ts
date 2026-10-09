@@ -218,6 +218,11 @@ function renderRun(value: ForegroundOutput): { type: 'text'; text: string }[] {
   if (value.stdout.truncated && value.stdout.spillPath !== undefined) {
     if (body.length > 0 && !body.endsWith('\n')) body += '\n'
     body += `[output truncated; full output: ${value.stdout.spillPath}]`
+    // Two paths can appear in one answer, and the model follows the wrong one: our path holds every
+    // line, while the host appends its own `(Omitted … bytes. Full formatted result stored at: …)`
+    // sentence pointing at a *formatted excerpt* it kept — measured 2026-10-09, that file held 74,890
+    // of 250,000 lines while ours held all of them, and the model read the excerpt first.
+    body += '\n[the path above holds the whole stream; if this answer also names a "formatted result" path, that one is the host\'s excerpt and can hold fewer lines]'
   }
   if (value.stderr.text.length > 0) {
     if (body.length > 0 && !body.endsWith('\n')) body += '\n'
