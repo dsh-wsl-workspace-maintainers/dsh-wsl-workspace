@@ -3,6 +3,45 @@
 All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](README.md); the Chinese record is [CHANGELOG.zh.md](CHANGELOG.zh.md).
 
 ## 0.7.7 — 2026-10-07
+- **The deliberate-red ledger is empty, and the ten debts it held are paid.** Every entry was a
+  reproduction with a stated repair; all ten are now fixed, and the mechanism outlived them — a NEW red
+  nobody declared still fails the gate.
+
+  - **`check` folded every `stat` failure into `{exists:false}`** (issue #44 §6). A directory nobody can
+    read, or an `EIO` over 9P, was reported as *not existing* — the one thing a caller cannot tell apart
+    from the truth. Only `ENOENT` answers `exists:false` now; everything else is thrown, and the envelope
+    carries the OS's own sentence.
+  - **The decode policy was "does this buffer contain a NUL, then it is UTF-16LE"**, so a NUL-delimited
+    UTF-8 stream (`find -print0`, `grep -Z`, `git ls-files -z` — which this plugin's own search path
+    speaks) came back as mojibake at double length, silently. The sniff is now structural: a BOM, or NULs
+    at a regular parity and a real density. A caller that knows its encoding passes it and skips the
+    heuristic entirely.
+  - **`reg.exe`'s answer was decoded with a hard-coded UTF-8 conversion** while the same module owned that
+    decoder, so a UTF-16LE answer yielded `undefined` — an empty picker, no throw, no log. One decode
+    policy now serves every captured stream.
+  - **The search path decoded stderr at the capture point**, which put a NUL between every character of a
+    failure detail, counted the 300-character budget in bytes, and made the invalid-pattern classifier
+    unable to ever match. `WslRun.stderr` is bytes; the decode happens where the text is used, the budget
+    cuts characters, and the classifier reads decoded text.
+  - **A launch failure dropped the reason `wsl.exe` gave** (which distribution is missing) because the
+    detail came only from stderr. It now falls back to the first decoded line of stdout.
+  - **Three call sites handed an argument list to a command interpreter.** `verify-install.mjs`,
+    `verify-artifact-identity.mjs` and `ci/install-pinned.mjs` all fell back to a shell on Windows when
+    `npm_execpath` was absent — the shape Node now refuses (DEP0190) and that re-tokenises a spaced path
+    and passes `& | > < ^ %` to the interpreter. npm's own `bin/npm-cli.js` is now looked for in three places —
+    `npm_execpath`, beside `node.exe`, and through the `npm` on `PATH` — and a missing one is named
+    rather than guessed. The third was added because the second is not true on a hosted tool cache,
+    where a job that was never broken died with "npm's entry script was not found".
+  - **`install-pinned.mjs` created junctions through a shell with its output discarded**, which threw away
+    the linker's sentence and left the operator a bare exit number. `fs.symlinkSync` is the same junction
+    and arrives as an Error carrying `EEXIST`/`EPERM`.
+
+  Hazards A, B and E were **measurements of Node and the OS**, not of this repository: each test
+  reproduced a shape and watched the information disappear, so fixing the product left them red. They are
+  now assertions about this repository's own call sites and fail if a site returns; the measurements stay
+  above them as the reason those rules read the way they do. `tests/deliberate-reds.test.mjs` now
+  exercises the ledger mechanism against its own synthetic entries, because a control that reads the real
+  array stops covering the gate the moment the last debt is closed.
 
 - **`bash_background`'s `job_output` was always empty on DSH 0.2.x (issue #56).** `bash_background` (and `bash`'s `run_in_background: true`, which shares the same producer) started the job and `job_list` tracked it, but `job_output` returned `(no new output)` on every read — during the run, after completion, and the completion notice carried no body. The command *did* run and its stdout landed on disk, so the read channel was dead, not the task.
 

@@ -85,7 +85,7 @@ export const RULES = [
   // fragile spelling only moves the cost to whoever debugs it next; the spelling has to go.
   {
     id: 'spawn-through-a-shell-with-args',
-    shape: 'a spawn that hands an argument list to a command interpreter (shell: true, or '
+    shape: 'a spawn that hands an argument list to a command interpreter (shell: true, or ' // portability-allow: the rule's own description of the shape; a rule that could not name it could not be tested
       + 'shell: process.platform === "win32")',
     instead: 'spawnSync(process.execPath, [entryScript, ...args]) with no shell at all. The '
       + 'interpreter RE-TOKENISES argv — Node says so itself (DEP0190: the arguments are not '
@@ -110,7 +110,7 @@ export const RULES = [
   },
   {
     id: 'stdio-ignore-discards-the-reason',
-    shape: 'stdio: "ignore" on a child process whose exit status the caller checks',
+    shape: 'stdio: "ignore" on a child process whose exit status the caller checks', // portability-allow: as above — this is the rule's own description of the shape
     instead: 'capture stderr (encoding: "utf8") and print it in the failure message, so a red run '
       + 'names its cause — the rule the WSL gates already hold themselves to. Measured: the same '
       + 'failing mklink carries cmd\'s own sentence as soon as stdio is not ignored',

@@ -12,8 +12,8 @@
 // the link step is skipped and only the presence of each pinned package is
 // verified. Same command locally and in CI: `node ci/install-pinned.mjs`.
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import path from 'node:path'
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import path, { delimiter as PATH_DELIMITER, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -26,11 +26,28 @@ const { deps } = JSON.parse(readFileSync(path.join(here, 'pinned-deps.json'), 'u
 // outside npm lifecycle.
 function runNpm(args, cwd) {
   const execpath = process.env.npm_execpath
+  const options = { cwd, stdio: 'inherit' }
   if (execpath !== undefined && execpath.endsWith('.js')) {
-    return spawnSync(process.execPath, [execpath, ...args], { cwd, stdio: 'inherit' }).status ?? 1
+    return spawnSync(process.execPath, [execpath, ...args], options).status ?? 1
   }
-  const program = process.platform === 'win32' ? 'npm.cmd' : 'npm'
-  return spawnSync(program, args, { cwd, stdio: 'inherit', shell: process.platform === 'win32' }).status ?? 1
+  // npm on PATH is a program, not a command line. Spawning it needs no shell anywhere but Windows,
+  // and the shell is what this whole shape existed to avoid.
+  if (process.platform !== 'win32') return spawnSync('npm', args, options).status ?? 1
+  return spawnSync(process.execPath, [npmCliPath(), ...args], options).status ?? 1
+}
+
+/** The one lookup left, and it is Windows-only: see `runNpm` above. */
+function npmCliPath() {
+  const besideNode = join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js')
+  if (existsSync(besideNode)) return besideNode
+  for (const dir of (process.env.PATH ?? '').split(PATH_DELIMITER)) {
+    if (dir === '') continue
+    const besideLauncher = join(dir, 'node_modules', 'npm', 'bin', 'npm-cli.js')
+    if (existsSync(besideLauncher)) return besideLauncher
+  }
+  throw new Error('npm\'s entry script was not found. Run this through npm (npm_execpath), or install '
+    + `npm so its launcher sits beside node_modules (looked beside ${besideNode} and on PATH). `
+    + 'A shell is not used to work around this.')
 }
 
 // Verification only: `--verify-only` compares the pins against whatever tree is already
@@ -119,15 +136,20 @@ const depsModules = path.join(depsDir, 'node_modules')
 // multiplies links. Existing root entries — including the maintainer's
 // junction — are never touched.
 const { unscoped } = JSON.parse(readFileSync(path.join(here, 'pinned-deps.json'), 'utf8'))
-const linkOne = (src, dst) => (process.platform === 'win32'
-  ? spawnSync('cmd', ['/c', 'mklink', '/J', dst, src], { stdio: 'ignore', shell: false }).status ?? 1
-  : spawnSync('ln', ['-s', src, dst], { stdio: 'ignore' }).status ?? 1)
 mkdirSync(path.join(root, 'node_modules'), { recursive: true })
 let linked = 0
 function linkOrSkip(src, dst) {
   if (existsSync(dst)) return
-  if (linkOne(src, dst) !== 0) {
-    console.error(`install-pinned: linking ${src} -> ${dst} failed`)
+  try {
+    // `fs.symlinkSync` rather than `cmd /c mklink /J`: it is the same junction, and the failure
+    // arrives as an Error carrying EEXIST/EPERM/ENOSPC. The subprocess form ran with
+    // `stdio:'ignore'`, which discarded the linker's own sentence and left the operator a bare exit
+    // number — the shape hazard B is about, and the reason the reason could not be printed here.
+    symlinkSync(src, dst, process.platform === 'win32' ? 'junction' : 'dir')
+  } catch (error) {
+    const reason = error?.code === undefined ? '' : ` (${error.code})`
+    console.error(`install-pinned: linking ${src} -> ${dst} failed${reason}: `
+      + `${String(error?.message ?? error).trim()}`)
     process.exit(1)
   }
   linked++

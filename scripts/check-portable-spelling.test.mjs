@@ -35,13 +35,13 @@ const CONTROLS = [
     "execFile('wsl.exe', ['-d', unc.distro, '--', 'readlink', '-f', p], cb)",
     "execFile('wsl.exe', ['-d', requireDistro(unc.distro), '--', 'readlink'], cb)"],
   ['spawn-through-a-shell-with-args', 'scripts/verify-install.mjs',
-    "  return spawnSync(program, args, { cwd, stdio: 'inherit', shell: process.platform === 'win32' }).status ?? 1",
+    "  return spawnSync(program, args, { cwd, stdio: 'inherit', shell: process.platform === 'win32' }).status ?? 1", // portability-allow: a control fixture — the rule must match this string or it is not tested
     '  return spawnSync(process.execPath, [npmCli, ...args], { cwd, stdio: "inherit" }).status ?? 1'],
   ['cmd-exe-as-an-api', 'ci/install-pinned.mjs',
-    "  ? spawnSync('cmd', ['/c', 'mklink', '/J', dst, src], { stdio: 'ignore', shell: false }).status ?? 1",
+    "  ? spawnSync('cmd', ['/c', 'mklink', '/J', dst, src], { stdio: 'ignore', shell: false }).status ?? 1", // portability-allow: a control fixture, as above
     "  ? symlinkSync(src, dst, 'junction')"],
   ['stdio-ignore-discards-the-reason', 'ci/install-pinned.mjs',
-    "spawnSync('cmd', ['/c', 'mklink', '/J', dst, src], { stdio: 'ignore', shell: false })",
+    "spawnSync('cmd', ['/c', 'mklink', '/J', dst, src], { stdio: 'ignore', shell: false })", // portability-allow: a control fixture, as above
     "spawnSync('cmd', ['/c', 'mklink', '/J', dst, src], { encoding: 'utf8', shell: false })"],
   ['abs-posix-path-in-windows-bash-step', '.github/workflows/ci.yml',
     '          WSL_COMPAT_ROOT=/tmp/dsh-wsl-lib wsl.exe -d Ubuntu -- true',
@@ -105,8 +105,16 @@ test('the repository as it stands has a named worklist, not a silent pass', () =
   const findings = scan()
   // The scan must find *something* in the real tree, or the rule set is decoration.
   assert.ok(findings.length > 0, 'a zero-hit scan of the real tree would mean the rules never fire')
-  assert.ok(findings.some((f) => f.path === 'src/host/wsl-search.ts' && f.line === 841),
-    'the §6 call site is on the list (src/host/wsl-search.ts:841)')
+  // The §6 stderr call site **was** on this list and is not any more. `wsl-search.ts` used to decode
+  // stderr at the capture point, which is the single thing the three §6 transport debts shared, and it
+  // is paid: a run now carries bytes and the decode happens where the text is used. This control
+  // asserted the debt's presence, so paying it would otherwise have read as a broken scanner — the
+  // mirror image of the rule that keeps firing on a fixed site.
+  //
+  // The file still appears twice under the same rule, on **stdout** (the NUL-delimited search stream,
+  // which is UTF-8 by protocol). Those are a separate question and are not this debt.
+  assert.ok(!findings.some((f) => f.path === 'src/host/wsl-search.ts' && /stderr/.test(f.text)),
+    'the §6 capture-point stderr decode is paid: nothing in src/host/wsl-search.ts decodes stderr any more')
   assert.ok(findings.some((f) => f.path === 'src/shared/links.ts'
     && f.ruleId === 'child-output-decoded-as-utf8'),
     'links.ts is on the list by its option spelling, not only by toString')
