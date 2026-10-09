@@ -240,6 +240,53 @@ Two levels, in order of cost:
    `session "[object Object]" has no live agent`, and no unit test with a fake registry can
    see that. The real run is the gate.
 
+### The engineering inventory pass (driven inside the product, measured 2026-10-09)
+
+Eighteen lines a model really types, sent to a running agent in a WSL workspace and read back out of the
+session transcript it wrote (`~/.dsh/sessions/<workspace>/<id>/session.v4.jsonl.zstd`, multi-frame zstd;
+pair `tool/call` to `tool/result` by `callId`, and subtract the two entries' top-level `time` for the
+elapsed). This is a **human** pass on purpose: the point is what the model sees, in the product, not what
+a harness can assert. Group 1 is streams and quoting, group 2 is the shell's own lifetime, group 3 is
+interop and real tools:
+
+```
+group 1  find . -name '*.txt' -print0 | xargs -0 grep -l alpha          # NUL-delimited UTF-8
+         printf 'a\x00b\xff\xfe' | wc -c ; … | od -An -tx1              # bytes and illegal UTF-8
+         grep -Zrn alpha <dir> ; sort -z <(printf 'b\0a\0')             # the NUL family, other tools
+         python3 -c "…write(b'x'*300000)"                               # one huge block, no newline
+         git log --oneline -n 5   /   head -n 20 /etc/os-release | less # pager, no -c core.pager=
+         curl -N --max-time 4 <stream> | wc -c                          # progress on stderr, SIGPIPE
+group 2  cd /tmp/state2/gone && rmdir … && pwd                          # deleted cwd
+         set -o pipefail; (exit 3) | cat; echo CODE=$?                  # 3, not the pipeline's 0
+         set -e; false; echo NEVER                                      # ends the shell
+         alias zzz='echo ALIAS_OK'; zzz                                 # not found this line, works next
+         foo(){ echo FUNC_OK; }; export -f foo; bash -c 'foo'           # exported function
+         (sleep 40 & echo $!) ; disown; jobs -l | wc -l                 # detached inside the call
+         pkill -f 'sleep 40' ; exec bash --norc                         # kills its own tree; replaces it
+group 3  wslpath -u 'C:\Program Files\node\node.exe'                    # spaces across the boundary
+         node -e "…process.env.DEEPSEEK_HARNESS_ROOT…"                 # does the host env travel
+         ls /mnt/c/Users | head -5; du -sh /mnt/c/Users                # the 9P cost case
+         git init + git commit --allow-empty; then git log | wc -l      # real side effect at a deadline
+         npm install --prefix /tmp/… ; npx tsc --version                # real tools, real output
+```
+
+What it found, and what the finding was judged against. **The standard is native parity, not universal
+quality**: a shape is a defect when a person's own terminal handles it and ours does not, and is not a
+defect when the terminal behaves the same way. Measured both ways on this machine the same day:
+
+| line | ours | native, in the same distribution | verdict |
+| --- | --- | --- | --- |
+| `set -e; false; echo NEVER` | was `Error: tool call aborted`, now answers with its code and a sentence naming what happened | the terminal closes | fixed as an *answer* bug (#68) |
+| `exec bash --norc` | same, 1 162 ms | the terminal is replaced, then closes | same bug, same fix |
+| `alias …; zzz` on one line | `not found`, exit 127; the next call gets `ALIAS_OK` | `printf "alias zzz=…; zzz\n" \| bash -i` → the same `not found`, and the two-line form → `YYY_OK` | **native parity — not a bug**, and a census row now pins it |
+| `du -sh /mnt/c/Users` | hit the deadline the *model* asked for (600 000 ms, the tool's ceiling) with `ls`'s output kept and the reading printed (`du:D+ w=0`, not a keyboard wait) | in a plain `bash -lc` with no plugin layer in sight, still running at **9 min 23 s** and in process state `D` (uninterruptible) when the measurement was stopped; the harness's own `timeout 1500` would have bounded it at 25 min | **native parity — not ours to optimize** |
+
+What moved into the machine-run surface because of the pass: `scripts/compatibility/bash-session-real.mjs`
+gained five cells (the three shell-ending shapes, the call that follows them, and a deadline reached
+mid-command keeping the bytes it already printed), and `tests/support/w51-command-census.mjs` gained the
+rows above. Nothing in them asserts how long real work takes — only what the answer must contain when the
+deadline the caller chose arrives.
+
 ## Release checklist
 
 1. `pnpm build` — clears `lib/`, rebuilds it, and runs the verification gate.

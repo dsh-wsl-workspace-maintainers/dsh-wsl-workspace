@@ -163,6 +163,54 @@ const CENSUS = [
     wantAll: ['/tmp', 'SENT=kept'],
   },
   {
+    // Two more ways a line ends the shell, both found by driving the installed build through the
+    // product's own session (not by reading the code): `set -e` makes *any* failing simple command end
+    // an interactive shell with `errexit` on, and `exec bash --norc` replaces the process image — the
+    // replacement then reads the pipe to EOF and exits, so the child is gone by the next poll. The
+    // standard that decides whether either is a defect is the native one: a person typing the same line
+    // into their own terminal also ends that shell. So the claim is not "make it survive", it is "answer
+    // with what the call produced and say what happened", which is the same claim as the row above.
+    // Measured on the desktop 2026-10-09, on the build with the fix: `set -e; false; echo NEVER` →
+    // `(no output) [exit code: 1]` + the disclosure, 1 163 ms; `exec bash --norc` → the same disclosure,
+    // 1 162 ms; both with `isError=false`. Before that build both were `Error: tool call aborted`.
+    shape: 'other ways a line ends the session shell',
+    name: '`set -e` with a failing command says so instead of reading as a cancel',
+    command: 'set -e; false; echo NEVER',
+    wantAll: ['ended the session shell'],
+  },
+  {
+    shape: 'a call that replaces the shell process',
+    name: '`exec bash --norc` answers with the disclosure and the session recovers',
+    command: 'exec bash --norc',
+    wantAll: ['ended the session shell'],
+  },
+  {
+    shape: 'the shell is back and still the session user\'s',
+    name: 'the call after the exec answers normally',
+    command: 'echo AFTER_EXEC_ALIVE=ok; pwd',
+    wantAll: ['AFTER_EXEC_ALIVE=ok', '/tmp'],
+  },
+  {
+    // Parity, measured rather than assumed, on a line that looks like a bug and is not: defining an
+    // alias and using it in the same input line. Native, in this distribution, at this moment:
+    //   printf "alias zzz='echo ALIAS_OK'; zzz\n" | bash -i   →  command not found, exit 127
+    //   printf "alias yyy='echo YYY_OK'\nyyy\n"                →  YYY_OK on the second read line
+    // (both run 2026-10-09 on this machine). bash expands aliases when it reads a line, so the first
+    // shape fails in a person's terminal exactly as it fails here. The row therefore asserts the
+    // *native* answer — including the 127 and the `not found` sentence — because a difference from
+    // native is the only thing this repository treats as a defect.
+    shape: 'alias defined and used in one line (native parity, not a bug)',
+    name: '`alias zzz=…; zzz` is not found in this call and is defined for the next',
+    command: "alias zzz='echo ALIAS_OK'; zzz; echo \"CODE=$?\"",
+    wantAll: ['not found', 'CODE=127'],
+  },
+  {
+    shape: 'alias defined and used in one line (native parity, not a bug)',
+    name: 'the next call sees the alias the earlier one defined',
+    command: 'zzz',
+    want: ['ALIAS_OK'],
+  },
+  {
     // The product's **own** timeout, passed as the argument a model would pass. The first attempt
     // drove it from outside with an `AbortController` and the row answered `tool call aborted` — which
     // says the abort path works and nothing about the timeout path. Two different mechanisms; only one

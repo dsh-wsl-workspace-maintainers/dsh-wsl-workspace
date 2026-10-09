@@ -415,7 +415,8 @@ try {
   // The loop brake is a sentence, not a refusal: the same failing command twice over says so, and one
   // success clears the count so the ordinary `npm test` after an install is never told to stop. The
   // signature runs in a subshell — a bare `exit 41` would end the session shell itself (measured: it
-  // did, and every later call aborted).
+  // did; the answer now says so, and the cells at the end of this file assert that rather than the old
+  // silent abort), so the repeated-failure property has to be driven without taking the shell down.
   const repeatOne = await call("sh -c 'exit 41'", {})
   const repeatTwo = await call("sh -c 'exit 41'", {})
   await call('true', {})
@@ -732,6 +733,56 @@ try {
   check('one agent ending takes only its own shell down',
     bDisposers.length > 0 && afterAgentEnd <= beforeAgentEnd - 1 && aAfterBEnd.text.includes('A_AFTER_B_25'),
   JSON.stringify({ bDisposers: bDisposers.length, beforeAgentEnd, afterAgentEnd, a: aAfterBEnd.text.trim().slice(0, 24) }))
+
+  // ── lines that end the shell, answered rather than reported as a cancel ───────────────────
+  //
+  // Three real shapes do this, and a person's own terminal ends on all three too — the standard this
+  // repository holds is parity with native, so none of them is a defect *for ending the shell*. The
+  // defect was the answer: the call came back `Error: tool call aborted`, which is the sentence a cancel
+  // says, the streams the command had already produced were dropped, and the rebuild was narrated on the
+  // NEXT call, where it reads as that call's own event. Measured on the installed build through a real
+  // session (2026-10-09): before the fix `echo out; echo err >&2; exit 3` → 1 894 ms, aborted, no bytes;
+  // after it → 1 498 ms with `out`, `err` and `[exit code: 3]`; `set -e; false` → 1 163 ms and
+  // `exec bash --norc` → 1 162 ms, both with the disclosure sentence.
+  const endsByExit = await call('echo out; echo err >&2; exit 3')
+  check('a line that exits the shell answers with both of its streams',
+    endsByExit.text.includes('out') && String(endsByExit.value?.stderr?.text ?? '').includes('err')
+      && /ended the session shell/.test(endsByExit.rendered) && endsByExit.value?.exitCode === 3
+      && endsByExit.value?.aborted === false,
+  // `text` is the tool's stdout field only — stderr is its own field on the same object, so a cell that
+  // looks for both in `text` fails on a build that answered correctly (measured: first run of this cell
+  // read FAIL with `exit=3, aborted=false`, because `err` was never in `text`).
+  JSON.stringify({ ms: endsByExit.ms, exit: endsByExit.value?.exitCode,
+    aborted: endsByExit.value?.aborted, out: endsByExit.text.trim().slice(0, 20),
+    err: String(endsByExit.value?.stderr?.text ?? '').trim().slice(0, 20),
+    disclosure: /ended the session shell/.test(endsByExit.rendered) }))
+  const endsByErrexit = await call('set -e; false; echo NEVER')
+  check('`set -e` ending the shell is answered the same way, not as a cancel',
+    /ended the session shell/.test(endsByErrexit.rendered) && !/NEVER/.test(endsByErrexit.text)
+      && endsByErrexit.value?.aborted === false,
+  JSON.stringify({ ms: endsByErrexit.ms, exit: endsByErrexit.value?.exitCode,
+    text: endsByErrexit.text.trim().slice(0, 40) }))
+  const endsByExec = await call('exec bash --norc')
+  check('`exec` replacing the shell is answered the same way',
+    /ended the session shell/.test(endsByExec.rendered) && endsByExec.value?.aborted === false,
+  JSON.stringify({ ms: endsByExec.ms, text: endsByExec.text.trim().slice(0, 40) }))
+  const afterEnds = await call('echo AFTER_END_$(( 6 * 7 ))')
+  check('the call after a shell-ending line answers, from the rebuilt shell',
+    afterEnds.text.includes('AFTER_END_42'),
+  JSON.stringify({ ms: afterEnds.ms, text: afterEnds.text.trim().slice(0, 40),
+    restarted: /restarted/.test(afterEnds.rendered) }))
+  // The shape the `du` case on a real desktop showed: a long command that had already produced output
+  // when its own deadline arrived. Asserted as a shape, not a duration — the answer must carry what the
+  // command printed, name the deadline it reached, and point at the background door. Timing beyond
+  // `>= asked` is the runner's business, which is why nothing here bounds the work itself.
+  const slowPartial = await call('echo BEFORE_SLOW; sleep 6; echo AFTER_SLOW', { timeoutMs: 1_500 })
+  check('a deadline reached mid-command keeps the bytes it already produced',
+    slowPartial.text.includes('BEFORE_SLOW') && !slowPartial.text.includes('AFTER_SLOW')
+      && /timed out after/.test(slowPartial.rendered)
+      && /run_in_background|bash_background/.test(slowPartial.rendered)
+      && slowPartial.ms >= 1_500,
+  JSON.stringify({ ms: slowPartial.ms, text: slowPartial.text.trim().slice(0, 40),
+    clause: clause(slowPartial.rendered).slice(0, 90) }))
 
   const beforeDispose = wslCount()
   sessionFiber.dispose?.()
