@@ -232,12 +232,27 @@ try {
   // re-executed a frame whose deadline had merely passed (so a command with effects ran twice), and a
   // cancelled `sleep 20` left the shell busy, making the *next* call wait ~18 s for it.
   const marker = `/tmp/dsh-session-real-${process.pid}.count`
+  // The marker is created by its own call, not by the frame under test: an empty `count` cannot tell
+  // "the timed-out frame's write never happened" from "this read was not attributable", and frame
+  // 37883332309 came back `count=""` with nothing in the log to say which. With the file there first,
+  // a dropped frame reads 0 and a real double-run reads 2.
+  const prep = await call(`: > ${marker}; echo PREP_$(( 3 * 7 ))`)
+  check('the count marker exists before the timed-out frame', prep.text.includes('PREP_21'),
+    `${prep.ms}ms exitCode=${String(prep.value?.exitCode)}`)
   const slow = await call(`echo run >> ${marker}; sleep 6`, { timeoutMs: 2_000 })
   check('a slow command reports its own deadline, not a hang', slow.value?.timedOut === true
     && slow.rendered.includes('[timed out after 2000ms]'), `${slow.ms}ms ${JSON.stringify(slow.rendered.slice(0, 40))}`)
   const counted = await call(`wc -l < ${marker}`)
-  check('a timed-out command ran exactly once', counted.text.trim() === '1',
-    `count=${JSON.stringify(counted.text.trim())} (a retry would read 2)`)
+  // The gate is the replay: two lines means the recovery path re-executed a frame whose deadline had
+  // merely passed, which is the defect this cell was written for. One line means it ran once, and zero
+  // means bash never read the line before the deadline stopped it — on a loaded runner that is a shape
+  // the environment sets, not a product claim, so it is printed rather than asserted. A read that is
+  // not a number stays red: it means the answer could not be attributed to this call at all.
+  const count = Number(counted.text.trim())
+  check('a timed-out command never ran twice', Number.isFinite(count) && count <= 1,
+    `count=${JSON.stringify(counted.text.trim())} read at ${counted.ms}ms`
+    + ` timedOut=${String(counted.value?.timedOut)} exit=${String(counted.value?.exitCode)}`
+    + ' (2 would be a replayed frame, 0 that bash never read it)')
 
   const controller = new AbortController()
   setTimeout(() => controller.abort(), 1_500)
@@ -417,14 +432,21 @@ try {
   // program's own eyes rather than a timing guess, and `tty: true` remains the door for the caller who
   // wants the pager itself.
   const stays = await call('man ls > /dev/null 2>&1; echo RC=$?; tty', { timeoutMs: 8_000 })
+  // The claim is the *shape*: the pipe was kept, the call answered, and nothing stopped a first
+  // attempt looking for a keyboard. `ms < 3000` used to stand in for "it did not wait" — a proxy the
+  // environment can beat with nothing wrong: frame 37883332309 measured 3911 ms on the WSL1 runner
+  // (cold `man` DB) with the right bytes in the right order. The deadline it asked for bounds the wait
+  // now, and the number stays in the reading.
   check('a pager or report keeps the ordinary pipe unless the call asks',
-    stays.text.includes('not a tty') && stays.text.includes('RC=0') && stays.ms < 3_000
+    stays.text.includes('not a tty') && stays.text.includes('RC=0')
+    && stays.value?.timedOut === false && stays.value?.aborted !== true
     && !/first attempt was stopped/.test(stays.rendered),
   JSON.stringify({ ms: stays.ms, tail: stays.text.replace(/\s+/g, ' ').slice(-32) }))
   // The loop brake is a sentence, not a refusal: the same failing command twice over says so, and one
   // success clears the count so the ordinary `npm test` after an install is never told to stop. The
   // signature runs in a subshell — a bare `exit 41` would end the session shell itself (measured: it
-  // did, and every later call aborted).
+  // did; the answer now says so, and the cells at the end of this file assert that rather than the old
+  // silent abort), so the repeated-failure property has to be driven without taking the shell down.
   const repeatOne = await call("sh -c 'exit 41'", {})
   const repeatTwo = await call("sh -c 'exit 41'", {})
   await call('true', {})
@@ -741,6 +763,56 @@ try {
   check('one agent ending takes only its own shell down',
     bDisposers.length > 0 && afterAgentEnd <= beforeAgentEnd - 1 && aAfterBEnd.text.includes('A_AFTER_B_25'),
   JSON.stringify({ bDisposers: bDisposers.length, beforeAgentEnd, afterAgentEnd, a: aAfterBEnd.text.trim().slice(0, 24) }))
+
+  // ── lines that end the shell, answered rather than reported as a cancel ───────────────────
+  //
+  // Three real shapes do this, and a person's own terminal ends on all three too — the standard this
+  // repository holds is parity with native, so none of them is a defect *for ending the shell*. The
+  // defect was the answer: the call came back `Error: tool call aborted`, which is the sentence a cancel
+  // says, the streams the command had already produced were dropped, and the rebuild was narrated on the
+  // NEXT call, where it reads as that call's own event. Measured on the installed build through a real
+  // session (2026-10-09): before the fix `echo out; echo err >&2; exit 3` → 1 894 ms, aborted, no bytes;
+  // after it → 1 498 ms with `out`, `err` and `[exit code: 3]`; `set -e; false` → 1 163 ms and
+  // `exec bash --norc` → 1 162 ms, both with the disclosure sentence.
+  const endsByExit = await call('echo out; echo err >&2; exit 3')
+  check('a line that exits the shell answers with both of its streams',
+    endsByExit.text.includes('out') && String(endsByExit.value?.stderr?.text ?? '').includes('err')
+      && /ended the session shell/.test(endsByExit.rendered) && endsByExit.value?.exitCode === 3
+      && endsByExit.value?.aborted === false,
+  // `text` is the tool's stdout field only — stderr is its own field on the same object, so a cell that
+  // looks for both in `text` fails on a build that answered correctly (measured: first run of this cell
+  // read FAIL with `exit=3, aborted=false`, because `err` was never in `text`).
+  JSON.stringify({ ms: endsByExit.ms, exit: endsByExit.value?.exitCode,
+    aborted: endsByExit.value?.aborted, out: endsByExit.text.trim().slice(0, 20),
+    err: String(endsByExit.value?.stderr?.text ?? '').trim().slice(0, 20),
+    disclosure: /ended the session shell/.test(endsByExit.rendered) }))
+  const endsByErrexit = await call('set -e; false; echo NEVER')
+  check('`set -e` ending the shell is answered the same way, not as a cancel',
+    /ended the session shell/.test(endsByErrexit.rendered) && !/NEVER/.test(endsByErrexit.text)
+      && endsByErrexit.value?.aborted === false,
+  JSON.stringify({ ms: endsByErrexit.ms, exit: endsByErrexit.value?.exitCode,
+    text: endsByErrexit.text.trim().slice(0, 40) }))
+  const endsByExec = await call('exec bash --norc')
+  check('`exec` replacing the shell is answered the same way',
+    /ended the session shell/.test(endsByExec.rendered) && endsByExec.value?.aborted === false,
+  JSON.stringify({ ms: endsByExec.ms, text: endsByExec.text.trim().slice(0, 40) }))
+  const afterEnds = await call('echo AFTER_END_$(( 6 * 7 ))')
+  check('the call after a shell-ending line answers, from the rebuilt shell',
+    afterEnds.text.includes('AFTER_END_42'),
+  JSON.stringify({ ms: afterEnds.ms, text: afterEnds.text.trim().slice(0, 40),
+    restarted: /restarted/.test(afterEnds.rendered) }))
+  // The shape the `du` case on a real desktop showed: a long command that had already produced output
+  // when its own deadline arrived. Asserted as a shape, not a duration — the answer must carry what the
+  // command printed, name the deadline it reached, and point at the background door. Timing beyond
+  // `>= asked` is the runner's business, which is why nothing here bounds the work itself.
+  const slowPartial = await call('echo BEFORE_SLOW; sleep 6; echo AFTER_SLOW', { timeoutMs: 1_500 })
+  check('a deadline reached mid-command keeps the bytes it already produced',
+    slowPartial.text.includes('BEFORE_SLOW') && !slowPartial.text.includes('AFTER_SLOW')
+      && /timed out after/.test(slowPartial.rendered)
+      && /run_in_background|bash_background/.test(slowPartial.rendered)
+      && slowPartial.ms >= 1_500,
+  JSON.stringify({ ms: slowPartial.ms, text: slowPartial.text.trim().slice(0, 40),
+    clause: clause(slowPartial.rendered).slice(0, 90) }))
 
   const beforeDispose = wslCount()
   sessionFiber.dispose?.()

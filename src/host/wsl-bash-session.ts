@@ -86,6 +86,17 @@ export interface WslBashRun {
   timedOut: boolean
   /** True when the caller's own signal ended it. */
   aborted: boolean
+  /**
+   * True when the shell process itself ended during this call.
+   *
+   * `aborted` is the caller's action and this is the command's: a model that types `… ; exit 3` has
+   * cancelled nothing, and it has not crashed either — the command asked for the shell to end, the way
+   * a person typing `exit` in their own terminal does. The two need different answers because the tool
+   * renders an abort as a cancelled call and keeps every byte the command produced out of the reply
+   * (measured on the installed 0.7.7 build: `echo out; echo err >&2; exit 3` came back as
+   * `Error: tool call aborted`, with the restart note landing on the *next* call instead).
+   */
+  shellExited: boolean
   /** True when the session had to be rebuilt to recover from this call. */
   restarted: boolean
   /** True when stdout was longer than `maxOutputBytes`. */
@@ -176,6 +187,12 @@ export class WslBashSession {
   private readonly spec: WslBashSessionSpec
   private handle: SubprocessHandle | undefined
   private exited = false
+  /**
+   * The code the child came back with, once it has come back. Kept because the call that ended the
+   * shell has to report a code, and the only code available to it is the shell's own — which for
+   * `exit 3` is the command's, since bash leaves with the status it was handed.
+   */
+  private exitStatus: number | undefined = undefined
   private out = Buffer.alloc(0)
   private outTruncated = false
   private outSpill: { path: string, fd: number } | undefined
@@ -295,6 +312,7 @@ export class WslBashSession {
     this.errSeen = 0
     this.errWritten = 0
     this.exited = false
+    this.exitStatus = undefined
     // A new child means the previous frame's tail is gone with the old one; anything still parked in
     // `readers` belongs to that dead reader and must not be resolved by this child's first bytes.
     this.pendingState = undefined
@@ -347,7 +365,7 @@ export class WslBashSession {
       }
     })
     void handle.done.then(
-      () => { this.exited = true },
+      (outcome) => { this.exited = true; this.exitStatus = outcome?.exitCode ?? undefined },
       () => { this.exited = true },
     )
   }
@@ -475,15 +493,17 @@ export class WslBashSession {
         return {
           settled: true,
           run: {
-            stdout, stderr, exitCode: done.status, timedOut: false, aborted: false, restarted: false,
+            stdout, stderr, exitCode: done.status, timedOut: false, aborted: false, shellExited: false, restarted: false,
             truncated, stderrTruncated: false, ...this.spillPaths(), ...this.starvedFields(watch),
           },
         }
       }
       const caused = armed.signal.aborted
+      const timedOut = timeoutOf(armed.signal, 'WSL_BASH_TIMEOUT') !== undefined
+      // A deadline that killed the shell is the call's own ending, not the command asking for one.
+      const shellExited = this.exited && !caused && !timedOut
       if (caused || this.exited) {
         armed[Symbol.dispose]()
-        const timedOut = timeoutOf(armed.signal, 'WSL_BASH_TIMEOUT') !== undefined
         this.spillWindow('stderr', this.err, this.err.length)
         this.spillWindow('stdout', this.out, this.out.length)
         watch.settled = true
@@ -492,12 +512,16 @@ export class WslBashSession {
           run: {
             stdout: stripRecords(this.out).toString('utf8'),
             stderr: this.takeStderr(frame.payload, frame.stdinPayload),
-            exitCode: timedOut ? -1 : 1,
+            exitCode: timedOut ? -1 : (this.exitStatus ?? 1),
             timedOut,
             // A frame the watchdog stopped is neither a deadline nor a caller abort: the caller cancelled
             // nothing, and a builtin that blocked the shell has to reach the tool's retry path (measured:
             // reporting it as `aborted` made the live gate abort its own run).
-            aborted: !timedOut && watch.stop === undefined,
+            //
+            // A shell that ended is the same mistake in the other direction: the command asked for it, so
+            // the call has an answer — its own output, and the code the shell left by.
+            aborted: !timedOut && watch.stop === undefined && !shellExited,
+            shellExited,
             restarted: false,
             truncated: this.outTruncated,
             stderrTruncated: this.errTruncated,

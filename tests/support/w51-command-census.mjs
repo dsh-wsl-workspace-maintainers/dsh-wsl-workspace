@@ -28,7 +28,7 @@
  * @module tests/support/w51-command-census.mjs
  */
 
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -76,8 +76,12 @@ const CENSUS = [
   {
     shape: 'a real tool reading many files',
     name: 'grep -rn across a tree (what grep/glob do)',
-    command: 'mkdir -p /tmp/w51c && printf "alpha 1\\nbeta 2\\n" > /tmp/w51c/a.txt && printf "alpha 3\\n" > /tmp/w51c/b.txt && grep -rn alpha /tmp/w51c | wc -l',
-    want: ['2'],
+    // `mktemp -d`, not `/tmp/w51c`: a fixed path is a fixture a *previous* run can leave behind, and
+    // then the row answers with someone else's bytes. Measured the hard way on 2026-10-09 — a root-owned
+    // `/tmp/w51c` from an earlier gate run made a later unprivileged run print `2` (the stale count) next
+    // to `Permission denied` on its own write, and the row passed on evidence it had not produced.
+    command: 'D=$(mktemp -d) && printf "alpha 1\\nbeta 2\\n" > $D/a.txt && printf "alpha 3\\n" > $D/b.txt && echo "HITS=$(grep -rn alpha $D | wc -l)"',
+    want: ['HITS=2'],
   },
   {
     shape: 'binary output must not be mangled',
@@ -110,7 +114,7 @@ const CENSUS = [
   {
     shape: 'a process that outlives the call',
     name: 'background job, then read its output',
-    command: '(sleep 0.2; echo BG_DONE_$(( 6 * 8 ))) > /tmp/w51c_bg.txt; sleep 1; cat /tmp/w51c_bg.txt',
+    command: 'F=$(mktemp); (sleep 0.2; echo BG_DONE_$(( 6 * 8 ))) > $F; sleep 1; cat $F; rm -f $F',
     want: ['BG_DONE_48'],
   },
   {
@@ -124,6 +128,117 @@ const CENSUS = [
     name: 'a non-zero exit mid-pipeline must not swallow it',
     command: 'set -o pipefail; (exit 3) | cat; echo "CODE=$?"',
     want: ['CODE=3'],
+  },
+  {
+    // The three rows below are one story, and they have to run in order: a command can end the
+    // persistent shell the way a person typing `exit` ends their own terminal, and that is neither a
+    // cancelled call nor a crash. Measured on the installed 0.7.7 build (real host, real model-shaped
+    // calls, 2026-10-09): `echo out; echo err >&2; exit 3` came back as `Error: tool call aborted`
+    // with **neither** stream, and the fact that the shell had been rebuilt surfaced on the *next*
+    // call, where it reads as that call's own event. A model cannot act on that answer: it looks like
+    // the user pressed stop, so it stops, or retries the same line and ends the shell again.
+    shape: 'work staged before the shell is ended',
+    name: 'a directory and an export made before the exit',
+    command: 'cd /tmp && export W51_EXIT_STAGE=kept && echo STAGED',
+    want: ['STAGED'],
+  },
+  {
+    shape: 'a command that ends the session shell',
+    name: 'bare `exit 3` answers with its own streams and says what it did',
+    command: 'echo out; echo err >&2; exit 3',
+    // The three together are the claim: both streams came back, and the answer says the shell ended.
+    // `[stderr]` is not one of them — that separator is the renderer's, and this row judges the tool's
+    // own return value, where the two streams are separate fields (measured: a row asking for it failed
+    // on a build that was answering correctly).
+    wantAll: ['out', 'err', 'ended the session shell'],
+    note: 'the streams AND the disclosure; an answer with one of the two is the defect',
+  },
+  {
+    shape: 'the shell still works after a call ended it',
+    name: 'the replayed state is the one the exit left behind',
+    command: 'pwd; echo SENT=$W51_EXIT_STAGE',
+    wantAll: ['/tmp', 'SENT=kept'],
+  },
+  {
+    // Two more ways a line ends the shell, both found by driving the installed build through the
+    // product's own session (not by reading the code): `set -e` makes *any* failing simple command end
+    // an interactive shell with `errexit` on, and `exec bash --norc` replaces the process image — the
+    // replacement then reads the pipe to EOF and exits, so the child is gone by the next poll. The
+    // standard that decides whether either is a defect is the native one: a person typing the same line
+    // into their own terminal also ends that shell. So the claim is not "make it survive", it is "answer
+    // with what the call produced and say what happened", which is the same claim as the row above.
+    // Measured on the desktop 2026-10-09, on the build with the fix: `set -e; false; echo NEVER` →
+    // `(no output) [exit code: 1]` + the disclosure, 1 163 ms; `exec bash --norc` → the same disclosure,
+    // 1 162 ms; both with `isError=false`. Before that build both were `Error: tool call aborted`.
+    shape: 'other ways a line ends the session shell',
+    name: '`set -e` with a failing command says so instead of reading as a cancel',
+    command: 'set -e; false; echo NEVER',
+    wantAll: ['ended the session shell'],
+  },
+  {
+    shape: 'a call that replaces the shell process',
+    name: '`exec bash --norc` answers with the disclosure and the session recovers',
+    command: 'exec bash --norc',
+    wantAll: ['ended the session shell'],
+  },
+  {
+    shape: 'the shell is back and still the session user\'s',
+    name: 'the call after the exec answers normally',
+    command: 'echo AFTER_EXEC_ALIVE=ok; pwd',
+    wantAll: ['AFTER_EXEC_ALIVE=ok', '/tmp'],
+  },
+  {
+    // Parity, measured rather than assumed, on a line that looks like a bug and is not: defining an
+    // alias and using it in the same input line. Native, in this distribution, at this moment:
+    //   printf "alias zzz='echo ALIAS_OK'; zzz\n" | bash -i   →  command not found, exit 127
+    //   printf "alias yyy='echo YYY_OK'\nyyy\n"                →  YYY_OK on the second read line
+    // (both run 2026-10-09 on this machine). bash expands aliases when it reads a line, so the first
+    // shape fails in a person's terminal exactly as it fails here. The row therefore asserts the
+    // *native* answer — including the 127 and the `not found` sentence — because a difference from
+    // native is the only thing this repository treats as a defect.
+    shape: 'alias defined and used in one line (native parity, not a bug)',
+    name: '`alias zzz=…; zzz` is not found in this call and is defined for the next',
+    command: "alias zzz='echo ALIAS_OK'; zzz; echo \"CODE=$?\"",
+    wantAll: ['not found', 'CODE=127'],
+  },
+  {
+    shape: 'alias defined and used in one line (native parity, not a bug)',
+    name: 'the next call sees the alias the earlier one defined',
+    command: 'zzz',
+    want: ['ALIAS_OK'],
+  },
+  {
+    // Sunk from the release behaviour matrix (rows 1.5, 1.8, 2.1, 2.5 of
+    // `docs/release-behaviour-matrix.zh.md`), each with the native reading taken on 2026-10-09 in the
+    // same distribution: `hi` + `PIPE=0` exit 0; `TR` exit 7; `5`; and `x \r \n C J K \r`. An
+    // expectation in that document is only good until the native side contradicts it — row 1.7 and
+    // row 2.1's byte count both died on today's run, so a row lands here only after both sides spoke.
+    shape: 'a pipeline whose reader exits early',
+    name: 'head on a one-line echo must not earn a broken-pipe sentence',
+    command: 'echo hi | head -n1; echo PIPE=$?',
+    wantAll: ['hi', 'PIPE=0'],
+    forbid: ['Broken pipe'],
+  },
+  {
+    shape: 'an EXIT trap in a child shell',
+    name: 'a trap on exit still prints before the code arrives',
+    command: "bash -c 'trap \"echo TR\" EXIT; exit 7'",
+    want: ['TR'],
+  },
+  {
+    shape: 'raw bytes through the decoder',
+    name: 'NUL and two high bytes count as the five bytes they are',
+    command: "printf 'a\\x00b\\xff\\xfe' | wc -c",
+    want: ['5'],
+  },
+  {
+    shape: 'carriage returns must not be repaired',
+    name: 'CRLF and a lone CR stay in the byte dump',
+    // The needles are `od -c`'s own column spacing (three spaces between single characters) and its
+    // two-character `\r` — taken from the answer this row produced on 2026-10-09, where the session
+    // returned `x  \r  \n   C   J   K  \r`. A one-space needle failed the row, not the product.
+    command: "printf 'x\\r\\nCJK\\r' | od -c | head -3",
+    wantAll: ['C   J   K', '\\r', '\\n'],
   },
   {
     // The product's **own** timeout, passed as the argument a model would pass. The first attempt
@@ -140,6 +255,17 @@ const CENSUS = [
 ]
 
 const home = mkdtempSync(join(repoRoot, 'ci', 'deps', '.w51c-'))
+// The harness creates this tree inside the repository, so it takes it back down with it: the run that
+// staged the shell-exit rows left `ci/deps/.w51c-7zaNr3/` (an `overlay.yml` and a `profiles/` tree)
+// standing in the worktree, where the next person reads it as somebody's half-finished work.
+process.on('exit', () => {
+  try {
+    rmSync(home, { recursive: true, force: true })
+  } catch {
+    // A teardown that cannot delete must not become a census failure; the run's own verdicts already
+    // printed by this point.
+  }
+})
 const profileDir = join(home, 'profiles', 'w51c')
 mkdirSync(profileDir, { recursive: true })
 writeFileSync(join(profileDir, 'package.json'), `${JSON.stringify({
@@ -277,14 +403,24 @@ try {
     // The whole answer, text and all, because where the evidence sits in it is the point: a row
     // that produced its marker only in the stderr channel passed for the wrong reason.
     const text = failure ?? JSON.stringify(answer ?? '')
-    const found = row.want.some(needle => text.includes(needle))
-    const ok = row.expectNegative === true ? found : found
+    // `want` is any-of: the row passed if the evidence appeared somewhere. `wantAll` is the other
+    // claim — a row whose answer must carry *several* things at once, because the defect being pinned
+    // is one of them going missing (a bare `exit` answers with its stdout but drops the note saying
+    // the shell ended, or keeps the note and loses the streams).
+    const needles = row.wantAll ?? row.want
+    const found = row.wantAll === undefined ? row.want.some(needle => text.includes(needle))
+      : row.wantAll.every(needle => text.includes(needle))
+    // `forbid` says the half a needle list cannot: the answer carries its marker *and* does not carry
+    // a sentence nobody earned (a `Broken pipe` we added, a reset sequence written twice).
+    const poisoned = (row.forbid ?? []).filter(needle => text.includes(needle))
+    const ok = found && poisoned.length === 0
     rows.push({
       shape: row.shape,
       name: row.name,
       ok,
       ms: elapsed,
-      evidence: found ? (row.want.find(needle => text.includes(needle)) ?? '') : text.slice(0, 200),
+      evidence: poisoned.length > 0 ? `forbidden text in the answer: ${JSON.stringify(poisoned)}`
+        : found ? (needles.find(needle => text.includes(needle)) ?? '') : text.slice(0, 200),
       note: row.note,
     })
     process.stdout.write(`${ok ? 'ok  ' : 'FAIL'}  ${String(elapsed).padStart(6)}ms  ${row.shape}\n`)
@@ -317,11 +453,16 @@ try {
     // ever sees it — measured: a direct run of `…; echo "code=$?"` answered `code=0` where the
     // session answered the correct `code=3`. That is hazard A/E's own subject, and it is why the
     // ground truth here is a file the session writes once and both sides then execute.
-    const script = `/tmp/w51c-complex-${index}.sh`
+    const script = `/tmp/w51c-complex-${process.pid}-${index}.sh`
     try {
       const quoted = probe.command.replace(/'/g, `'\\''`)
-      await tool.execute({ command: `printf '%s\\n' '${quoted}' > ${script}`, description: `census: stage ${probe.name}` },
+      const staged = await tool.execute({ command: `printf '%s\\n' '${quoted}' > ${script}`, description: `census: stage ${probe.name}` },
         { signal: AbortSignal.timeout(30_000), agent: undefined })
+      // Staging is part of the measurement, not plumbing: a `>` that fails against a file a previous
+      // root run left behind would let the next line execute *that* file, and the row would answer for
+      // a command it never staged. Fixed `/tmp` names did exactly this on 2026-10-09, so the name
+      // carries this process's id and a failed stage is reported as itself.
+      if (staged?.exitCode !== 0) throw new Error(`staging ${script} failed with exit ${String(staged?.exitCode)}`)
       const viaSession = await tool.execute({ command: `bash ${script}`, description: `census: ${probe.name}` },
         { signal: AbortSignal.timeout(60_000), agent: undefined })
       const direct = await runDirect('wsl.exe', ['-d', DISTRO, '-u', 'root', '--', 'bash', script],
