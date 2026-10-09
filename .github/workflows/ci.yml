@@ -323,7 +323,7 @@ jobs:
           wait "$CENSUS" || FAIL=1
           for name in host-probe command-census; do
             echo "::group::$name"
-            grep -aE '"verdict"|"(ok|shape|name|evidence)"|^FAIL' "logs/$name.log" | head -40 || true
+            grep -aE '"verdict"|"passed"|"total"|"(ok|shape|name|evidence)"|^FAIL' "logs/$name.log" | head -40 || true
             tail -5 "logs/$name.log" || true
             echo "::endgroup::"
           done
