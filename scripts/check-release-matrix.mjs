@@ -15,7 +15,7 @@ const ROOT = rootAt === -1 ? resolve(import.meta.dirname, '..') : resolve(argv[r
 const DOC = 'docs/release-behaviour-matrix.zh.md'
 const SECTIONS = ['0', '1', '2', '3', '4', '5', '6']
 const GROUPS = ['G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'G7', 'G8', 'G9', 'G10', 'G11', 'G12']
-const STANDING = /待跑|已入|已跑|实测|已定案|规程|必跑|已知敏感|三形之一/
+const STANDING = /待跑|未定|已入|已跑|实测|已定案|规程|必跑|已知敏感|三形之一/
 
 /** Split a table row into cells; an escaped `\|` stays text and is not a column boundary. */
 function cellsOf(line) {
@@ -33,6 +33,7 @@ function audit(text) {
   if (!/MATCH/.test(text) || !/PARITY-NOT-DEFECT/.test(text) || !/DEFECT/.test(text)) {
     bad.push("the three verdicts of section 0 are not all named")
   }
+  const counts = { pending: 0, undecided: 0 }
   const ids = new Map()
   const commands = new Map()
   let section = ""
@@ -55,6 +56,8 @@ function audit(text) {
       if (ids.has(id)) bad.push("duplicate row id " + id)
       if (command !== "" && commands.has(command)) bad.push("the command of " + id + " is also row " + commands.get(command))
       if (!STANDING.test(standing)) bad.push(id + ": standing outside the vocabulary: " + standing)
+      if (standing.includes("待跑")) counts.pending++
+      if (standing.includes("未定")) counts.undecided++
       ids.set(id, standing)
       if (command !== "") commands.set(command, id)
     } else if (section === "3") {
@@ -73,7 +76,7 @@ function audit(text) {
       }
     }
   }
-  return { bad, rows: ids.size }
+  return { bad, rows: ids.size, counts }
 }
 /** Each of these must turn the audit red: a gate nobody has seen fail is a sentence about a gate. */
 const MUTATIONS = [
@@ -95,7 +98,7 @@ try {
   console.error(`release-matrix: cannot read ${docPath}`)
   process.exit(1)
 }
-const { bad, rows } = audit(text)
+const { bad, rows, counts } = audit(text)
 if (argv.includes("--self-test")) {
   let reddened = 0
   for (const mutation of MUTATIONS) {
@@ -121,4 +124,5 @@ if (bad.length > 0) {
   console.error(`release-matrix: ${bad.length} structural failure(s) in ${DOC}`)
   process.exit(1)
 }
-console.log(`release-matrix: OK — ${rows} rows over ${GROUPS.length} groups (${DOC})`)
+console.log(`release-matrix: OK — ${rows} rows over ${GROUPS.length} groups, ` +
+  `${counts.pending} 待跑 and ${counts.undecided} 未定 still stand between this document and a release (${DOC})`)
