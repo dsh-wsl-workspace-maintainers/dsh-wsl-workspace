@@ -230,7 +230,11 @@ jobs:
             # no name attached. Print the verdict line, every FAIL, and the short-run guard's own
             # sentence — then the tail for context.
             grep -aE "checks passed|bash-session-real: RED|  FAIL" "logs/$name.log" 2>/dev/null | head -25 || true
-            tail -6 "logs/$name.log" || true
+            # The session driver prints its whole log rather than a six-line tail: every one of its
+            # cells carries the milliseconds it took, and a green frame used to record none of them —
+            # so a threshold question ("how close did that run get?") could only be answered from the
+            # downloaded artifacts, which is how the 3911 ms pager reading stayed invisible.
+            if [ "$name" = bash-session-real ]; then cat "logs/$name.log" || true; else tail -6 "logs/$name.log" || true; fi
             echo "::endgroup::"
             if [ "$rc" -ne 0 ]; then FAIL=1; fi
             return 0
@@ -249,6 +253,10 @@ jobs:
           MSYS_NO_PATHCONV=1 WSL_COMPAT_ROOT=/tmp/dsh-wsl-relay-profile node --experimental-strip-types scripts/compatibility/relay-profile-real.mjs > logs/relay-profile-real.log 2>&1 || { echo "rc=$?"; tail -8 logs/relay-profile-real.log || true; FAIL=1; }
           run_one tool-bash-real node --experimental-strip-types scripts/compatibility/tool-bash-real.mjs
           run_one bash-session-real node --experimental-strip-types scripts/compatibility/bash-session-real.mjs
+          # The two readings that driver leans on (the quiet window for a spill file, and the
+          # re-read when the two settles disagree) get their own control first: it needs no
+          # distribution, so a broken reading is caught before the WSL matrix spends minutes on it.
+          node --experimental-strip-types scripts/compatibility/bash-parity-real.mjs --self-test > logs/parity-selftest.log 2>&1 || { echo "self-test rc=$?"; cat logs/parity-selftest.log; FAIL=1; }
           MSYS_NO_PATHCONV=1 WSL_COMPAT_ROOT=/tmp/dsh-wsl-parity node --experimental-strip-types scripts/compatibility/bash-parity-real.mjs > logs/bash-parity-real.log 2>&1 || { echo "rc=$?"; tail -8 logs/bash-parity-real.log || true; FAIL=1; }
           exit $FAIL
       - name: run the lib-plane gates against the shipped bundle
@@ -269,7 +277,9 @@ jobs:
             DSH_WSL_TEST_PLANE=lib "$@" > "logs/lib-$name.log" 2>&1 || rc=$?
             echo "rc=$rc"
             grep -aE "  FAIL|: RED|checks passed" "logs/lib-$name.log" 2>/dev/null | head -20 || true
-            tail -8 "logs/lib-$name.log" || true
+            # Same as the `src` side: the session driver's per-cell milliseconds are the reading a
+            # threshold is judged from, and a green frame must carry them too.
+            if [ "$name" = bash-session-real ]; then cat "logs/lib-$name.log" || true; else tail -8 "logs/lib-$name.log" || true; fi
             echo "::endgroup::"
             if [ "$rc" -ne 0 ]; then FAIL=1; fi
             return 0
@@ -287,6 +297,7 @@ jobs:
           MSYS_NO_PATHCONV=1 DSH_WSL_TEST_PLANE=lib WSL_COMPAT_ROOT=/tmp/dsh-wsl-relay-profile-lib node --experimental-strip-types scripts/compatibility/relay-profile-real.mjs > logs/lib-relay-profile-real.log 2>&1 || { echo "rc=$?"; tail -8 logs/lib-relay-profile-real.log || true; FAIL=1; }
           run_lib tool-bash-real node --experimental-strip-types scripts/compatibility/tool-bash-real.mjs
           run_lib bash-session-real node --experimental-strip-types scripts/compatibility/bash-session-real.mjs
+          node --experimental-strip-types scripts/compatibility/bash-parity-real.mjs --self-test > logs/lib-parity-selftest.log 2>&1 || { echo "self-test rc=$?"; cat logs/lib-parity-selftest.log; FAIL=1; }
           MSYS_NO_PATHCONV=1 DSH_WSL_TEST_PLANE=lib WSL_COMPAT_ROOT=/tmp/dsh-wsl-parity-lib node --experimental-strip-types scripts/compatibility/bash-parity-real.mjs > logs/lib-bash-parity-real.log 2>&1 || { echo "rc=$?"; tail -8 logs/lib-bash-parity-real.log || true; FAIL=1; }
           # skills-real is deliberately not attempted under `lib`: tsdown declares no entry for
           # the provider (the class is file-local to lib/index.js:1122) and plane.mjs throws
@@ -324,7 +335,7 @@ jobs:
           wait "$CENSUS" || FAIL=1
           for name in host-probe command-census; do
             echo "::group::$name"
-            grep -aE '"verdict"|"(ok|shape|name|evidence)"|^FAIL' "logs/$name.log" | head -40 || true
+            grep -aE '"verdict"|"passed"|"total"|"(ok|shape|name|evidence)"|^FAIL' "logs/$name.log" | head -40 || true
             tail -5 "logs/$name.log" || true
             echo "::endgroup::"
           done

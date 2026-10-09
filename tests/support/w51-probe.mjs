@@ -20,6 +20,17 @@
  * The executor under test is `lib/shell.js`'s own. A fake would agree with the fix and disagree with
  * the product — which is how the first half of #56 stayed green on CI and stayed broken on a host.
  *
+ * **(0) The control arm.** Every numbered row above asks something of *this plugin's* executor, so a
+ * red could always have been the machine: the host's process plumbing, `wsl.exe`, the distribution.
+ * The control arm asks the same shape of the **host's own** `subprocess` service, with nothing of ours
+ * imported, and the verdict line then says which world the red lives in. Measured on this machine
+ * 2026-10-09, three ways: both arms green (`CENSUS-CONTROL-GREEN`, rc 0); the control broken by naming
+ * a distribution that does not exist (control red, `4-execute-result` red, verdict refuses to blame
+ * the plugin, rc 1); and the plugin broken by mutating one token of the shipped `lib/shell.js`
+ * (`"-lc"` → `"-lcMUT"` — control stays green, `4-execute-result` goes red, verdict blames the plugin,
+ * rc 1, and the file was restored byte-for-byte afterwards). That last pair is the whole point: the
+ * two shapes are distinguishable from the report alone, without reading the code.
+ *
  *   node tests/support/w51-probe.mjs
  */
 
@@ -98,6 +109,46 @@ try {
   const rows = []
   const add = (id, ok, detail) => rows.push({ id, ok, detail })
 
+  // ── (0) THE CONTROL ARM — the host's own plumbing, with nothing of ours in it ─────────────
+  //
+  // Every row below asks something of **this plugin's** executor. When one of them is red the report
+  // so far could only say "red", and a reader had to decide by hand whether the substrate underneath
+  // (the host's `subprocess` service, `wsl.exe`, the distribution) was also broken. That decision is
+  // the difference between a plugin defect and a machine defect, and it was being made from memory.
+  //
+  // So run the same shape through the **host's own** `subprocess` service before constructing anything
+  // of ours: `subprocess-local` is mounted by the overlay above, and nothing in this block imports a
+  // file from this repository. Control green + a row below red ⇒ the plugin's. Control red ⇒ the rows
+  // below are not evidence about the plugin, and `attribution` says so in the report itself.
+  const CONTROL_MARKER = 'W51CONTROL9f3a11'
+  let control = false
+  try {
+    const handle = ctx.get('subprocess').spawn({
+      argv: ['wsl.exe', '-d', DISTRO, '--', 'sh', '-c', `echo ${CONTROL_MARKER}`],
+      stdio: { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' },
+      // `cwd` is required, not defaulted: without it the host's own `targetEnvironment` calls
+      // `validateNoNullByte('options.cwd', undefined)` and dies with
+      // `Cannot read properties of undefined (reading 'includes')`
+      // (`dsh-subprocess-local/lib/runner-launch-*.js:1509,1520`), which reads as a broken
+      // distribution rather than as a missing argument. Measured here 2026-10-09; our own
+      // `src/shell.ts` always carries a cwd, which is why the seam never showed it.
+      cwd: process.env.SystemRoot ?? 'C:\\',
+      env: { ...process.env },
+      graceMs: 2_000,
+    })
+    let seen = ''
+    handle.stdout?.on('data', (chunk) => { seen += chunk.toString('utf8') })
+    await within(handle.done, 45_000, 'control-arm subprocess done')
+    handle.terminate()
+    control = seen.includes(CONTROL_MARKER)
+    add('0-control-host-subprocess', control, control
+      ? `the host's own subprocess service ran wsl.exe and returned the marker (${seen.replace(/\s+/g, ' ').trim().slice(0, 60)})`
+      : `the host's own subprocess service did NOT return the marker — got ${JSON.stringify(seen.slice(0, 160))}; nothing below this line is evidence about this plugin`)
+  } catch (error) {
+    add('0-control-host-subprocess', false,
+      `threw: ${String(error?.stack ?? error?.message ?? error).slice(0, 400)} — nothing below this line is evidence about this plugin`)
+  }
+
   // The real executor, constructed with a resolved config — `src/shell.ts:180` takes `(ctx, config)`
   // and `assertServiceableWslConfig` runs on what it is given.
   const { WslShellExecutor } = await import(pathToFileURL(SHELL_EXECUTOR).href)
@@ -170,7 +221,9 @@ try {
   }
 
   await (typeof shutdown === 'function' ? shutdown() : undefined)
-  report(rows)
+  report(rows, control
+    ? 'CENSUS-CONTROL-GREEN — the host answers on its own, so any red below belongs to this plugin'
+    : 'CENSUS-CONTROL-RED — the host did not answer on its own, so no red below is evidence about this plugin')
 } catch (error) {
   console.log(JSON.stringify({ verdict: 'NOT-MEASURED', message: String(error?.stack ?? error).slice(0, 900) }))
   process.exit(2)

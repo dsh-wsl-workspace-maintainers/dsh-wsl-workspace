@@ -13,7 +13,8 @@
 // this driver is red — a difference nobody wrote down is the thing that surprises a user.
 import { Context } from '@deepseek-ai/cordis'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join, resolve as resolvePath } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
@@ -143,6 +144,74 @@ function check(name, pass, detail) {
   console.log(`  ${pass === true ? 'PASS' : 'FAIL'} ${name}${detail === undefined ? '' : ` — ${detail}`}`)
 }
 
+// The two readings this file now depends on get a control that needs no distribution: `--self-test`
+// runs them against files this process writes, so the widened quiet window and the mismatch re-read
+// are both seen working rather than assumed.
+if (process.argv.includes('--self-test')) {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-parity-selftest-'))
+  const failures = []
+  try {
+    const file = join(dir, 'spill.txt')
+    writeFileSync(file, 'a\n'.repeat(100))
+    const writer = (async () => {
+      await new Promise(resolve => setTimeout(resolve, 400))
+      appendFileSync(file, 'b\n'.repeat(100))
+    })()
+    const seen = await settleSpill(file)
+    await writer
+    const truth = statSync(file).size
+    // `statSync().size` is a number, and the first version of this control compared it to a BigInt:
+    // the control failed while the code under it was right. Numbers on both sides, as the loop uses.
+    if (seen.settled === true && Number(seen.size) === truth) {
+      console.log(`self-test: a 400 ms stall did not look settled (read ${truth} bytes after ${seen.waitedMs} ms)`)
+    } else {
+      failures.push(`the settle read ${seen.size} of ${truth} bytes — a 400 ms stall slipped through`)
+    }
+
+    const shortFile = join(dir, 'short.txt')
+    const longFile = join(dir, 'long.txt')
+    writeFileSync(shortFile, 'x\n'.repeat(3))
+    writeFileSync(longFile, 'x\n'.repeat(9))
+    const sides = [
+      { spill: { settled: true, size: 6, path: shortFile }, signature: { spillLines: 9 } },
+      { spill: { settled: true, size: 18, path: longFile }, signature: { spillLines: 9 } },
+    ]
+    // Two files that never agree: the pair must not be compared at all, and the counts must stay as
+    // they were rather than being re-read from files nobody waited for.
+    const stalled = await reconcileSpillReads(sides[0], sides[1], 400)
+    if (stalled.converged === false && sides[0].signature.spillLines === 9) {
+      console.log(`self-test: a pair that never agrees is reported unconverged (waited ${stalled.waitedMs} ms)`)
+    } else {
+      failures.push(`a non-converging pair was reported converged: ${JSON.stringify(stalled)}`)
+    }
+
+    // The case the WSL1 runner produced: the host file is short and *still growing* while the session
+    // file is already complete. The pair must wait for the writer, then compare the two final counts.
+    const growingFile = join(dir, 'growing.txt')
+    writeFileSync(growingFile, 'y\n'.repeat(3))
+    const lateWriter = (async () => {
+      await new Promise(resolve => setTimeout(resolve, 1_200))
+      appendFileSync(growingFile, 'y\n'.repeat(6))
+    })()
+    const pair = [
+      { spill: { settled: true, size: 6, path: growingFile }, signature: { spillLines: 3 } },
+      { spill: { settled: true, size: 18, path: longFile }, signature: { spillLines: 9 } },
+    ]
+    const converging = await reconcileSpillReads(pair[0], pair[1], 10_000)
+    await lateWriter
+    if (converging.converged === true && pair[0].signature.spillLines === 9 && pair[1].signature.spillLines === 9) {
+      console.log(`self-test: a file that grew after a 1.2 s stall was waited for (${converging.waitedMs} ms)`)
+    } else {
+      failures.push(`the still-growing file was not waited for: ${JSON.stringify({ converging, lines: pair.map(side => side.signature.spillLines) })}`)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+  for (const failure of failures) console.error(`bash-parity-real self-test: ${failure}`)
+  console.log(`bash-parity-real self-test: ${failures.length === 0 ? 'OK' : 'RED'}`)
+  process.exit(failures.length === 0 ? 0 : 1)
+}
+
 const oneShot = await worldOneShot()
 const session = await worldSession()
 for (const world of [oneShot, session]) {
@@ -169,6 +238,7 @@ for (const probe of probes) {
     console.log(`  skip ${probe.name} — the host's one-shot world cannot answer it without the jobs registry`)
     continue
   }
+  const reconciled = await reconcileSpillReads(theirs, ours)
   const differs = JSON.stringify(theirs.signature) !== JSON.stringify(ours.signature)
   const row = probe.row === undefined ? undefined : rows.find(entry => entry.id === probe.row)
   const aligned = row !== undefined && /^aligned/.test(row.verdict)
@@ -178,6 +248,18 @@ for (const probe of probes) {
   // signature alone. Only the lines that print a detail carry it, so a green cell stays quiet.
   const detail = `${JSON.stringify(theirs.signature)} vs ${JSON.stringify(ours.signature)}`
     + ` — spill: host ${describeSpill(theirs.spill)}, session ${describeSpill(ours.spill)}`
+  // A file that was still growing when it was read is a measurement taken too early, not a
+  // difference — the two are identical in the signature. It gets its own verdict so the red says
+  // "read it again" rather than "the two worlds disagree": frame 37888856516 printed the host's
+  // half-written file (1,563 lines short) as a product difference.
+  // Both worlds ran the same command, so their spill files must end up holding the same bytes. If they
+  // never agree inside the budget, the reading is the defect — a quiet file is not enough, which frame
+  // 37892642235 proved by stalling 1,265,664 of 1,288,895 bytes still for over a second and growing on.
+  if (!reconciled.converged) {
+    check(`${probe.name}: both spill files held the same bytes when they were compared`, false,
+      `${detail} — waited ${reconciled.waitedMs} ms for the pair: host ${reconciled.sizes[0]} bytes, session ${reconciled.sizes[1]} bytes`)
+    continue
+  }
   if (differs && row === undefined) {
     check(`${probe.name}: every difference is declared`, false, `undocumented: ${detail} — add a row to docs/bash-parity.md and name it in this probe`)
   } else if (differs && aligned) {
@@ -215,9 +297,11 @@ async function ask(world, probe) {
  *
  * **One equal pair is not stability.** The first version returned as soon as two samples 100 ms apart
  * matched, and a single delayed write satisfies that: on the WSL1 frame this cell has now read a file
- * that was still being written at least twice (`seq 1 200000` counted as 197,852 and again as 193,756
- * lines) and each time reported it as a product difference. A run of equal samples costs 150 ms on a
- * settled file and cannot be fooled by one stall.
+ * that was still being written at least three times — `seq 1 200000` counted as 197,852, then 193,756,
+ * and on frame 37888856516 as 198,437 — each time reporting it as a product difference. A run of equal
+ * samples costs a second on a settled file, and 150 ms is now known to be too short. The detail
+ * carries how long the file took to hold still, so a longer stall can be told from a disagreement
+ * rather than guessed at.
  *
  * **And a file that never settles is named as such.** The caller gets `settled: false` rather than a
  * plausible number, so a failure message can say which side it is on instead of printing "the two
@@ -226,35 +310,78 @@ async function ask(world, probe) {
  * @returns whether the size held still, the last size seen, and how many samples were taken.
  */
 async function settleSpill(path) {
-  if (typeof path !== 'string' || path === '') return { settled: true, size: 0n, samples: 0 }
-  // 4 samples 50 ms apart: the size has to stand still for 150 ms, not merely match once.
-  const STABLE_SAMPLES = 4
-  const INTERVAL_MS = 50
-  const MAX_MS = 5_000
-  let previous = -1n
+  if (typeof path !== 'string' || path === '') return { settled: true, size: 0, samples: 0, waitedMs: 0, path: '' }
+  // 10 samples 100 ms apart: the size has to stand still for a second, not merely match once. A
+  // settled file costs that second; a file that never settles is reported as such after 30 s.
+  const STABLE_SAMPLES = 10
+  const INTERVAL_MS = 100
+  const MAX_MS = 30_000
+  let previous = -1
   let equal = 0
-  let size = 0n
+  let size = 0
   let samples = 0
-  const until = Date.now() + MAX_MS
+  const startedAt = Date.now()
+  const until = startedAt + MAX_MS
   while (Date.now() < until) {
     try {
       size = statSync(path).size
     } catch {
       // No file to read is the tool's own answer — a spill that failed to open reports no path — so
       // there is nothing to wait for.
-      return { settled: true, size: 0n, samples }
+      return { settled: true, size: 0, samples, waitedMs: Date.now() - startedAt, path }
     }
     samples += 1
     if (size === previous) {
       equal += 1
-      if (equal >= STABLE_SAMPLES) return { settled: true, size, samples }
+      if (equal >= STABLE_SAMPLES) return { settled: true, size, samples, waitedMs: Date.now() - startedAt, path }
     } else {
       equal = 0
       previous = size
     }
     await new Promise(resolve => setTimeout(resolve, INTERVAL_MS))
   }
-  return { settled: false, size, samples }
+  return { settled: false, size, samples, waitedMs: Date.now() - startedAt, path }
+}
+
+/**
+ * Settle both spill files again when their sizes disagree, then re-derive both line counts.
+ *
+ * Both worlds ran the same command, so both files must end up holding the same bytes. That equality is
+ * the trigger: the pair is sampled until both files are still for a second *and* their sizes match, and
+ * only then are the two line counts read. A quiet file on its own proves nothing — frame 37892642235's
+ * WSL1 host file sat still for 1039 ms at 1,265,664 of 1,288,895 bytes and then went on writing, and
+ * the short read was printed as a product difference for the third time.
+ * @returns whether the pair converged, how long it took, and the sizes it settled at.
+ */
+async function reconcileSpillReads(theirs, ours, budgetMs = 30_000) {
+  const pathOf = side => (typeof side?.spill?.path === 'string' ? side.spill.path : '')
+  const [hostPath, sessionPath] = [pathOf(theirs), pathOf(ours)]
+  if (hostPath === '' || sessionPath === '') return { converged: true, waitedMs: 0, sizes: [0, 0] }
+  const sizeOf = file => {
+    try {
+      return statSync(file).size
+    } catch {
+      return 0
+    }
+  }
+  const started = Date.now()
+  let previous = [-1, -1]
+  let quiet = 0
+  while (Date.now() - started < budgetMs) {
+    const sizes = [sizeOf(hostPath), sizeOf(sessionPath)]
+    quiet = sizes[0] === previous[0] && sizes[1] === previous[1] ? quiet + 1 : 0
+    previous = sizes
+    // Both files still for a second *and* equal: the invariant the ledger asserts, waited for as a pair.
+    if (quiet >= 10 && sizes[0] === sizes[1]) break
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  const converged = previous[0] === previous[1] && previous[0] > 0
+  const lines = file => readFileSync(file, 'utf8').trim().split('\n').length
+  if (converged) {
+    if (typeof theirs.signature?.spillLines === 'number') theirs.signature.spillLines = lines(hostPath)
+    if (typeof ours.signature?.spillLines === 'number') ours.signature.spillLines = lines(sessionPath)
+  }
+  return { converged, waitedMs: Date.now() - started, sizes: previous }
 }
 
 /**
@@ -266,8 +393,8 @@ function describeSpill(spill) {
   if (spill === undefined) return 'not read'
   if (spill.samples === 0) return 'no file to read'
   return spill.settled
-    ? `${spill.size} bytes after ${spill.samples} sample(s)`
-    : `STILL GROWING at ${spill.size} bytes when the 5 s budget ran out (${spill.samples} samples)`
+    ? `${spill.size} bytes, still for a second after ${spill.waitedMs} ms (${spill.samples} samples)`
+    : `STILL GROWING at ${spill.size} bytes when the 30 s budget ran out (${spill.samples} samples)`
 }
 
 const passed = results.filter(Boolean).length

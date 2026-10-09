@@ -298,6 +298,14 @@ function toForeground(run: WslBashRun, timeoutMs: number, escalated: boolean, be
         + `(/proc/<pid>/wchan, /proc/<pid>/syscall, its fd table): ${run.starveSaw}]`)
     }
   }
+  // The command asked for the shell to end — `… ; exit 3`, a `set -e` body, a script that finishes with
+  // `exit`. That is not a cancelled call, and the reply a cancellation produces (`Error: tool call
+  // aborted`, no streams) is the one answer that tells the model nothing about what its own command did.
+  // Measured on the installed 0.7.7 build: this shape came back with nothing, and the evidence that the
+  // shell had been rebuilt arrived on the *next* call, where it reads as that call's own event.
+  if (run.shellExited) {
+    notes.push('[this command ended the session shell itself (bash left with the code reported here), so it was run once more after the shell was rebuilt: anything it did before ending has been done twice, and this answer is from that second run. A command that must exit non-zero without ending its shell should wrap itself in its own `bash -c` body, or use `wsl_terminal`]')
+  }
   if (run.restarted) {
     notes.push(run.skipped === undefined || run.skipped.length === 0
       ? '[the shell was restarted and its directory, exported variables, options and aliases were replayed]'
