@@ -34,6 +34,7 @@ function audit(text) {
     bad.push("the three verdicts of section 0 are not all named")
   }
   const counts = { pending: 0, undecided: 0 }
+  const listed = []
   const ids = new Map()
   const commands = new Map()
   let section = ""
@@ -59,6 +60,7 @@ function audit(text) {
       if (standing.includes("待跑")) counts.pending++
       if (standing.includes("未定")) counts.undecided++
       ids.set(id, standing)
+      listed.push({ group, id, command, standing })
       if (command !== "") commands.set(command, id)
     } else if (section === "3") {
       if (cells[0] === "行") continue
@@ -76,18 +78,32 @@ function audit(text) {
       }
     }
   }
-  return { bad, rows: ids.size, counts }
+  return { bad, rows: ids.size, counts, listed }
 }
-/** Each of these must turn the audit red: a gate nobody has seen fail is a sentence about a gate. */
+/**
+ * Each mutation must turn the audit red *with the message named in `expect`*: a broken copy that
+ * reddens for an unrelated reason proves nothing about the rule it was built to test. Mutation 2 is
+ * deliberately not anchored to a row id, because rows leave 待跑 as they get sunk — the first version
+ * of it quietly stopped applying when row 1.5 did, and only the "did not apply" line caught that.
+ */
 const MUTATIONS = [
-  { name: "an unescaped pipe inside a command",
-    apply: t => t.replace(/\\\|/, "|") },
-  { name: "a row whose standing column was emptied",
-    apply: t => t.replace("之类我们加的字 | 待跑 |", "之类我们加的字 |  |") },
-  { name: "a verdict naming a row that is not in the matrix",
-    apply: t => t.replace("| 4.5 `du -sh /mnt/c/Users` |", "| 99.9 `du -sh /mnt/c/Users` |") },
-  { name: "a DEFECT with no ledger line",
-    apply: t => t.replace("MATCH（经 #68 修复） | 原生终端会关掉", "DEFECT | 本轮不修，只在本文记着") },
+  { name: 'an unescaped pipe inside a command', expect: 'columns, not 5',
+    apply: t => t.replace(/\\\|/, '|') },
+  { name: 'a row whose standing column was emptied', expect: 'an empty cell',
+    apply: t => {
+      const lines = t.split('\n')
+      for (let i = 0; i < lines.length; i += 1) {
+        if (/^\| \d+\.\d+ \|/.test(lines[i])) {
+          lines[i] = lines[i].replace(/\|[^|]+\|\s*$/, '|  |')
+          return lines.join('\n')
+        }
+      }
+      return t
+    } },
+  { name: 'a verdict naming a row that is not in the matrix', expect: 'not in the matrix',
+    apply: t => t.replace('| 4.5 `du -sh /mnt/c/Users` |', '| 99.9 `du -sh /mnt/c/Users` |') },
+  { name: 'a DEFECT with no ledger line', expect: 'no ledger line',
+    apply: t => t.replace('MATCH（经 #68 修复） | 原生终端会关掉', 'DEFECT | 本轮不修，只在本文记着') },
 ]
 
 const docPath = join(ROOT, DOC)
@@ -98,7 +114,18 @@ try {
   console.error(`release-matrix: cannot read ${docPath}`)
   process.exit(1)
 }
-const { bad, rows, counts } = audit(text)
+const { bad, rows, counts, listed } = audit(text)
+// `--commands G1,G2` prints those groups' commands, one per line, in document order: the round a
+// release run pastes is generated from the rows being judged, never typed out next to them.
+const at = argv.indexOf('--commands')
+if (at !== -1) {
+  const wanted = (argv[at + 1] ?? '').split(',').filter(group => group !== '')
+  const picked = listed.filter(row => wanted.includes(row.group))
+  // The document escapes the pipe for the table; the command a release run sends is the unescaped one.
+  for (const row of picked) console.log(row.command.replace(/^`|`$/g, '').replace(/\\\|/g, '|'))
+  console.error(`release-matrix: ${picked.length} commands from ${wanted.join(',')} of ${listed.length} rows`)
+  process.exit(picked.length > 0 ? 0 : 1)
+}
 if (argv.includes("--self-test")) {
   let reddened = 0
   for (const mutation of MUTATIONS) {
@@ -108,8 +135,11 @@ if (argv.includes("--self-test")) {
       continue
     }
     const probe = audit(mutated)
+    // Red is not enough: a mutation that breaks some *other* rule would prove nothing about this one.
+    const named = probe.bad.some(line => line.includes(mutation.expect))
     if (probe.bad.length === 0) console.error(`self-test: STILL GREEN — ${mutation.name}`)
-    else {
+    else if (!named) console.error(`self-test: RED FOR THE WRONG REASON — ${mutation.name}: wanted the message ${JSON.stringify(mutation.expect)}, got ${probe.bad[0]}`)
+    else if (named) {
       reddened++
       console.log(`self-test: reddened by ${mutation.name}: ${probe.bad[0]}`)
     }
