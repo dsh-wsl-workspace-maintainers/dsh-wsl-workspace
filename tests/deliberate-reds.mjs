@@ -27,113 +27,21 @@ export const SHAPES = ['win32', 'posix']
  *   expect: Record<string, Observed>, debt: string, repair: string}[]}
  */
 export const DELIBERATE_REDS = [
-  {
-    id: 'fold-unreadable-path',
-    suite: 'route-envelope (§6 exists:false fold)',
-    prefix: 'an unreadable existing path is NOT answered as {exists:false}',
-    skipPrefix: 'an unreadable existing path is not reported as absent',
-    issue: '#44 (exists:false fold)',
-    expect: { win32: 'red', posix: 'skip' },
-    debt: 'src/index.ts folds a read it never performed into {exists:false}: a directory nobody can '
-      + 'read is reported as not existing.',
-    repair: 'answer {ok:false} with the OS error when the stat itself fails; keep {exists:false} for '
-      + 'ENOENT only.',
-  },
-  {
-    id: 'detail-nul-laced',
-    suite: 'search-run-fakes (§6 transport seams)',
-    prefix: 'utf16le: the detail carries no NUL',
-    issue: '#44 §6',
-    expect: { win32: 'red', posix: 'red' },
-    debt: 'src/host/wsl-search.ts decodes every stderr with toString(\'utf8\'); wsl.exe writes '
-      + 'UTF-16LE, so half of the 300-character detail budget is spent on NULs.',
-    repair: 'decode captured streams with the shared shape-aware decoder, then truncate on '
-      + 'characters the reader can actually see.',
-  },
-  {
-    id: 'detail-budget',
-    suite: 'search-run-fakes (§6 transport seams)',
-    prefix: 'utf16le: the detail is the first stderr line cut AT 300 significant characters',
-    issue: '#44 §6',
-    expect: { win32: 'red', posix: 'red' },
-    debt: 'same call site: the truncation counts bytes-decoded-as-characters, so a UTF-16LE stderr '
-      + 'reaches the operator as 150 readable characters.',
-    repair: 'same repair — cut after decoding, not before.',
-  },
-  {
-    id: 'invalid-pattern-never-fires',
-    suite: 'search-run-fakes (§6 transport seams)',
-    prefix: 'utf16le exit 2 classifies the SAME invalid pattern',
-    issue: '#44 §6',
-    expect: { win32: 'red', posix: 'red' },
-    debt: 'INVALID_PATTERN.test(run.stderr) can never match text with a NUL between every letter, so '
-      + 'a real "invalid pattern" answer is classified as a generic search failure.',
-    repair: 'test the classifier against decoded text.',
-  },
-  {
-    id: 'reason-dropped-with-stream',
-    suite: 'search-run-fakes (§6 transport seams)',
-    prefix: 'the reason wsl.exe gave must reach the user',
-    issue: '#44 §6',
-    expect: { win32: 'red', posix: 'red' },
-    debt: 'a launch failure\'s own sentence (which distribution is missing) is dropped together with '
-      + 'the stream it arrived on.',
-    repair: 'carry the first decoded line into the outcome message.',
-  },
-  {
-    id: 'shell-spaced-argv',
-    suite: 'tech-debt-exposure (cmd.exe fallback, registry decode, NUL sniff)',
-    prefix: 'A: a spaced path handed to the shell fallback arrives as one argument',
-    issue: 'review pass 2026-10-01, hazard A',
-    expect: { win32: 'red', posix: 'red' },
-    debt: 'scripts/verify-install.mjs and scripts/verify-artifact-identity.mjs fall back to '
-      + 'spawnSync(program, args, { shell: … }), and the shell re-tokenises the tarball path.',
-    repair: 'spawnSync(process.execPath, [npmCliJs, ...args]) — the branch the code already takes '
-      + 'when npm_execpath points at a .js.',
-  },
-  {
-    id: 'link-failure-silent',
-    suite: 'tech-debt-exposure (cmd.exe fallback, registry decode, NUL sniff)',
-    prefix: 'B: a failed link must be able to say why it failed',
-    issue: 'review pass 2026-10-01, hazard B (refuted half)',
-    expect: { win32: 'red', posix: 'red' },
-    debt: '{ stdio: \'ignore\' } discards the linker\'s own sentence, so a failing link leaves the '
-      + 'operator a bare exit number. The spaced-path crash this test replaced was refuted by '
-      + 'measurement and is pinned green elsewhere in the same file.',
-    repair: 'fs.symlinkSync(src, dst, \'junction\') — throws an Error carrying EEXIST/EPERM.',
-  },
-  {
-    id: 'registry-utf16le',
-    suite: 'tech-debt-exposure (cmd.exe fallback, registry decode, NUL sniff)',
-    prefix: 'C: a UTF-16LE registry answer still resolves the default distribution',
-    issue: 'review pass 2026-10-01, hazard C',
-    expect: { win32: 'red', posix: 'red' },
-    debt: 'defaultDistro parses textOf(stdout) (a hard toString(\'utf8\')) while the same module owns '
-      + 'the shape-aware decoder; a UTF-16LE answer silently yields undefined — an empty picker, no '
-      + 'throw, no log.',
-    repair: 'one decode policy for every captured stream, fed by encoding:\'buffer\'.',
-  },
-  {
-    id: 'nul-sniff-false-positive',
-    suite: 'tech-debt-exposure (cmd.exe fallback, registry decode, NUL sniff)',
-    prefix: 'D: a NUL inside a UTF-8 stream does not flip the decode to UTF-16LE',
-    issue: 'review pass 2026-10-01, hazard D',
-    expect: { win32: 'red', posix: 'red' },
-    debt: 'the adaptive decoder is buffer.includes(0) ? utf16le : utf8, so legitimate NUL-delimited '
-      + 'output (find -print0, grep -Z, git ls-files -z) comes back garbled.',
-    repair: 'make the sniff structural (NUL parity and proportion, BOM) and keep an explicit-encoding '
-      + 'path — this constrains the §6 repair too.',
-  },
-  {
-    id: 'shell-metacharacters',
-    suite: 'tech-debt-exposure (cmd.exe fallback, registry decode, NUL sniff)',
-    prefix: 'E: an argument handed to the shell fallback keeps its metacharacters and writes nothing',
-    issue: 'review boundary list, metacharacter case',
-    expect: { win32: 'red', posix: 'red' },
-    debt: 'the same shell fallback ends an argument at & and parses the remainder as a command, and '
-      + 'lets > open a file in the caller\'s working directory — both with a success status.',
-    repair: 'same as hazard A: no interpreter in the path.',
-  },
+  // Empty, and that is the point rather than a lapse: every entry this ledger held was a debt with a
+  // stated repair, and all ten have now been paid. The mechanism did not go with them — the gate
+  // still fails on a NEW red nobody declared, and `tests/deliberate-reds.test.mjs` still exercises
+  // every direction against its own synthetic ledger, because a control that reads this array stops
+  // covering the gate the moment the last debt is closed.
+  //
+  // What each entry bought, and where the rule now lives:
+  //   - `exists:false` on an unreadable path, NUL-laced details, a byte-counted budget, a classifier
+  //     that could not match, a dropped reason, hazards A–E → fixed in the product, and the two shapes
+  //     that were only ever measurements of Node and the OS (argv through a shell, a discarded child
+  //     sentence) are now assertions about this repository's own call sites in
+  //     `tests/tech-debt-exposure.test.ts`. `scripts/check-portable-spelling.mjs` carries the same
+  //     shapes for anything those assertions do not cover.
+  //   - A new debt is added the same way as ever: an entry here, with both a debt and a repair
+  //     direction, before the assertion is allowed to ship red.
 ]
 
 /** Strip the runner's own decorations so a ledger prefix can match the name. */

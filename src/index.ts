@@ -396,8 +396,17 @@ async function dispatch(method: string, params: Record<string, unknown>): Promis
       try {
         const info = statSync(readPath)
         return { exists: true, isDirectory: info.isDirectory() }
-      } catch {
-        return { exists: false, isDirectory: false }
+      } catch (error) {
+        // Only "it is not there" is `{exists:false}`. Every other failure is the stat itself failing
+        // — EACCES on a directory nobody can read, EIO over 9P, ENOTDIR through a file used as a
+        // parent — and folding those into the same answer reports a path as absent when it is present
+        // and unreadable. That is the one thing a caller cannot tell apart from the truth, and it is
+        // why this used to be a `catch` with a bare return. The envelope carries the OS's own
+        // sentence: `{ok:false, error}`, which the dispatcher above already produces for a throw.
+        if ((error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') {
+          return { exists: false, isDirectory: false }
+        }
+        throw error
       }
     }
     case 'registerWindows': {

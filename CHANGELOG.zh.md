@@ -5,6 +5,35 @@
 本文件为中文记录（0.4.3 及更早为摘要）；英文原文见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 0.7.7 — 2026-10-07
+- **"故意红"账本已清空，它记的十条债全部还清。** 每一条都是带修法的复现；十条现已全部修好，而机制留了下来——
+  任何**未声明**的新红仍然让门禁失败。
+
+  - **`check` 把每一次 `stat` 失败都折成 `{exists:false}`**（issue #44 §6）。没人能读的目录、或 9P 上的
+    `EIO`，都被报成"不存在"——这是调用方唯一无法与真相区分的情形。现在只有 `ENOENT` 答`exists:false`，
+    其余一律抛出，由信封带上操作系统自己的话。
+  - **解码策略是"缓冲区里有 NUL 就是 UTF-16LE"**，于是 NUL 分隔的 UTF-8 流（`find -print0`、`grep -Z`、
+    `git ls-files -z`——本插件的搜索路径自己就这么说）会静默地变成双倍长度的乱码。判定改为结构性的：BOM，
+    或 NUL 出现在固定奇偶位且密度足够高。已知编码的调用方直接传入，完全跳过启发式。
+  - **`reg.exe` 的输出被硬编码成 UTF-8 解码**，而同一个模块就拥有那个解码器，于是 UTF-16LE 的回答变成
+    `undefined`——空选择器、不抛错、不留日志。现在所有捕获流共用一套解码策略。
+  - **搜索路径在捕获点就解码了 stderr**，导致失败详情每个字符之间夹着 NUL、300 字符的预算按字节算、
+    无效模式分类器永远匹配不到。`WslRun.stderr` 现在是字节；解码发生在用文本的地方，预算按字符切，
+    分类器对解码后的文本判定。
+  - **启动失败丢掉了 `wsl.exe` 自己那句话**（是哪个发行版找不到），因为详情只来自 stderr。现在会在
+    stderr 为空时回落到 stdout 的首个解码行。
+  - **三处调用点把参数列表交给了命令解释器。** `verify-install.mjs`、`verify-artifact-identity.mjs` 与
+    `ci/install-pinned.mjs` 在 `npm_execpath` 缺失时都回退到 Windows 上的 shell——这正是 Node 如今拒绝
+    （DEP0190）、且会把带空格的路径重新分词、把 `& | > < ^ %` 交给解释器的形状。现在按 三个地方找 npm 自己的 `bin/npm-cli.js`
+    ——`npm_execpath`、`node.exe` 旁边、以及 `PATH` 上的 `npm`——找不到就明确报错而不是猜。
+    第三个是因为第二个在 hosted tool cache 上不成立：那里一个本来没坏的 job 死于
+    "npm's entry script was not found"。
+  - **`install-pinned.mjs` 通过 shell 建junction 且丢弃了它的输出**，丢掉了链接器自己的话，只留下一个裸
+    退出码。`fs.symlinkSync` 是同一个 junction，错误自带 `EEXIST`/`EPERM`。
+
+  隐患 A、B、E 测的是 **Node 与操作系统**，不是本仓库：每个测试都复现某个形状、看着信息消失，所以修完产品
+  它们仍然是红的。它们现在改为对本仓库自己的调用点断言，一旦站点回来就失败；上方保留着原始测量，作为规则
+  为何如此书写的理由。`tests/deliberate-reds.test.mjs` 现在用自带的合成条目验证账本机制——因为读真实数组的
+  控制用例，会在最后一条债还清的那一刻同时失去覆盖。
 
 - **DSH 0.2.x 下 `bash_background` 的 `job_output` 始终为空（issue #56）。** `bash_background`（以及复用同一生产者的 `bash` 的 `run_in_background: true`）能正常起任务、`job_list` 也能追踪，但 `job_output` 每次读取都返回 `(no new output)`——运行中、结束后如此，完成通告也不带正文。命令**确实**执行了、stdout 也落了盘，所以死的是读取通道，不是任务本身。
 

@@ -62,9 +62,17 @@ export function execFileResult(
   })
 }
 
-/** Read a captured stream as text, whichever way the encoding arrived. */
+/**
+ * Read a captured stream as text, whichever way the encoding arrived.
+ *
+ * One decode policy for every captured stream in the plugin: a `reg.exe` answer written in UTF-16LE
+ * used to reach this function's hard `toString('utf8')` and came back as mojibake, which the caller
+ * could not tell from "the registry said nothing" — an empty picker, no throw, no log.
+ * @param stream - the captured output, or text that arrived as text.
+ * @returns the decoded text.
+ */
 export function textOf(stream: Buffer | string): string {
-  return typeof stream === 'string' ? stream : stream.toString('utf8')
+  return decodeWslOutput(stream)
 }
 
 /**
@@ -87,19 +95,63 @@ export function wslExecutableCandidates(wslPath: string): string[] {
 }
 
 /**
- * Decode `wsl.exe -l -q` output. Newer builds emit UTF-8; most emit UTF-16LE
- * with NUL bytes interleaved — the NUL probe picks the right one. A host that
- * handed back something other than the captured stream is reported as such
- * instead of throwing `Cannot read properties of undefined`.
- * @param buffer - the raw captured output.
+ * Decide whether a captured buffer is UTF-16LE, structurally.
+ *
+ * The old rule asked only whether a NUL was **present**. That is not a UTF-16 marker, it is the byte
+ * 0x00, and UTF-8 streams carry those legitimately — `find -print0`, `grep -Z` and `git ls-files -z`
+ * all speak NUL-delimited, which is why this plugin's own search path splits stdout on a NUL delimiter. A
+ * UTF-16LE console answer has its NULs at a **regular parity** (for ASCII text, every odd byte) and at
+ * a **high density**; a NUL-delimited or error-bearing UTF-8 stream has them at no parity in
+ * particular and rarely.
+ * @param buffer - the captured bytes.
+ * @returns whether the shape says UTF-16LE.
+ */
+function looksUtf16Le(buffer: Buffer): boolean {
+  const sample = Math.min(buffer.length, 4096)
+  let even = 0
+  let odd = 0
+  for (let index = 0; index < sample; index += 1) {
+    if (buffer[index] !== 0) continue
+    if (index % 2 === 0) even += 1
+    else odd += 1
+  }
+  const nuls = even + odd
+  if (nuls === 0) return false
+  const parity = Math.max(even, odd) / nuls
+  const density = nuls / sample
+  // Density is the weaker half of the guard and is set low on purpose: CJK console output carries
+  // fewer NULs per byte than ASCII does. The BOM check in `decodeWslOutput` is what covers the rest.
+  return parity >= 0.9 && density >= 0.1
+}
+
+/**
+ * Decode a captured stream the way the writer meant it.
+ *
+ * `wsl.exe -l -q` and `reg.exe query` answer in UTF-16LE on most Windows builds and in UTF-8 on
+ * newer ones, so the encoding has to be decided per stream — but decided **structurally**, not by the
+ * existence of a NUL (see {@link looksUtf16Le}).
+ *
+ * A caller that knows its stream never goes through the heuristic: `find -print0` output is NUL-
+ * delimited UTF-8 by definition and reads its buffer directly, and a caller with a documented
+ * encoding passes it.
+ *
+ * Known limit, stated rather than hidden: UTF-16LE text with no Latin characters at all (pure CJK,
+ * say) carries so few NUL bytes that the density guard declines it. The `ff fe` BOM covers that case
+ * for any writer that emits one, which includes the Windows console; a BOM-less, NUL-free UTF-16LE
+ * answer would read as mojibake rather than as an error.
+ * @param buffer - the captured output, or text that arrived as text.
+ * @param encoding - the encoding when the caller knows it, which skips the sniff entirely.
  * @returns the decoded text.
  */
-export function decodeWslOutput(buffer: Buffer | string): string {
+export function decodeWslOutput(buffer: Buffer | string, encoding?: 'utf8' | 'utf16le'): string {
   if (typeof buffer === 'string') return buffer
   if (!(buffer instanceof Uint8Array)) {
     throw new Error(`wsl-workspace: expected captured output, got ${typeof buffer}`)
   }
-  return buffer.includes(0) ? buffer.toString('utf16le') : buffer.toString('utf8')
+  if (encoding === 'utf8') return buffer.toString('utf8')
+  if (encoding === 'utf16le') return buffer.toString('utf16le')
+  if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) return buffer.toString('utf16le')
+  return looksUtf16Le(buffer) ? buffer.toString('utf16le') : buffer.toString('utf8')
 }
 
 /**
@@ -143,11 +195,13 @@ export async function listDistros(wslPath = 'wsl.exe'): Promise<string[]> {
 export async function defaultDistro(): Promise<string | undefined> {
   try {
     const value = await execFileResult('reg.exe', ['query', LXSS_KEY, '/v', 'DefaultDistribution'], {
+      encoding: 'buffer',
       timeout: DISCOVERY_TIMEOUT_MS,
     })
     const guid = /DefaultDistribution\s+REG_SZ\s+(\{[0-9a-fA-F-]+\})/i.exec(textOf(value.stdout))?.[1]
     if (guid === undefined) return undefined
     const name = await execFileResult('reg.exe', ['query', `${LXSS_KEY}\\${guid}`, '/v', 'DistributionName'], {
+      encoding: 'buffer',
       timeout: DISCOVERY_TIMEOUT_MS,
     })
     const distro = /DistributionName\s+REG_SZ\s+(.+)/i.exec(textOf(name.stdout))?.[1]?.trim()
@@ -173,14 +227,16 @@ export function defaultDistroSync(): string | undefined {
   syncDefaultResolved = true
   try {
     const value = execFileSync('reg.exe', ['query', LXSS_KEY, '/v', 'DefaultDistribution'], {
+      encoding: 'buffer',
       timeout: DISCOVERY_TIMEOUT_MS,
     })
-    const guid = /DefaultDistribution\s+REG_SZ\s+(\{[0-9a-fA-F-]+\})/i.exec(String(value))?.[1]
+    const guid = /DefaultDistribution\s+REG_SZ\s+(\{[0-9a-fA-F-]+\})/i.exec(textOf(value))?.[1]
     if (guid === undefined) return undefined
     const name = execFileSync('reg.exe', ['query', `${LXSS_KEY}\\${guid}`, '/v', 'DistributionName'], {
+      encoding: 'buffer',
       timeout: DISCOVERY_TIMEOUT_MS,
     })
-    const distro = /DistributionName\s+REG_SZ\s+(.+)/i.exec(String(name))?.[1]?.trim()
+    const distro = /DistributionName\s+REG_SZ\s+(.+)/i.exec(textOf(name))?.[1]?.trim()
     syncDefault = distro === undefined || distro === '' ? undefined : distro
   } catch {
     syncDefault = undefined

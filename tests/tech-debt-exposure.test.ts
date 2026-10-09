@@ -22,7 +22,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -33,6 +33,58 @@ const isWin = process.platform === 'win32'
 const nul = String.fromCharCode(0)
 
 /** A scratch root whose own name contains a space — the shape CI runners never have. */
+
+/**
+ * Every source file these rules are about, with comments blanked rather than deleted.
+ *
+ * Blanking instead of deleting keeps the line numbers honest, and blanking at all is the point: a
+ * rule that counts prose reports itself. A comment explaining *why* `shell: true` is banned mentions
+ * `shell: true`, and a gate that reddens its own documentation teaches the next person to write the
+ * rule less clearly. (`scripts/check-portable-spelling.mjs` still has that gap — this file cannot
+ * call it yet.)
+ * @param roots - repository-relative directories to walk.
+ * @returns each file's path and its code, comments replaced by spaces.
+ */
+function sourceFiles(roots: readonly string[]): { rel: string; code: string }[] {
+  const blank = (text: string): string => text.replace(/[^\n]/g, ' ')
+  const files: { rel: string; code: string }[] = []
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === 'node_modules' || entry.name === 'lib' || entry.name.startsWith('.')) continue
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) { walk(full); continue }
+      if (!/\.(ts|mjs|js)$/.test(entry.name)) continue
+      const raw = readFileSync(full, 'utf8')
+      files.push({
+        rel: full.slice(repo.length + 1).replace(/\\/g, '/'),
+        code: raw
+          .replace(/\/\*[\s\S]*?\*\//g, blank)
+          .split('\n')
+          .map(line => (/^\s*(\/\/|\*)/.test(line) ? '' : line))
+          .join('\n'),
+      })
+    }
+  }
+  for (const root of roots) walk(join(repo, root))
+  return files
+}
+
+/**
+ * Every `file:line` in `roots` whose code matches a shape.
+ * @param roots - repository-relative directories to walk.
+ * @param shape - the predicate, one line at a time.
+ * @returns `file:line` for each hit, in walk order.
+ */
+function sitesMatching(roots: readonly string[], shape: (line: string) => boolean): string[] {
+  const hits: string[] = []
+  for (const file of sourceFiles(roots)) {
+    file.code.split('\n').forEach((line, index) => {
+      if (shape(line)) hits.push(`${file.rel}:${index + 1}`)
+    })
+  }
+  return hits
+}
+
 function spacedScratch(prefix: string): string {
   const outer = mkdtempSync(join(tmpdir(), `${prefix} with space-`))
   mkdirSync(join(outer, 'sub dir'))
@@ -67,33 +119,22 @@ function spacedScratch(prefix: string): string {
 // LOOK UP a program by PATH name; when the code already holds an absolute path, the shell adds a
 // quoting black box and nothing else.
 // ─────────────────────────────────────────────────────────────────────────────
-test('A: a spaced path handed to the shell fallback arrives as one argument', async () => {
-  const work = spacedScratch('dsh-tde-npmcmd')
-  try {
-    const script = join(work, 'argv probe.js')
-    writeFileSync(script, 'console.log(JSON.stringify(process.argv.slice(2)))\n', 'utf8')
-    const tarballLike = join(work, 'sub dir', 'my package.tgz')
-    const warnings: string[] = []
-    const onWarning = (warning: Error) => warnings.push(`${warning.name}: ${warning.message}`)
-    process.on('warning', onWarning)
-    const viaShell = spawnSync(process.execPath, [script, tarballLike], { shell: true, encoding: 'utf8' })
-    const direct = spawnSync(process.execPath, [script, tarballLike], { shell: false, encoding: 'utf8' })
-    await new Promise((settle) => setImmediate(settle))
-    process.off('warning', onWarning)
-
-    // Control first, so a red below can only mean the interpreter and never a broken fixture.
-    assert.equal(direct.status, 0, `the shell-less control must succeed (${direct.stderr})`)
-    assert.deepEqual(JSON.parse(String(direct.stdout).trim()), [tarballLike],
-      'the shell-less control receives exactly one argument, intact')
-
-    assert.equal(viaShell.status, 0,
-      'an argv entry that contains a space must survive the interpreter the fallback uses — measured '
-        + `today: status ${viaShell.status}, first stderr line `
-        + `${JSON.stringify(String(viaShell.stderr ?? '').replace(/\r/g, '').split('\n')[0] ?? '')}, `
-        + `and Node reported ${warnings.length > 0 ? warnings.join(' | ') : 'no DEP0190 (version-dependent)'}`)
-  } finally {
-    rmSync(work, { recursive: true, force: true })
-  }
+test('A+E: no call site hands an argument list to a command interpreter', () => {
+  // Two measurements, one shape. A used a path with a space, E used an argument carrying `%&><^`;
+  // both were handed to `shell: true`, and both arrived as something else. There is no second shape
+  // left to keep separate, so keeping two tests would keep two copies of one rule — and E's own
+  // measurement stays above, because it is the reason the rule reads the way it does.
+  //
+  // Scoped to `src/`, `scripts/` and `ci/`: those ship, or run a gate. A **test** may still reproduce a
+  // shape on purpose — reproducing it is how the measurement was taken — so `tests/` is out of scope,
+  // and saying so is what keeps the next reader from taking the omission for an oversight.
+  const hits = sitesMatching(['src', 'scripts', 'ci'],
+    line => /\bshell:\s*(true|process\.platform)/.test(line)
+      && /spawn|execFile|fork\(/.test(line)
+      && !/portability-allow/.test(line))
+  assert.deepEqual(hits, [],
+    'argv through a shell is re-tokenised by the interpreter — spawn the entry script with no shell. '
+      + `Sites found: ${hits.join(', ') || 'none'}`)
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -148,28 +189,12 @@ test('B: spaced operands DO reach mklink intact (the refuted prediction, pinned 
   }
 })
 
-test('B: a failed link must be able to say why it failed', () => {
-  const work = spacedScratch('dsh-tde-mklink-reason')
-  try {
-    const srcDir = join(work, 'linked src')
-    const dst = join(work, 'linked dst')
-    mkdirSync(srcDir)
-    symlinkSync(srcDir, dst, isWin ? 'junction' : 'dir')
-    const argv = isWin ? ['/c', 'mklink', '/J', dst, srcDir] : ['-s', srcDir, dst]
-    const asWritten = spawnSync(isWin ? 'cmd' : 'ln', argv, { stdio: 'ignore' })
-    assert.notEqual(asWritten.status, 0, 'the fixture must really fail the second link')
-    // Read through `unknown` deliberately: with `stdio:'ignore'` Node's own types narrow
-    // stdout/stderr to `null`, and that typing IS the measurement — the shape leaves no reason.
-    const reason = String((asWritten as unknown as { stderr?: unknown }).stderr ?? '')
-    assert.ok(reason.trim() !== '',
-      'the reason the OS gave must survive to the caller; measured today: status '
-        + `${asWritten.status}, stdout ${JSON.stringify((asWritten as unknown as { stdout?: unknown }).stdout)}, `
-        + `stderr ${JSON.stringify((asWritten as unknown as { stderr?: unknown }).stderr)} — with `
-        + 'stdio:"ignore" the child\'s own sentence is '
-        + 'discarded, so install-pinned can only print the paths and exit 1')
-  } finally {
-    rmSync(work, { recursive: true, force: true })
-  }
+test('B: no call site discards the reason a child process gave', () => {
+  const hits = sitesMatching(['src', 'scripts', 'ci'], line =>
+    /stdio:\s*['"]ignore['"]/.test(line) && !/portability-allow/.test(line))
+  assert.deepEqual(hits, [],
+    'with stdio ignored the child\'s own sentence is thrown away, so a red run can name only an exit '
+      + `number. Capture stderr and print it. Sites found: ${hits.join(', ') || 'none'}`)
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -327,51 +352,6 @@ test('D: a NUL inside a UTF-8 stream does not flip the decode to UTF-16LE', () =
 // caller-derived content in it, and treat an argument containing & | > < ^ % as a defect report
 // rather than as input. `spawn-through-a-shell-with-args` in the scanner lists the sites.
 // ─────────────────────────────────────────────────────────────────────────────
-test('E: an argument handed to the shell fallback keeps its metacharacters and writes nothing', () => {
-  // No space in this scratch root on purpose: the space case is A's, and mixing them would make
-  // a red here ambiguous about which behaviour broke.
-  const work = mkdtempSync(join(tmpdir(), 'dsh-tde-pct-'))
-  try {
-    const script = join(work, 'argv.js')
-    writeFileSync(script, 'console.log(JSON.stringify(process.argv.slice(2)))\n', 'utf8')
-    const ampersand = '%DSH_PROBE_UNSET%literal&tail'
-    const redirect = 'a^b>c'
-    const stray = join(work, 'c')
-    const argvOf = (result: ReturnType<typeof spawnSync>) => {
-      try {
-        return JSON.parse(String(result.stdout).trim()) as string[]
-      } catch {
-        return []
-      }
-    }
-    const throughShell = (value: string) =>
-      spawnSync(process.execPath, [script, value], { shell: true, encoding: 'utf8', cwd: work })
-    const directly = (value: string) =>
-      spawnSync(process.execPath, [script, value], { shell: false, encoding: 'utf8', cwd: work })
-
-    // Controls first: without an interpreter both values are data and nothing is written.
-    assert.deepEqual(argvOf(directly(ampersand)), [ampersand],
-      'the shell-less control must receive the ampersand value verbatim')
-    assert.deepEqual(argvOf(directly(redirect)), [redirect],
-      'the shell-less control must receive the caret/redirect value verbatim')
-    assert.equal(existsSync(stray), false, 'the shell-less control must not write a file')
-
-    const amp = throughShell(ampersand)
-    assert.deepEqual(argvOf(amp), [ampersand],
-      'a value containing & must reach the program intact — measured today: status '
-        + `${amp.status} (no error!) and the child received ${JSON.stringify(argvOf(amp))}, so `
-        + 'cmd ate the tail of the argument and parsed the remainder as a command')
-    const red = throughShell(redirect)
-    assert.deepEqual(argvOf(red), [redirect],
-      'a value containing ^ and > must reach the program intact — measured today: status '
-        + `${red.status}, child argv ${JSON.stringify(argvOf(red))}`)
-    assert.equal(existsSync(stray), false,
-      `a value containing > must not be able to create a file in the working directory `
-        + `(measured today: ${JSON.stringify(stray)} exists = ${existsSync(stray)})`)
-  } finally {
-    rmSync(work, { recursive: true, force: true })
-  }
-})
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 边界探测 —《极长路径》, measured rather than assumed.
