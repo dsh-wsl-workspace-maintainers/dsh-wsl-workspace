@@ -208,6 +208,39 @@ const CENSUS = [
     want: ['ALIAS_OK'],
   },
   {
+    // Sunk from the release behaviour matrix (rows 1.5, 1.8, 2.1, 2.5 of
+    // `docs/release-behaviour-matrix.zh.md`), each with the native reading taken on 2026-10-09 in the
+    // same distribution: `hi` + `PIPE=0` exit 0; `TR` exit 7; `5`; and `x \r \n C J K \r`. An
+    // expectation in that document is only good until the native side contradicts it — row 1.7 and
+    // row 2.1's byte count both died on today's run, so a row lands here only after both sides spoke.
+    shape: 'a pipeline whose reader exits early',
+    name: 'head on a one-line echo must not earn a broken-pipe sentence',
+    command: 'echo hi | head -n1; echo PIPE=$?',
+    wantAll: ['hi', 'PIPE=0'],
+    forbid: ['Broken pipe'],
+  },
+  {
+    shape: 'an EXIT trap in a child shell',
+    name: 'a trap on exit still prints before the code arrives',
+    command: "bash -c 'trap \"echo TR\" EXIT; exit 7'",
+    want: ['TR'],
+  },
+  {
+    shape: 'raw bytes through the decoder',
+    name: 'NUL and two high bytes count as the five bytes they are',
+    command: "printf 'a\\x00b\\xff\\xfe' | wc -c",
+    want: ['5'],
+  },
+  {
+    shape: 'carriage returns must not be repaired',
+    name: 'CRLF and a lone CR stay in the byte dump',
+    // The needles are `od -c`'s own column spacing (three spaces between single characters) and its
+    // two-character `\r` — taken from the answer this row produced on 2026-10-09, where the session
+    // returned `x  \r  \n   C   J   K  \r`. A one-space needle failed the row, not the product.
+    command: "printf 'x\\r\\nCJK\\r' | od -c | head -3",
+    wantAll: ['C   J   K', '\\r', '\\n'],
+  },
+  {
     // The product's **own** timeout, passed as the argument a model would pass. The first attempt
     // drove it from outside with an `AbortController` and the row answered `tool call aborted` — which
     // says the abort path works and nothing about the timeout path. Two different mechanisms; only one
@@ -377,13 +410,17 @@ try {
     const needles = row.wantAll ?? row.want
     const found = row.wantAll === undefined ? row.want.some(needle => text.includes(needle))
       : row.wantAll.every(needle => text.includes(needle))
-    const ok = row.expectNegative === true ? found : found
+    // `forbid` says the half a needle list cannot: the answer carries its marker *and* does not carry
+    // a sentence nobody earned (a `Broken pipe` we added, a reset sequence written twice).
+    const poisoned = (row.forbid ?? []).filter(needle => text.includes(needle))
+    const ok = found && poisoned.length === 0
     rows.push({
       shape: row.shape,
       name: row.name,
       ok,
       ms: elapsed,
-      evidence: found ? (needles.find(needle => text.includes(needle)) ?? '') : text.slice(0, 200),
+      evidence: poisoned.length > 0 ? `forbidden text in the answer: ${JSON.stringify(poisoned)}`
+        : found ? (needles.find(needle => text.includes(needle)) ?? '') : text.slice(0, 200),
       note: row.note,
     })
     process.stdout.write(`${ok ? 'ok  ' : 'FAIL'}  ${String(elapsed).padStart(6)}ms  ${row.shape}\n`)
