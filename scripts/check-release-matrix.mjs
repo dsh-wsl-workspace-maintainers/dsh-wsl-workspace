@@ -15,7 +15,8 @@ const ROOT = rootAt === -1 ? resolve(import.meta.dirname, '..') : resolve(argv[r
 const DOC = 'docs/release-behaviour-matrix.zh.md'
 const SECTIONS = ['0', '1', '2', '3', '4', '5', '6']
 const GROUPS = ['G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'G7', 'G8', 'G9', 'G10', 'G11', 'G12']
-const STANDING = /待跑|未定|已入|已跑|实测|已定案|规程|必跑|已知敏感|三形之一/
+// §0 names the states this column may hold, SKIPPED included (工具不存在时记 SKIPPED 且不算 MATCH).
+const STANDING = /待跑|未定|SKIPPED|已入|已跑|实测|已定案|规程|必跑|已知敏感|三形之一/
 
 /** Split a table row into cells; an escaped `\|` stays text and is not a column boundary. */
 function cellsOf(line) {
@@ -66,7 +67,7 @@ function audit(text) {
       if (cells[0] === "行") continue
       if (cells.length !== 3) { bad.push("section 3: a row with " + cells.length + " columns, not 3: " + line.slice(0, 70)); continue }
       const [row, verdict, proof] = cells
-      if (!/MATCH|PARITY-NOT-DEFECT|DEFECT/.test(verdict)) bad.push("section 3: " + row + " carries no verdict word")
+      if (!/MATCH|PARITY-NOT-DEFECT|DEFECT|未定/.test(verdict)) bad.push("section 3: " + row + " carries no verdict word")
       const named = [...row.matchAll(/\d+\.\d+/g)]
       if (named.length === 0) bad.push("section 3: a verdict that names no matrix id: " + row)
       for (const one of named) if (!ids.has(one[0])) bad.push("section 3: adjudicates " + one[0] + ", which is not in the matrix")
