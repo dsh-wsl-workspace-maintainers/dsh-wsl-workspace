@@ -1,0 +1,109 @@
+# Publish to npm when a GitHub Release is published.
+#
+# Nothing in this repository publishes automatically until now: `ci.yml` and `compat.yml` contain no
+# `npm publish`, the repository has no secrets at all, and the registry's newest release (0.7.5) is two
+# versions behind the tree (0.7.7) — which is what a manual path looks like. This workflow keeps the
+# human decision (cutting the Release) and automates everything after it, with three guards that exist
+# because each of them has been the cause of a bad publish elsewhere:
+#
+#  1. **The tag must name the version in `package.json`.** A release cut from a branch whose version was
+#     not bumped publishes the *previous* bytes under a new name, and npm will happily accept it.
+#  2. **The committed `lib/` must be the artifact** — `verify:artifact` packs three ways and compares
+#     hashes (TESTING.md §13), so what lands on the registry is what the repository says ships.
+#  3. **A version that is already published is skipped, not re-published.** Re-running a Release event
+#     after a failed later step must not produce a second publish attempt that fails for the wrong
+#     reason (`PUT https://registry.npmjs.org/…: cannot change version` reads like a broken pipeline).
+#
+# `npm publish` itself then runs this package's own `prepublishOnly` (`verify-install` +
+# `verify-lib-sync`), which is the gate that would have caught 0.7.0's unresolvable peer — it is left
+# in place rather than duplicated here, so the local `npm publish` path and this one refuse the same
+# bytes.
+#
+# Requires one repository secret, `NPM_TOKEN`, created on npm (Account → Access Tokens → **Automation**,
+# or a Granular token with Read and publish on `dsh-wsl-workspace`) by one of the package's maintainers,
+# and stored in this repository's Settings → Secrets and variables → Actions. Without it the job fails
+# at the publish step with `401`, after every check above has already passed — deliberately: the checks
+# are useful even on the first run that cannot publish.
+name: publish
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      rehearsal:
+        description: 'run every guard and pack the tarball, but do not publish'
+        type: boolean
+        default: true
+permissions:
+  contents: read
+concurrency:
+  group: publish-npm
+  cancel-in-progress: false
+jobs:
+  npm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: npm ci
+        run: npm ci
+      - name: the release tag must name the version in package.json
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          RAW="${{ github.event.release.tag_name }}"
+          TAG="${RAW#v}"
+          if [ -z "$TAG" ]; then
+            # workflow_dispatch has no tag; the version in the tree is the claim being rehearsed.
+            TAG="$VERSION"
+            echo "no release tag (dispatch) — checking the tree's own version: $VERSION"
+          fi
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "::error::release tag v$TAG does not match package.json version $VERSION — cut the release from a branch that carries the bump, or bump and re-release"
+            exit 1
+          fi
+          echo "PUBLISH_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "guard 1 OK — publishing $VERSION"
+      - name: the committed lib must be the artifact that ships
+        run: |
+          npm run verify:lib-sync
+          npm run verify:artifact
+          echo "guard 2 OK — three pack paths agree byte-for-byte"
+      - name: pack the tarball the registry is about to receive
+        run: |
+          npm pack
+          tar -tzf "dsh-wsl-workspace-$PUBLISH_VERSION.tgz" | sort > /tmp/members.txt
+          echo "members=$(wc -l < /tmp/members.txt)"
+          if grep -q 'package/src/' /tmp/members.txt; then
+            echo "::error::the packed tarball carries src/ — the files allowlist regressed (#69)"
+            exit 1
+          fi
+      - name: is this version already on the registry
+        id: published
+        run: |
+          if npm view "dsh-wsl-workspace@$PUBLISH_VERSION" version > /dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "guard 3 — $PUBLISH_VERSION is already published; nothing to do"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "guard 3 OK — $PUBLISH_VERSION is not on the registry yet"
+          fi
+      - name: publish
+        if: steps.published.outputs.skip == 'false' && github.event_name == 'release'
+        env:
+          NPM_TOKEN: '${{ secrets.NPM_TOKEN }}'
+        run: |
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "::error::NPM_TOKEN is not set on this repository — add it under Settings → Secrets and variables → Actions (an npm Automation token held by a package maintainer)"
+            exit 1
+          fi
+          echo "//registry.npmjs.org/:_authToken=\${NPM_TOKEN}" > "$HOME/.npmrc"
+          npm publish
+          npm view "dsh-wsl-workspace@$PUBLISH_VERSION" version
+      - name: rehearsal note
+        if: github.event_name == 'workflow_dispatch' || steps.published.outputs.skip == 'true'
+        run: |
+          echo "no publish ran — event=${{ github.event_name }} already-published=${{ steps.published.outputs.skip }}"
+          echo "the guards above are the whole claim of this run; 'publish' needs a release event and NPM_TOKEN"
