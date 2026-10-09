@@ -5,7 +5,7 @@
 
 [English](README.md) · [中文](README.zh.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Português](README.pt.md) · [Русский](README.ru.md)
 
-![alt text](image-3.png)
+![alt text](https://raw.githubusercontent.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/HEAD/image-3.png)
 Добавьте рабочее пространство WSL из веб-интерфейса DeepSeek Harness и запустите всю сессию агента — команды bash и чтение/запись файлов — внутри локального дистрибутива WSL с путями в формате Linux. Ничего не нужно устанавливать внутри WSL. Сессия может одновременно обращаться и к WSL, и к Windows: команды bash выполняются внутри дистрибутива WSL, а файлы Windows остаются доступными через `/mnt/<диск>` (например `/mnt/c/Users/...`).
 
 Список поддерживаемых версий DSH — в разделе Compatibility файла [README.md](README.md).
@@ -33,7 +33,7 @@ dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
 
 Нажмите «Create & open», чтобы запустить новую сессию в рабочем пространстве. В новой сессии инструмент bash выполняет команды внутри выбранного дистрибутива, а `read`/`write`/`edit` работают с файлами WSL, поэтому каждый путь, который видит модель, — это путь Linux. Выбор режима работает как обычно: Standard, PTC, Minimal и Creative автоматически попадают на свой вариант WSL (записи вариантов WSL в селекторе двуязычные, напр. `WSL · Standard mode（标准模式）`), а файлы Windows остаются доступными из сессии через `/mnt/<диск>` (например `/mnt/c/Users/...`).Кнопка «?» в диалоге открывает панель с релизами DSH, которые объявляет эта сборка, с тем, как пользоваться плагином, и с ограничениями, которые он не может обойти.
 
-![alt text](image-2.png)
+![alt text](https://raw.githubusercontent.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/HEAD/image-2.png)
 ## Примечания о поведении
 
 - **Инструмент bash**: выполняется внутри дистрибутива WSL под настроенным именем пользователя (пусто = пользователь по умолчанию, часто `root`), поэтому может читать и писать в любом месте дистрибутива. Песочница Windows ACL не может обернуть `wsl.exe` — его дочерние процессы работают на стороне ядра Linux — поэтому сама WSL является границей изоляции, и политика файлов DSH не применяется к bash.

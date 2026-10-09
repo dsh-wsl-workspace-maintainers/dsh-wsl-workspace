@@ -3,6 +3,15 @@
 All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](README.md); the Chinese record is [CHANGELOG.zh.md](CHANGELOG.zh.md).
 
 ## 0.7.7 — 2026-10-07
+- **What a user installs is now the plugin, not a copy of the repository.** `package.json#files` shipped
+  `src/` and both README screenshots: a fresh `npm pack` of the previous tree is **2,757,545 B across 79
+  members**, of which 2,265,091 B (82.1%) was the 30 source files and the 2 images — neither of which
+  anything at runtime reads (the plugin loads `lib/`; the source-reading gates read the repository). The
+  same pack is now **492,454 B across 47 members**, and the only difference between the two member lists
+  is the 32 removed entries. The nine READMEs point their screenshots at absolute
+  `raw.githubusercontent.com/…/HEAD/…` URLs in the same commit, so the npm page still renders without the
+  bytes in the tarball — chosen deliberately over relying on the registry rewriting a relative path.
+
 - **The deliberate-red ledger is empty, and the ten debts it held are paid.** Every entry was a
   reproduction with a stated repair; all ten are now fixed, and the mechanism outlived them — a NEW red
   nobody declared still fails the gate.
