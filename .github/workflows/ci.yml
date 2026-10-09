@@ -53,6 +53,13 @@ jobs:
         run: node scripts/verify-artifact-identity.mjs
       - name: documentation parity (declared README sections, shared facts, link graph)
         run: npm run test:docs
+      - name: release behaviour matrix shape (rows, verdicts, ledger lines)
+        # The document a version is gated on, read by code: its rows, its verdicts and the ledger line
+        # a DEFECT owes. `--self-test` re-runs the audit over four mutated copies every frame, so the
+        # gate cannot rot into one that has only ever been seen green.
+        run: |
+          npm run test:matrix
+          node scripts/check-release-matrix.mjs --self-test
 
   runtime-tests:
     name: node buckets against the pinned host tree (ubuntu)

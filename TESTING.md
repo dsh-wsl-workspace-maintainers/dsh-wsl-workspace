@@ -257,6 +257,8 @@ Two levels, in order of cost:
 12. For a release, drive the **six-item frontend pass** on every declared release (see "The compatibility pass on every declared release" above), and — when the `wsl.exe` call path changed — the Desktop-wrapper comparison as well. When the persistent-shell path changed (the relay, its interpreter, or the PTY rows the variant generates), also run the Desktop PTY simulation above.
 13. Confirm the artifact identity before publishing: the tarball from the release path, a fresh `npm pack`, and `npm pack --ignore-scripts` over the committed `lib/` must hash identically, and `npm run verify:install` must print `verify-install: OK`. This is now machine-run: `npm run verify:artifact` (ci.yml#lint-build) packs all three ways and compares them.
 
+14. Before a release, run the **release behaviour matrix** (`docs/release-behaviour-matrix.zh.md`) through a real product instance: one command per tool call, the readings taken back from the transcript rather than retelling, and each row judged against a no-fault native bash measured the same day — not against the broken bash inside the host. A row left unrun counts as a defect, and a row adjudicated DEFECT owes a ledger line, which `npm run test:matrix` enforces on the document itself. (#72 adds the npm publish step; whichever of the two merges second renumbers.)
+
 ### The multi-release check harness
 
 `scripts/compatibility/` prepares one isolated case per declared release (its own
