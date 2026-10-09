@@ -32,6 +32,7 @@
     "test:profile": "node tests/host-profile-isolation.mjs",
     "test:compat": "bash scripts/verify-dsh-compat.sh",
     "test:docs": "node scripts/check-docs-parity.mjs",
+    "test:matrix": "node scripts/check-release-matrix.mjs",
     "prepack": "npm run build",
     "prepublishOnly": "node scripts/verify-install.mjs && node scripts/verify-lib-sync.mjs",
     "test:docs-claims": "node --experimental-strip-types scripts/run-docs-claims.mjs",
