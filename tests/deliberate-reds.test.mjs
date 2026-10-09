@@ -12,11 +12,40 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { DELIBERATE_REDS, SHAPES, collectObserved, compareLedger, normalise } from './deliberate-reds.mjs'
 
+/**
+ * A synthetic ledger, so these controls test the **mechanism** and not the repository's current debt
+ * count. They used to read `DELIBERATE_REDS`, which tied the mechanism's coverage to the debt list:
+ * every entry retired to close a debt silently retired the controls that prove a green suite is
+ * reported. The ids and prefixes are the ones the controls below already name, so the scenarios they
+ * drive are unchanged.
+ */
+const FIXTURE = [
+  {
+    id: 'nul-sniff-false-positive',
+    suite: 'fixture (controls)',
+    prefix: 'D: a NUL inside a UTF-8 stream does not flip the decode to UTF-16LE',
+    issue: 'fixture',
+    expect: { win32: 'red', posix: 'red' },
+    debt: 'fixture',
+    repair: 'fixture',
+  },
+  {
+    id: 'fold-unreadable-path',
+    suite: 'fixture (controls)',
+    prefix: 'an unreadable existing path is NOT answered as {exists:false}',
+    skipPrefix: 'an unreadable existing path is not reported as absent',
+    issue: 'fixture',
+    expect: { win32: 'red', posix: 'skip' },
+    debt: 'fixture',
+    repair: 'fixture',
+  },
+]
+
 /** What the suites would produce if every declared entry behaved exactly as declared. */
 function observedAsDeclared(shape) {
   const red = []
   const skip = []
-  for (const entry of DELIBERATE_REDS) {
+  for (const entry of FIXTURE) {
     if (entry.expect[shape] === 'red') red.push(entry.prefix)
     else skip.push(entry.skipPrefix ?? entry.prefix)
   }
@@ -24,7 +53,8 @@ function observedAsDeclared(shape) {
 }
 
 test('the ledger is self-consistent: both shapes declared, prefixes unique inside a suite', () => {
-  assert.ok(DELIBERATE_REDS.length >= 10, `the ledger carries ${DELIBERATE_REDS.length} entries`)
+  // The real ledger is allowed to be **empty** — that is what closing every debt looks like — so what
+  // is asserted here is that whatever is in it is complete, not that there is something in it.
   const bySuite = new Map()
   for (const entry of DELIBERATE_REDS) {
     assert.deepEqual(Object.keys(entry.expect).sort(), [...SHAPES].sort(),
@@ -41,7 +71,7 @@ test('the ledger is self-consistent: both shapes declared, prefixes unique insid
 
 test('POSITIVE CONTROL: the declared set, observed on each shape, passes', () => {
   for (const shape of SHAPES) {
-    const report = compareLedger(shape, observedAsDeclared(shape))
+    const report = compareLedger(shape, observedAsDeclared(shape), FIXTURE)
     assert.equal(report.ok, true, `${shape}: the ledger must accept its own declaration: `
       + JSON.stringify(report))
   }
@@ -51,7 +81,7 @@ test('POSITIVE CONTROL: a new red that nobody declared fails the gate and is nam
   const shape = 'posix'
   const observed = observedAsDeclared(shape)
   observed.red.push('G: a hypothetical regression nobody owned yet')
-  const report = compareLedger(shape, observed)
+  const report = compareLedger(shape, observed, FIXTURE)
   assert.equal(report.ok, false, 'an undeclared red must not read as coverage')
   assert.deepEqual(report.extraRed, ['G: a hypothetical regression nobody owned yet'])
 })
@@ -60,7 +90,7 @@ test('POSITIVE CONTROL: a declared red that quietly turned green fails the gate'
   const shape = 'win32'
   const observed = observedAsDeclared(shape)
   observed.red = observed.red.filter(name => !name.startsWith('D:'))
-  const report = compareLedger(shape, observed)
+  const report = compareLedger(shape, observed, FIXTURE)
   assert.equal(report.ok, false, 'a reproduction that stops reproducing must be re-registered, not ` '
       + 'retired silently')
   assert.equal(report.missing.length, 1)
@@ -69,10 +99,10 @@ test('POSITIVE CONTROL: a declared red that quietly turned green fails the gate'
 
 test('POSITIVE CONTROL: a win32-only red appearing on posix is a MOVED premise, not extra noise', () => {
   const observed = observedAsDeclared('posix')
-  const fold = DELIBERATE_REDS.find(entry => entry.id === 'fold-unreadable-path')
+  const fold = FIXTURE.find(entry => entry.id === 'fold-unreadable-path')
   observed.red.push(fold.prefix)
   observed.skip = observed.skip.filter(name => !name.includes(fold.skipPrefix))
-  const report = compareLedger('posix', observed)
+  const report = compareLedger('posix', observed, FIXTURE)
   assert.equal(report.ok, false, 'posix is declared to SKIP that one; a red there means the premise '
       + 'changed and the ledger has to say which shape now shows it')
   assert.equal(report.moved.length, 1)
@@ -82,7 +112,7 @@ test('POSITIVE CONTROL: a win32-only red appearing on posix is a MOVED premise, 
 test('POSITIVE CONTROL: the skip line vanishing is itself a failure', () => {
   const observed = observedAsDeclared('posix')
   observed.skip = []
-  const report = compareLedger('posix', observed)
+  const report = compareLedger('posix', observed, FIXTURE)
   assert.equal(report.ok, false, 'a silently green suite and a suite whose premise is unreachable are '
       + 'different answers; the skip line is what records which one happened')
   assert.equal(report.missing.length, 1)
@@ -124,7 +154,7 @@ test('collectObserved counts each red once and refuses the runner\'s own summary
   // no red, so the gate still reports the declared reds as missing rather than as matched.
   const headerOnly = collectObserved(['✖ failing tests:'])
   assert.deepEqual(headerOnly.red, [])
-  const report = compareLedger('win32', headerOnly)
+  const report = compareLedger('win32', headerOnly, FIXTURE)
   assert.equal(report.ok, false)
-  assert.equal(report.missing.length, DELIBERATE_REDS.filter(e => e.expect.win32 === 'red').length)
+  assert.equal(report.missing.length, FIXTURE.filter(e => e.expect.win32 === 'red').length)
 })

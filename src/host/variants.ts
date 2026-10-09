@@ -217,7 +217,7 @@ function wslWorldGroup(
     "  name: cordis:group",
     '  group: true',
     '  isolate:',
-    '    shell: true',
+    '    shell: true', // portability-allow: a YAML fragment for a plugin's own `isolate:` block, not a spawn option
     '    fs: true',
     // The Windows confinement runner cannot describe a Linux path, so the
     // world owns the capability (see the sandbox row below) whenever it mounts

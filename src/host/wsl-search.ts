@@ -70,7 +70,7 @@ import {
 import type { RetainedItems } from '@deepseek-ai/dsh-output-retention'
 import type { SpillRef } from '@deepseek-ai/dsh-spill'
 import { isAbsoluteLinuxPath, parseWslUnc, windowsToMntPath } from '../shared/paths.ts'
-import { defaultDistroSync } from '../shared/wsl.ts'
+import { decodeWslOutput, defaultDistroSync } from '../shared/wsl.ts'
 import { getWorkspaceUsername } from '../shared/wsl-credentials.ts'
 
 /**
@@ -797,11 +797,17 @@ export function buildWslArgv(
   ]
 }
 
-/** One completed in-distro run: its exit code, raw stdout, stderr tail and kill signal. */
+/** One completed in-distro run: its exit code, raw stdout, raw stderr and kill signal. */
 interface WslRun {
   code: number | null
   stdout: Buffer
-  stderr: string
+  /**
+   * Bytes, not text. `wsl.exe` answers in UTF-16LE on most Windows builds, and decoding here is what
+   * put a NUL between every character of the detail, made the 300-character budget count bytes, and
+   * stopped the invalid-pattern classifier from ever matching. One decode policy
+   * ({@link decodeWslOutput}) runs where the text is used.
+   */
+  stderr: Buffer
   aborted: boolean
   signal: NodeJS.Signals | null
 }
@@ -838,7 +844,8 @@ function runInDistro(
       ...signal === undefined ? {} : { signal },
     }, (error, stdout, stderr) => {
       const out = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout ?? '')
-      const err = Buffer.isBuffer(stderr) ? stderr.toString('utf8') : String(stderr ?? '')
+      // Kept as bytes; the decode happens where the text is used, and it goes through the one policy.
+      const err = Buffer.isBuffer(stderr) ? stderr : Buffer.from(stderr ?? '')
       if (error === null || error === undefined) {
         settle({ code: 0, stdout: out, stderr: err, aborted: false, signal: null })
         return
@@ -882,8 +889,16 @@ function acceptRun(run: WslRun, toolName: string, rawOutputMaxBytes: number): Bu
   }
   const code = run.code ?? -1
   if (code === 0 || (code === 1 && toolName === 'grep')) return run.stdout
-  const detail = (run.stderr.trim().split('\n')[0] ?? '').slice(0, 300)
-  if (code === 2 && toolName === 'grep' && INVALID_PATTERN.test(run.stderr)) {
+  // One decode, at the point of use, through the shared shape-aware decoder.
+  const stderrText = decodeWslOutput(run.stderr)
+  const firstLine = (text: string): string => text.trim().split('\n')[0] ?? ''
+  // A launch failure writes its own sentence to **stdout** — the distribution `wsl.exe` could not
+  // find — so the detail falls back there instead of reporting a bare exit code with nothing after it.
+  const reason = firstLine(stderrText) === '' ? firstLine(decodeWslOutput(run.stdout)) : firstLine(stderrText)
+  // Truncated **after** decoding, on characters. The budget is 300 characters, and slicing the bytes
+  // would cut a UTF-16LE answer at roughly 150 letters.
+  const detail = reason.slice(0, 300)
+  if (code === 2 && toolName === 'grep' && INVALID_PATTERN.test(stderrText)) {
     throw new SearchError(
       `${toolName} pattern rejected by the distribution's grep${detail === '' ? '' : `: ${detail}`}`,
       'SEARCH_INVALID_PATTERN',

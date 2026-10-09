@@ -621,7 +621,7 @@ try {
   //    so its lifetime belongs to the driver and its survival is a real mis-kill guard: were the
   //    reaper ever to degrade into `pkill -f sleep`, this process dies and the cell goes red.
   const control = spawn('wsl.exe', ['-d', distro, '-u', username, '-e', 'bash', '-c',
-    'exec sleep 41'], { stdio: 'ignore' })
+    'exec sleep 41'], { stdio: 'ignore' }) // portability-allow: a control process nobody reads and nobody checks; the driver holds its lifetime open on purpose
   await call('setsid sleep 35 & disown; echo DETACHED=$!')
   const beforeReap = probeCount('sleep[ ]35')
   const reaped = await call('sleep 4', { timeoutMs: 1_500 })

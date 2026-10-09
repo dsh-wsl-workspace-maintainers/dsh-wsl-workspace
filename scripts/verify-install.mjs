@@ -25,31 +25,66 @@
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { delimiter as PATH_DELIMITER, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const manifest = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8'))
 
 /**
- * Run one npm command in a directory, inheriting stdio, and return its status.
+ * Run one npm command in a directory, and return its status.
  *
- * npm's own entry script is used when npm exposes it (`npm_execpath`, set for
- * every lifecycle script including `prepublishOnly`), which avoids a shell
- * entirely. On Windows a bare `npm.cmd` cannot be spawned without one, so the
- * fallback — running this file by hand, outside npm — goes through the shell.
- * Nothing here takes user input: the arguments are this file's own literals.
+ * No interpreter ever sees these arguments, which is the whole of hazard A/E: `shell: true` is gone
+ * from every call site. How npm itself is reached is deliberately boring, because the clever version
+ * was wrong twice — first it looked only beside `node.exe` (absent on a hosted tool cache), then it
+ * walked `PATH` reading symlinks (still not found there, and a second thing to get wrong). What the
+ * hazard forbids is the interpreter, not the spawn.
+ *
  * @param args - npm arguments.
  * @param cwd - working directory.
- * @returns the exit status.
+ * @param stdio - stdio for the child.
+ * @param encoding - encoding when the caller wants captured output.
+ * @returns the child's result.
  */
-function runNpm(args, cwd) {
+function runNpm(args, cwd, stdio, encoding) {
   const execpath = process.env.npm_execpath
+  const options = { cwd, ...(stdio === undefined ? {} : { stdio }), ...(encoding === undefined ? {} : { encoding }) }
   if (execpath !== undefined && execpath.endsWith('.js')) {
-    return spawnSync(process.execPath, [execpath, ...args], { cwd, stdio: 'inherit' }).status ?? 1
+    return spawnSync(process.execPath, [execpath, ...args], options)
   }
-  const program = process.platform === 'win32' ? 'npm.cmd' : 'npm'
-  return spawnSync(program, args, { cwd, stdio: 'inherit', shell: process.platform === 'win32' }).status ?? 1
+  // npm on PATH is a program, not a command line: spawning it needs no shell on any platform that
+  // has an executable one, which is every platform this gate runs on except Windows.
+  if (process.platform !== 'win32') return spawnSync('npm', args, options)
+  // Windows: a bare `npm.cmd` cannot be spawned without one, and the entry script beside `node.exe`
+  // is where a normal install keeps it. Named, never guessed.
+  const beside = join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js')
+  if (!existsSync(beside)) {
+    throw new Error('npm\'s entry script was not found. Run this through npm (npm_execpath), or place '
+      + `npm-cli.js beside node.exe (${beside}). A shell is not used to work around this.`)
+  }
+  return spawnSync(process.execPath, [beside, ...args], options)
+}
+
+/**
+ * The one lookup left, and it is Windows-only: see `runNpm`.
+ *
+ * Two layouts, because npm is installed two ways: beside the launcher (`npm.cmd` and
+ * `node_modules/npm/bin/npm-cli.js` in the same directory — a normal Windows install) and beside
+ * node (`node.exe` next to `node_modules/npm/…`). A hosted tool cache is the second one, and CI
+ * measured the first as absent there, which killed a job that was never broken.
+ * @returns the CLI script's path.
+ */
+function npmCliPath() {
+  const besideNode = join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js')
+  if (existsSync(besideNode)) return besideNode
+  for (const dir of (process.env.PATH ?? '').split(PATH_DELIMITER)) {
+    if (dir === '') continue
+    const besideLauncher = join(dir, 'node_modules', 'npm', 'bin', 'npm-cli.js')
+    if (existsSync(besideLauncher)) return besideLauncher
+  }
+  throw new Error('npm\'s entry script was not found. Run this through npm (npm_execpath), or install '
+    + `npm so its launcher sits beside node_modules (looked beside ${besideNode} and on PATH). `
+    + 'A shell is not used to work around this.')
 }
 
 /** Fail loudly with one line, so the gate is readable in a publish log. */
@@ -106,7 +141,10 @@ function checkRuntimeDependencies(scratch) {
 }
 
 console.log(`verify-install: packing ${manifest.name}@${manifest.version} ...`)
-if (runNpm(['pack', '--silent'], repo) !== 0) fail('npm pack failed')
+const pack = runNpm(['pack', '--silent'], repo, 'inherit')
+if (pack.status !== 0) {
+  fail(`npm pack failed with exit ${pack.status}${pack.error === undefined ? '' : ` (${pack.error.message})`}`)
+}
 
 // `npm pack` prints the tarball name on stdout, which inherited stdio swallowed;
 // the deterministic name is the manifest's.
@@ -119,9 +157,9 @@ cleanup = () => {
 try {
   writeFileSync(join(scratch, 'package.json'), JSON.stringify({ name: 'verify-install', private: true, version: '1.0.0' }, null, 2))
   console.log('verify-install: installing the tarball with plain npm (no pnpm, no peers present) ...')
-  const status = runNpm(['install', tarball, '--no-audit', '--no-fund', '--prefer-online'], scratch)
-  if (status !== 0) {
-    fail(`plain \`npm install ${manifest.name}@${manifest.version}\` failed with exit ${status} - a user installing this package with npm cannot complete the install`)
+  const install = runNpm(['install', tarball, '--no-audit', '--no-fund', '--prefer-online'], scratch, 'inherit')
+  if (install.status !== 0) {
+    fail(`plain \`npm install ${manifest.name}@${manifest.version}\` failed with exit ${install.status} - a user installing this package with npm cannot complete the install`)
   }
   const installed = JSON.parse(readFileSync(join(scratch, 'node_modules', manifest.name, 'package.json'), 'utf8'))
   if (installed.version !== manifest.version) fail(`installed version ${installed.version} is not ${manifest.version}`)
