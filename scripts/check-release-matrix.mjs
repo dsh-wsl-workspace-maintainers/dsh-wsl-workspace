@@ -81,6 +81,24 @@ function audit(text) {
   return { bad, rows: ids.size, counts, listed }
 }
 /**
+ * Split a group's rows into what a release run can paste and what it must handle by hand. A cell that
+ * opens with one backticked span is a command, and anything after it is the author's note
+ * (`（若 PATH 里有）`); a cell that opens with prose is a procedure — 6.9's open→send→read, 8.1's two
+ * calls, 11.4's re-run on WSL1 — and must never go out as a command line.
+ */
+function emitCommands(rows) {
+  const pasteable = []
+  const hand = []
+  for (const row of rows) {
+    const unescaped = row.command.replace(/\\\|/g, '|')
+    const span = /^`([^`]+)`(.*)$/.exec(unescaped)
+    if (span === null) hand.push(`${row.id}: ${unescaped}`)
+    else pasteable.push(span[1] + (span[2].trim() === '' ? '' : `   # ${row.id} ${span[2].trim()}`))
+  }
+  return { pasteable, hand }
+}
+
+/**
  * Each mutation must turn the audit red *with the message named in `expect`*: a broken copy that
  * reddens for an unrelated reason proves nothing about the rule it was built to test. Mutation 2 is
  * deliberately not anchored to a row id, because rows leave 待跑 as they get sunk — the first version
@@ -121,12 +139,34 @@ const at = argv.indexOf('--commands')
 if (at !== -1) {
   const wanted = (argv[at + 1] ?? '').split(',').filter(group => group !== '')
   const picked = listed.filter(row => wanted.includes(row.group))
-  // The document escapes the pipe for the table; the command a release run sends is the unescaped one.
-  for (const row of picked) console.log(row.command.replace(/^`|`$/g, '').replace(/\\\|/g, '|'))
-  console.error(`release-matrix: ${picked.length} commands from ${wanted.join(',')} of ${listed.length} rows`)
+  const { pasteable, hand } = emitCommands(picked)
+  for (const line of pasteable) console.log(line)
+  for (const line of hand) console.log(`# 手工行 ${line}`)
+  console.error(`release-matrix: ${pasteable.length} pasteable commands and ${hand.length} 手工行 `
+    + `from ${wanted.join(',')} of ${listed.length} rows`)
+  console.error(`release-matrix: ${picked.length - hand.length} pasteable commands and ${hand.length} 手工行 `
+    + `from ${wanted.join(',')} of ${listed.length} rows`)
   process.exit(picked.length > 0 ? 0 : 1)
 }
 if (argv.includes("--self-test")) {
+  // The classifier needs to be seen working both ways, because the audit deliberately does not reject
+  // a command cell that carries prose: a command with the author's note beside it stays pasteable and
+  // the note travels as a comment, while a cell that is only prose is a procedure and must not go out
+  // as a command line. (My first version of this control asserted the *wrong* semantics for the
+  // annotated row — the emitted line was right and the expectation was not.)
+  const classified = emitCommands([
+    { id: 'x.1', command: '`exit 0`' },
+    { id: 'x.2', command: '`exit 0` 单独一行' },
+    { id: 'x.3', command: '两个会话并发各自 `cd`' },
+    { id: 'x.4', command: '`git ls-files -z \\| head -c 40`' },
+  ])
+  const classifiedOk = classified.pasteable.length === 3 && classified.hand.length === 1
+    && classified.pasteable[0] === 'exit 0'
+    && classified.pasteable[1] === 'exit 0   # x.2 单独一行'
+    && classified.pasteable[2] === 'git ls-files -z | head -c 40'
+    && classified.hand[0].startsWith('x.3')
+  if (classifiedOk) console.log('self-test: classifier sorts the four cell shapes the document uses')
+  else console.error(`self-test: CLASSIFIER WRONG — ${JSON.stringify(classified)}`)
   let reddened = 0
   for (const mutation of MUTATIONS) {
     const mutated = mutation.apply(text)
@@ -145,7 +185,7 @@ if (argv.includes("--self-test")) {
     }
   }
   if (bad.length > 0) for (const failure of bad) console.error(`  the unmutated document is not clean either: ${failure}`)
-  const ok = reddened === MUTATIONS.length && bad.length === 0
+  const ok = reddened === MUTATIONS.length && bad.length === 0 && classifiedOk
   console.log(`release-matrix self-test: ${reddened}/${MUTATIONS.length} mutations reddened (${DOC})`)
   process.exit(ok ? 0 : 1)
 }
