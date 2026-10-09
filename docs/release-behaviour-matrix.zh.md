@@ -50,7 +50,7 @@
 | 1.4 | `false; echo STILL=$?` | `STILL=1`，shell 不死 | 同 | 已入 live gate |
 | 1.5 | `echo hi \| head -n1; echo PIPE=$?` | 无 SIGPIPE 噪声 | 不许出现 `Broken pipe` 之类我们加的字 | 已入 census |
 | 1.6 | `exit 0` | 单独敲这一行，终端会退出 | "这行结束了 shell"那句 + 下一发可用 | 三形之一，已入 |
-| 1.7 | `sh -c 'echo A; kill -9 $$'; echo K=$?` | 今天三种写法都读不到 `K=` 那行：只有 `A`，wsl.exe 报 9，内层 `$$` 等于外层 pid | 期望值作废——先弄清原生到底杀了谁，再重写判决 | 未定 |
+| 1.7 | `sh -c 'echo A; kill -9 $$'; echo K=$?` | 原生（脚本文件路线）`A` 后 `K=137`，stderr 里有 bash 的 `Killed` 作业消息，退出 0 | `K=137`，会话 shell 不受影响（若被重建，答案要自己说明） | 实测（本机隔离实例，两侧同日） |
 | 1.8 | `bash -c 'trap "echo TR" EXIT; exit 7'` | `TR` 在退出码之前出现 | 顺序与原生一致 | 已入 census |
 
 ### G2 文本编码与二进制
@@ -192,6 +192,7 @@
 | 8.2 alias 同一行 | PARITY-NOT-DEFECT | 原生 `printf "alias zzz='echo A'; zzz\n" \| bash -i` → 同样 `not found`；换行则 `YYY_OK` |
 | 8.5 / 7.5 结束 shell 两形 | MATCH（经 #68 修复） | 原生终端会关掉；我们 1163/1162 ms 回答带退出码与自述，`isError=false` |
 | 9.6 期限打断长命令 | MATCH | 已产出的 `BEFORE_SLOW` 保留、`timed out after 1500ms`、指向 `run_in_background`/`bash_background` |
+| G1 全组（1.1–1.8） | 八行 MATCH | 本机隔离实例（自有端口＋独立 DSH_HOME＋脚本化 provider，装配 main `ae1ef72`+`0356fc2`+`ce5b807`）八发：1.1 `out`＋`[stderr] err`＋`[exit code: 3]`，并自述“结束了会话 shell、它做过的事做了两遍”；1.2 两条流＋`[exit code: 3]`；1.3 `CODE=3`；1.4 `STILL=1`；1.5 `hi PIPE=0` 且无 `Broken pipe`；1.6 自述“结束了 shell”；1.7 `A K=137`＋`[stderr] Killed`；1.8 `TR`＋`[exit code: 7]`。原生同日同机（命令写成脚本文件再 `bash <file>`）逐条相符：exit 3／exit 3／CODE=3／STILL=1／`hi PIPE=0`／退出 0／`A`＋`K=137`＋`Killed`／`TR` 退出 7。**1.7 原先的“未定”撤销**：`K=` 读不到是我探针把复合命令交给 `wsl.exe … bash -c <文本>`（多一层解析，`;` 被拆开）造成的假读数，不是产品行为 |
 | 1.5 管道早退不许我们加字 | MATCH | 原生今日实测 `hi` + `PIPE=0`、退出 0、无 SIGPIPE 句；我们这层同一行进了 census（`forbid: ["Broken pipe"]`），30/30 CENSUS-CLEAN |
 | 1.8 子 shell 的 EXIT trap | MATCH | 原生今日实测 `TR` 先出、退出码 7；同一行进 census |
 | 2.1 NUL 与两个高位字节 | MATCH | 原生今日实测 `5` 字节（本文原先写 6，按原生改成 5）；同一行进 census |
