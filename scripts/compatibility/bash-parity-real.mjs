@@ -176,11 +176,33 @@ if (process.argv.includes('--self-test')) {
       { spill: { settled: true, size: 6, path: shortFile }, signature: { spillLines: 9 } },
       { spill: { settled: true, size: 18, path: longFile }, signature: { spillLines: 9 } },
     ]
-    const happened = await reconcileSpillReads(sides[0], sides[1])
-    if (happened && sides[0].signature.spillLines === 3 && sides[1].signature.spillLines === 9) {
-      console.log('self-test: a size mismatch re-read both counts (3 and 9, not the stale 9 and 9)')
+    // Two files that never agree: the pair must not be compared at all, and the counts must stay as
+    // they were rather than being re-read from files nobody waited for.
+    const stalled = await reconcileSpillReads(sides[0], sides[1], 400)
+    if (stalled.converged === false && sides[0].signature.spillLines === 9) {
+      console.log(`self-test: a pair that never agrees is reported unconverged (waited ${stalled.waitedMs} ms)`)
     } else {
-      failures.push(`the mismatch re-read did not happen: ${JSON.stringify(sides.map(side => side.signature))}`)
+      failures.push(`a non-converging pair was reported converged: ${JSON.stringify(stalled)}`)
+    }
+
+    // The case the WSL1 runner produced: the host file is short and *still growing* while the session
+    // file is already complete. The pair must wait for the writer, then compare the two final counts.
+    const growingFile = join(dir, 'growing.txt')
+    writeFileSync(growingFile, 'y\n'.repeat(3))
+    const lateWriter = (async () => {
+      await new Promise(resolve => setTimeout(resolve, 1_200))
+      appendFileSync(growingFile, 'y\n'.repeat(6))
+    })()
+    const pair = [
+      { spill: { settled: true, size: 6, path: growingFile }, signature: { spillLines: 3 } },
+      { spill: { settled: true, size: 18, path: longFile }, signature: { spillLines: 9 } },
+    ]
+    const converging = await reconcileSpillReads(pair[0], pair[1], 10_000)
+    await lateWriter
+    if (converging.converged === true && pair[0].signature.spillLines === 9 && pair[1].signature.spillLines === 9) {
+      console.log(`self-test: a file that grew after a 1.2 s stall was waited for (${converging.waitedMs} ms)`)
+    } else {
+      failures.push(`the still-growing file was not waited for: ${JSON.stringify({ converging, lines: pair.map(side => side.signature.spillLines) })}`)
     }
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -216,7 +238,7 @@ for (const probe of probes) {
     console.log(`  skip ${probe.name} — the host's one-shot world cannot answer it without the jobs registry`)
     continue
   }
-  await reconcileSpillReads(theirs, ours)
+  const reconciled = await reconcileSpillReads(theirs, ours)
   const differs = JSON.stringify(theirs.signature) !== JSON.stringify(ours.signature)
   const row = probe.row === undefined ? undefined : rows.find(entry => entry.id === probe.row)
   const aligned = row !== undefined && /^aligned/.test(row.verdict)
@@ -230,8 +252,12 @@ for (const probe of probes) {
   // difference — the two are identical in the signature. It gets its own verdict so the red says
   // "read it again" rather than "the two worlds disagree": frame 37888856516 printed the host's
   // half-written file (1,563 lines short) as a product difference.
-  if ([theirs.spill, ours.spill].some(spill => spill?.settled === false)) {
-    check(`${probe.name}: the spill had stopped growing before it was read`, false, detail)
+  // Both worlds ran the same command, so their spill files must end up holding the same bytes. If they
+  // never agree inside the budget, the reading is the defect — a quiet file is not enough, which frame
+  // 37892642235 proved by stalling 1,265,664 of 1,288,895 bytes still for over a second and growing on.
+  if (!reconciled.converged) {
+    check(`${probe.name}: both spill files held the same bytes when they were compared`, false,
+      `${detail} — waited ${reconciled.waitedMs} ms for the pair: host ${reconciled.sizes[0]} bytes, session ${reconciled.sizes[1]} bytes`)
     continue
   }
   if (differs && row === undefined) {
@@ -320,23 +346,42 @@ async function settleSpill(path) {
 /**
  * Settle both spill files again when their sizes disagree, then re-derive both line counts.
  *
- * Both worlds ran the same command, so both files must end up holding the same bytes; a mismatch means
- * at least one of them was read before its writer stopped. The trigger is that invariant rather than a
- * longer pause — the quiet window decides when a file is worth reading, this decides whether the two
- * are comparable at all.
- * @returns whether the re-read happened.
+ * Both worlds ran the same command, so both files must end up holding the same bytes. That equality is
+ * the trigger: the pair is sampled until both files are still for a second *and* their sizes match, and
+ * only then are the two line counts read. A quiet file on its own proves nothing — frame 37892642235's
+ * WSL1 host file sat still for 1039 ms at 1,265,664 of 1,288,895 bytes and then went on writing, and
+ * the short read was printed as a product difference for the third time.
+ * @returns whether the pair converged, how long it took, and the sizes it settled at.
  */
-async function reconcileSpillReads(theirs, ours) {
-  const usable = side => typeof side?.spill?.path === 'string' && side.spill.path !== ''
-  if (!usable(theirs) || !usable(ours) || theirs.spill.size === ours.spill.size) return false
-  for (const side of [theirs, ours]) {
-    const again = await settleSpill(side.spill.path)
-    if (again.settled) side.spill = again
+async function reconcileSpillReads(theirs, ours, budgetMs = 30_000) {
+  const pathOf = side => (typeof side?.spill?.path === 'string' ? side.spill.path : '')
+  const [hostPath, sessionPath] = [pathOf(theirs), pathOf(ours)]
+  if (hostPath === '' || sessionPath === '') return { converged: true, waitedMs: 0, sizes: [0, 0] }
+  const sizeOf = file => {
+    try {
+      return statSync(file).size
+    } catch {
+      return 0
+    }
   }
-  const spillLinesOf = spill => readFileSync(spill.path, 'utf8').trim().split('\n').length
-  if (typeof theirs.signature?.spillLines === 'number') theirs.signature.spillLines = spillLinesOf(theirs.spill)
-  if (typeof ours.signature?.spillLines === 'number') ours.signature.spillLines = spillLinesOf(ours.spill)
-  return true
+  const started = Date.now()
+  let previous = [-1, -1]
+  let quiet = 0
+  while (Date.now() - started < budgetMs) {
+    const sizes = [sizeOf(hostPath), sizeOf(sessionPath)]
+    quiet = sizes[0] === previous[0] && sizes[1] === previous[1] ? quiet + 1 : 0
+    previous = sizes
+    // Both files still for a second *and* equal: the invariant the ledger asserts, waited for as a pair.
+    if (quiet >= 10 && sizes[0] === sizes[1]) break
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  const converged = previous[0] === previous[1] && previous[0] > 0
+  const lines = file => readFileSync(file, 'utf8').trim().split('\n').length
+  if (converged) {
+    if (typeof theirs.signature?.spillLines === 'number') theirs.signature.spillLines = lines(hostPath)
+    if (typeof ours.signature?.spillLines === 'number') ours.signature.spillLines = lines(sessionPath)
+  }
+  return { converged, waitedMs: Date.now() - started, sizes: previous }
 }
 
 /**
