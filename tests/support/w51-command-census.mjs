@@ -28,7 +28,7 @@
  * @module tests/support/w51-command-census.mjs
  */
 
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -222,6 +222,17 @@ const CENSUS = [
 ]
 
 const home = mkdtempSync(join(repoRoot, 'ci', 'deps', '.w51c-'))
+// The harness creates this tree inside the repository, so it takes it back down with it: the run that
+// staged the shell-exit rows left `ci/deps/.w51c-7zaNr3/` (an `overlay.yml` and a `profiles/` tree)
+// standing in the worktree, where the next person reads it as somebody's half-finished work.
+process.on('exit', () => {
+  try {
+    rmSync(home, { recursive: true, force: true })
+  } catch {
+    // A teardown that cannot delete must not become a census failure; the run's own verdicts already
+    // printed by this point.
+  }
+})
 const profileDir = join(home, 'profiles', 'w51c')
 mkdirSync(profileDir, { recursive: true })
 writeFileSync(join(profileDir, 'package.json'), `${JSON.stringify({
@@ -405,11 +416,16 @@ try {
     // ever sees it — measured: a direct run of `…; echo "code=$?"` answered `code=0` where the
     // session answered the correct `code=3`. That is hazard A/E's own subject, and it is why the
     // ground truth here is a file the session writes once and both sides then execute.
-    const script = `/tmp/w51c-complex-${index}.sh`
+    const script = `/tmp/w51c-complex-${process.pid}-${index}.sh`
     try {
       const quoted = probe.command.replace(/'/g, `'\\''`)
-      await tool.execute({ command: `printf '%s\\n' '${quoted}' > ${script}`, description: `census: stage ${probe.name}` },
+      const staged = await tool.execute({ command: `printf '%s\\n' '${quoted}' > ${script}`, description: `census: stage ${probe.name}` },
         { signal: AbortSignal.timeout(30_000), agent: undefined })
+      // Staging is part of the measurement, not plumbing: a `>` that fails against a file a previous
+      // root run left behind would let the next line execute *that* file, and the row would answer for
+      // a command it never staged. Fixed `/tmp` names did exactly this on 2026-10-09, so the name
+      // carries this process's id and a failed stage is reported as itself.
+      if (staged?.exitCode !== 0) throw new Error(`staging ${script} failed with exit ${String(staged?.exitCode)}`)
       const viaSession = await tool.execute({ command: `bash ${script}`, description: `census: ${probe.name}` },
         { signal: AbortSignal.timeout(60_000), agent: undefined })
       const direct = await runDirect('wsl.exe', ['-d', DISTRO, '-u', 'root', '--', 'bash', script],

@@ -223,7 +223,11 @@ jobs:
             # no name attached. Print the verdict line, every FAIL, and the short-run guard's own
             # sentence — then the tail for context.
             grep -aE "checks passed|bash-session-real: RED|  FAIL" "logs/$name.log" 2>/dev/null | head -25 || true
-            tail -6 "logs/$name.log" || true
+            # The session driver prints its whole log rather than a six-line tail: every one of its
+            # cells carries the milliseconds it took, and a green frame used to record none of them —
+            # so a threshold question ("how close did that run get?") could only be answered from the
+            # downloaded artifacts, which is how the 3911 ms pager reading stayed invisible.
+            if [ "$name" = bash-session-real ]; then cat "logs/$name.log" || true; else tail -6 "logs/$name.log" || true; fi
             echo "::endgroup::"
             if [ "$rc" -ne 0 ]; then FAIL=1; fi
             return 0
@@ -262,7 +266,9 @@ jobs:
             DSH_WSL_TEST_PLANE=lib "$@" > "logs/lib-$name.log" 2>&1 || rc=$?
             echo "rc=$rc"
             grep -aE "  FAIL|: RED|checks passed" "logs/lib-$name.log" 2>/dev/null | head -20 || true
-            tail -8 "logs/lib-$name.log" || true
+            # Same as the `src` side: the session driver's per-cell milliseconds are the reading a
+            # threshold is judged from, and a green frame must carry them too.
+            if [ "$name" = bash-session-real ]; then cat "logs/lib-$name.log" || true; else tail -8 "logs/lib-$name.log" || true; fi
             echo "::endgroup::"
             if [ "$rc" -ne 0 ]; then FAIL=1; fi
             return 0
