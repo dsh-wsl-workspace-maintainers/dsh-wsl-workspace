@@ -5,7 +5,7 @@
 
 [English](README.md) · [中文](README.zh.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Português](README.pt.md) · [Русский](README.ru.md)
 
-![alt text](image-3.png)
+![alt text](https://raw.githubusercontent.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/HEAD/image-3.png)
 DeepSeek Harness Web GUI에서 WSL 워크스페이스를 추가하고 에이전트 세션 전체(bash 명령과 파일 읽기/쓰기)를 로컬 WSL 배포판 안에서 실행합니다. 모든 경로는 Linux 형식이며, WSL 내부에 별도로 설치할 것이 없습니다. 세션에서 WSL과 Windows 양쪽에 동시에 접근할 수 있습니다. bash 명령은 WSL 배포판 안에서 실행되고, Windows 파일은 `/mnt/<drive>`(예: `/mnt/c/Users/...`)로 언제든 접근할 수 있습니다.
 
 지원하는 DSH 버전 목록은 [README.md](README.md)의 Compatibility 섹션을 참고하세요.
@@ -33,7 +33,7 @@ dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
 
 "Create & open"을 클릭하면 새 세션이 WSL에서 시작됩니다. 세션에서 bash 도구는 선택한 배포판 안에서 명령을 실행하고 `read`/`write`/`edit`는 WSL 파일을 다루므로 모델이 보는 모든 경로는 Linux 형식입니다. 모드 선택은 평소와 같이 작동합니다. Standard, PTC, Minimal, Creative는 각각 해당하는 WSL 변형으로 자동 연결됩니다(선택기의 WSL 변형 항목은 이중 언어로 표시, 예: `WSL · Standard mode（标准模式）`). 세션 안에서도 Windows 파일은 `/mnt/<drive>`(예: `/mnt/c/Users/...`)로 접근할 수 있습니다.대화상자 우측 상단의 '?' 버튼은 이 빌드가 선언하는 DSH 릴리스, 플러그인 사용법, 그리고 우회할 수 없는 알려진 제한을 보여주는 패널을 엽니다.
 
-![alt text](image-2.png)
+![alt text](https://raw.githubusercontent.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/HEAD/image-2.png)
 ## 동작 참고
 
 - **bash 도구**: 설정된 사용자 이름으로 WSL 배포판 안에서 실행됩니다(비움 = 배포판 기본 사용자, 대개 `root`). 배포판 어디든 읽고 쓸 수 있습니다. Windows ACL 샌드박스는 `wsl.exe`를 감쌀 수 없으며(자식 프로세스는 Linux 커널 쪽에서 실행됨), WSL 자체가 격리 경계가 되어 DSH 파일 정책은 bash에 적용되지 않습니다.

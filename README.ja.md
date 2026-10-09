@@ -5,7 +5,7 @@
 
 [English](README.md) · [中文](README.zh.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Português](README.pt.md) · [Русский](README.ru.md)
 
-![alt text](image-3.png)
+![alt text](https://raw.githubusercontent.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/HEAD/image-3.png)
 DeepSeek Harness Web GUI から WSL ワークスペースを追加し、エージェントセッション全体（bash コマンドとファイルの読み書き）をローカルの WSL ディストリビューション内で実行します。パスはすべて Linux 形式です。WSL 内への追加インストールは不要です。セッションから WSL と Windows の両方に同時にアクセスできます。bash コマンドは WSL ディストリビューション内で実行され、Windows のファイルは `/mnt/<drive>`（例：`/mnt/c/Users/...`）経由でいつでもアクセスできます。
 
 対応する DSH バージョンの一覧は [README.md](README.md) の Compatibility を参照してください。
@@ -33,7 +33,7 @@ dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
 
 「Create & open」をクリックすると、新しいセッションが WSL で起動します。セッション内では bash ツールが選択したディストリビューション内でコマンドを実行し、`read`/`write`/`edit` は WSL のファイルを操作するため、モデルが見るすべてのパスは Linux 形式です。モード選択は従来どおり機能します。Standard・PTC・Minimal・Creative はそれぞれ対応する WSL バリアントに自動的に割り当てられます（選択肢の WSL バリアントは二言語表示、例：`WSL · Standard mode（标准模式）`）。セッション内から Windows のファイルは `/mnt/<drive>`（例：`/mnt/c/Users/...`）経由でアクセスできます。ダイアログ右上の「?」ボタンは、このビルドが宣言する DSH のリリース、プラグインの使い方、そして回避できない既知の制限を表示するパネルを開きます。
 
-![alt text](image-2.png)
+![alt text](https://raw.githubusercontent.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/HEAD/image-2.png)
 ## 動作メモ
 
 - **bash ツール**：設定されたユーザー名で WSL ディストリビューション内で実行されます（空欄＝ディストリビューションのデフォルトユーザー、多くの場合 `root`）。ディストリビューション内のどこでも読み書きできます。Windows の ACL サンドボックスは `wsl.exe` を包み込めません（子プロセスは Linux カーネル側で実行されるため）。WSL 自体が分離境界となり、DSH のファイルポリシーは bash には適用されません。

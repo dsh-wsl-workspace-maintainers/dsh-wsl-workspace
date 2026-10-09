@@ -5,7 +5,7 @@
 
 [English](README.md) · [中文](README.zh.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Português](README.pt.md) · [Русский](README.ru.md)
 
-![alt text](image-3.png)
+![alt text](https://raw.githubusercontent.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/HEAD/image-3.png)
 Adicione um espaço de trabalho WSL a partir da interface web do DeepSeek Harness e execute toda a sessão do agente — comandos bash e leitura/escrita de arquivos — dentro de uma distribuição WSL local com caminhos em formato Linux. Não é necessário instalar nada dentro do WSL. A sessão pode acessar WSL e Windows ao mesmo tempo: os comandos bash são executados dentro da distribuição WSL, enquanto os arquivos do Windows continuam acessíveis via `/mnt/<unidade>` (por exemplo `/mnt/c/Users/...`).
 
 A lista de versões do DSH suportadas está na secção Compatibility do [README.md](README.md).
@@ -33,7 +33,7 @@ Clique no botão W ao lado de Settings na parte inferior da barra lateral para a
 
 Clique em "Create & open" para iniciar uma nova sessão no espaço de trabalho. Na nova sessão, a ferramenta bash executa comandos dentro da distribuição escolhida e `read`/`write`/`edit` operam nos arquivos WSL, portanto cada caminho visto pelo modelo é um caminho Linux. O seletor de modos continua funcionando normalmente: Standard, PTC, Minimal e Creative caem automaticamente na sua variante WSL (as entradas de variante WSL no seletor são bilíngues, ex. `WSL · Standard mode（标准模式）`), e os arquivos do Windows continuam acessíveis a partir da sessão sob `/mnt/<unidade>` (por exemplo `/mnt/c/Users/...`).O botão “?” do diálogo abre um painel com os releases do DSH que esta construção declara, como o plugin é usado e as limitações que ele não consegue contornar.
 
-![alt text](image-2.png)
+![alt text](https://raw.githubusercontent.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/HEAD/image-2.png)
 ## Notas de comportamento
 
 - **Ferramenta bash**: é executada dentro da distribuição WSL com o nome de usuário configurado (vazio = usuário padrão da distribuição, geralmente `root`), podendo ler e escrever em qualquer lugar da distribuição. O sandbox de ACL do Windows não consegue envolver o `wsl.exe` — seus processos filhos rodam no lado do kernel Linux — então o WSL em si é a fronteira de isolamento e a política de arquivos do DSH não se aplica ao bash.

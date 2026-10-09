@@ -5,7 +5,7 @@
 
 [English](README.md) · [中文](README.zh.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Português](README.pt.md) · [Русский](README.ru.md)
 
-![alt text](image-3.png)
+![alt text](https://raw.githubusercontent.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/HEAD/image-3.png)
 Füge aus der DeepSeek-Harness-Web-GUI einen WSL-Arbeitsbereich hinzu und führe die gesamte Agent-Sitzung — Bash-Befehle und Datei-Lesen/-Schreiben — innerhalb einer lokalen WSL-Distribution mit Linux-Pfaden aus. In WSL muss nichts installiert werden. Die Sitzung kann gleichzeitig auf WSL und Windows zugreifen: Bash-Befehle laufen in der WSL-Distribution, während Windows-Dateien über `/mnt/<laufwerk>` (z. B. `/mnt/c/Users/...`) erreichbar bleiben.
 
 Die Liste der unterstützten DSH-Versionen steht im Abschnitt Compatibility von [README.md](README.md).
@@ -33,7 +33,7 @@ Klicke in der Seitenleiste unten neben Settings auf den W-Button, um den Dialog 
 
 Klicke auf „Create & open", um eine neue Sitzung im Arbeitsbereich zu starten. In der neuen Sitzung führt das Bash-Tool Befehle in der gewählten Distribution aus, und `read`/`write`/`edit` arbeiten auf WSL-Dateien — jeder vom Modell gesehene Pfad ist ein Linux-Pfad. Der Modus-Wähler funktioniert wie gewohnt: Standard, PTC, Minimal und Creative landen automatisch auf ihrer WSL-Variante (die WSL-Varianten-Einträge im Wähler sind zweisprachig, z. B. `WSL · Standard mode（标准模式）`), und Windows-Dateien bleiben aus der Sitzung unter `/mnt/<laufwerk>` (z. B. `/mnt/c/Users/...`) erreichbar.Der „?“-Button des Dialogs öffnet ein Panel mit den DSH-Releases, die dieser Build deklariert, der Verwendung des Plugins und den Grenzen, die es nicht aushebeln kann.
 
-![alt text](image-2.png)
+![alt text](https://raw.githubusercontent.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/HEAD/image-2.png)
 ## Verhaltenshinweise
 
 - **Bash-Tool**: läuft in der WSL-Distribution als der konfigurierte Benutzername (leer = Standardbenutzer der Distribution, oft `root`) und kann daher überall in der Distribution lesen und schreiben. Die Windows-ACL-Sandbox kann `wsl.exe` nicht umhüllen — die Kindprozesse laufen auf der Linux-Kernelseite — daher ist WSL selbst die Isolationsgrenze, und die DSH-Dateipolitik gilt nicht für Bash.
