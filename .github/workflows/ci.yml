@@ -246,6 +246,10 @@ jobs:
           MSYS_NO_PATHCONV=1 WSL_COMPAT_ROOT=/tmp/dsh-wsl-relay-profile node --experimental-strip-types scripts/compatibility/relay-profile-real.mjs > logs/relay-profile-real.log 2>&1 || { echo "rc=$?"; tail -8 logs/relay-profile-real.log || true; FAIL=1; }
           run_one tool-bash-real node --experimental-strip-types scripts/compatibility/tool-bash-real.mjs
           run_one bash-session-real node --experimental-strip-types scripts/compatibility/bash-session-real.mjs
+          # The two readings that driver leans on (the quiet window for a spill file, and the
+          # re-read when the two settles disagree) get their own control first: it needs no
+          # distribution, so a broken reading is caught before the WSL matrix spends minutes on it.
+          node --experimental-strip-types scripts/compatibility/bash-parity-real.mjs --self-test > logs/parity-selftest.log 2>&1 || { echo "self-test rc=$?"; cat logs/parity-selftest.log; FAIL=1; }
           MSYS_NO_PATHCONV=1 WSL_COMPAT_ROOT=/tmp/dsh-wsl-parity node --experimental-strip-types scripts/compatibility/bash-parity-real.mjs > logs/bash-parity-real.log 2>&1 || { echo "rc=$?"; tail -8 logs/bash-parity-real.log || true; FAIL=1; }
           exit $FAIL
       - name: run the lib-plane gates against the shipped bundle
@@ -286,6 +290,7 @@ jobs:
           MSYS_NO_PATHCONV=1 DSH_WSL_TEST_PLANE=lib WSL_COMPAT_ROOT=/tmp/dsh-wsl-relay-profile-lib node --experimental-strip-types scripts/compatibility/relay-profile-real.mjs > logs/lib-relay-profile-real.log 2>&1 || { echo "rc=$?"; tail -8 logs/lib-relay-profile-real.log || true; FAIL=1; }
           run_lib tool-bash-real node --experimental-strip-types scripts/compatibility/tool-bash-real.mjs
           run_lib bash-session-real node --experimental-strip-types scripts/compatibility/bash-session-real.mjs
+          node --experimental-strip-types scripts/compatibility/bash-parity-real.mjs --self-test > logs/lib-parity-selftest.log 2>&1 || { echo "self-test rc=$?"; cat logs/lib-parity-selftest.log; FAIL=1; }
           MSYS_NO_PATHCONV=1 DSH_WSL_TEST_PLANE=lib WSL_COMPAT_ROOT=/tmp/dsh-wsl-parity-lib node --experimental-strip-types scripts/compatibility/bash-parity-real.mjs > logs/lib-bash-parity-real.log 2>&1 || { echo "rc=$?"; tail -8 logs/lib-bash-parity-real.log || true; FAIL=1; }
           # skills-real is deliberately not attempted under `lib`: tsdown declares no entry for
           # the provider (the class is file-local to lib/index.js:1122) and plane.mjs throws
