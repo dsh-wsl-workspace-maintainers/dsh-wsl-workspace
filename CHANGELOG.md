@@ -3,6 +3,23 @@
 All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](README.md); the Chinese record is [CHANGELOG.zh.md](CHANGELOG.zh.md).
 
 ## 0.7.7 — 2026-10-07
+- **The stderr arm of the spill file keeps the same promises the stdout arm does.** Four things were
+  measured on a real distribution (2026-10-11, Ubuntu, `seq 1 200000 >&2`) and all four are fixed.
+  (1) *The file was short*: it held 1 011 753 of the stream's 1 288 895 bytes and ended mid-number,
+  because the stderr spill was taken **before** `settleStderr()` while stdout's had already been moved
+  after it — so the bytes still in flight reached the answer (through `takeStderr`) and never the file.
+  Both spills are now taken after the wait, and the file is the whole stream. (2) *The truncation was
+  invisible*: the settled run hardcoded `stderrTruncated: false` (the flag was cleared before the run
+  was built), and the renderer's `[output truncated; full output: …]` sentence existed for stdout only
+  — a model whose command wrote 1.29 MB to fd 2 read ~400 kB of it with nothing saying the rest
+  existed and no path to it. The run now carries the flag it actually set, and the body gets
+  `[stderr truncated; full output: …]`. (3) *Our own echo was in the file*: the shell's line editor
+  writes the line it just read to stderr, so the file's first line was
+  `… } | base64 -w0 )" # __DSH_WSL_BASH_REC`; the first window now goes through the same
+  `dropProtocolEcho` predicate the answer uses. (4) *A NUL the command wrote was eaten*: the reader
+  filtered **every** NUL in a chunk, so `printf 'a\0b\n' >&2` came back `ab` while the same bytes on
+  stdout kept theirs. The marker is now read as what it is — the last byte of the chunk that carries
+  it, since nothing else is written to fd 2 for that frame.
 - **What a user installs is now the plugin, not a copy of the repository.** `package.json#files` shipped
   `src/` and both README screenshots: a fresh `npm pack` of the previous tree is **2,757,545 B across 79
   members**, of which 2,265,091 B (82.1%) was the 30 source files and the 2 images — neither of which

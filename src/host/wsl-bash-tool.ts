@@ -223,6 +223,16 @@ function renderRun(value: ForegroundOutput): { type: 'text'; text: string }[] {
     if (body.length > 0 && !body.endsWith('\n')) body += '\n'
     body += `[stderr]\n${value.stderr.text}`
   }
+  // The stderr arm of the same sentence stdout gets above, and outside the `text` guard: what the
+  // model has to be able to find is the file, which exists even when the retained window is empty.
+  // Without this a model whose command wrote 1.29 MB to fd 2 read ~400 kB of it with nothing saying
+  // the rest existed, and the file holding the rest was never named. Measured 2026-10-11:
+  // `seq 1 200000 >&2` came back `truncated: false` with a spill file beside it, because the session
+  // reported `stderrTruncated` as a constant.
+  if (value.stderr.truncated && value.stderr.spillPath !== undefined) {
+    if (body.length > 0 && !body.endsWith('\n')) body += '\n'
+    body += `[stderr truncated; full output: ${value.stderr.spillPath}]`
+  }
   if (body.length === 0) body = '(no output)'
   const markers: string[] = []
   if (value.timedOut) markers.push(`[timed out after ${value.timeoutMs}ms]`)

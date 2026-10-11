@@ -585,6 +585,32 @@ try {
     && spilled.trim().split('\n').length === 200_000,
   `spill=${JSON.stringify(spillPath ?? null)} fileLines=${spilled.trim() === '' ? 0 : spilled.trim().split('\n').length}`)
 
+  // The stderr arm of the same promise, which kept three defects the stdout arm had already lost.
+  // Measured 2026-10-11 on this machine, all three at once on `seq 1 200000 >&2`: the file held
+  // 1 011 753 of the stream's 1 288 895 bytes and ended mid-number (its spill was taken before the
+  // stderr wait, so what was still in flight reached the answer and never the file); the call
+  // reported `truncated: false` with that file beside it (the flag was cleared before the run was
+  // built); and the body carried neither the truncation nor the path (the renderer's sentence
+  // existed for stdout only). Its first line was our own echoed frame, too.
+  const bigErr = await call('seq 1 200000 >&2', { timeoutMs: 30_000 })
+  const errSpill = bigErr.value?.stderr?.spillPath
+  const errSpilled = typeof errSpill === 'string' ? readFileSync(errSpill.replace(/\\/g, '/'), 'utf8') : ''
+  const errLines = errSpilled.trim() === '' ? 0 : errSpilled.trim().split('\n').length
+  check('a stderr stream over the cap spills the whole stream, and the body names the file',
+    bigErr.value?.stderr?.truncated === true
+    && typeof errSpill === 'string' && errSpill.length > 0
+    && bigErr.rendered.includes(`[stderr truncated; full output: ${errSpill}]`)
+    && errLines === 200_000
+    && !errSpilled.includes('__DSH_WSL_BASH'),
+    `spill=${JSON.stringify(errSpill ?? null)} fileLines=${errLines} `
+    + `truncated=${String(bigErr.value?.stderr?.truncated)} echo=${errSpilled.includes('__DSH_WSL_BASH')}`)
+  // A NUL the command wrote is its data: the reader used to filter every NUL in a chunk, so this
+  // came back `ab` on stderr while the same bytes on stdout kept theirs.
+  const nulOut = await call(`printf 'a\\000b\\n'`)
+  const nulErr = await call(`printf 'a\\000b\\n' >&2`)
+  check('a NUL byte is data on both streams', nulOut.text === 'a\u0000b\n' && nulErr.value?.stderr?.text === 'a\u0000b\n',
+    `stdout=${JSON.stringify(nulOut.text)} stderr=${JSON.stringify(nulErr.value?.stderr?.text)}`)
+
   // The journal beyond `cd` and `export`: options, aliases and functions come back after a restart,
   // and a snapshot too large to replay is *reported* rather than quietly lost.
   await call("alias dshrealalias='echo ALIAS_OK_7'; set -o allexport; shopt -s nocasematch; dshrealfn() { echo FN_OK_9; }")

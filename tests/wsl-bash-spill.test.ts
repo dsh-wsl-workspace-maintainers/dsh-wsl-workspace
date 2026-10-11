@@ -183,3 +183,86 @@ test('the stdout spill is taken after the stderr wait, and to the whole window',
   assert.doesNotMatch(branch, /this\.spillWindow\('stdout', this\.out, done\.recordStart\)/,
     'the record offset is a byte position, not the file boundary — this is the shape of the WSL1 defect')
 })
+
+test('the stderr spill is taken after the same wait, and reports its own truncation', () => {
+  // The stderr arm kept the WSL1 defect for longer, because its spill sat *before* the wait while
+  // stdout's had been moved after it. Measured 2026-10-11 on a real distribution: a
+  // `seq 1 200000 >&2` file held 1 011 753 of 1 288 895 bytes and ended mid-number, while the answer
+  // — which `takeStderr` reads after the wait — had the tail. So the same order is asserted here,
+  // and for the same reason: what arrives during the wait has to reach the file too.
+  const source = read(join(repoRoot, 'src', 'host', 'wsl-bash-session.ts'), 'utf8')
+  const completion = source.indexOf('if (done !== undefined) {')
+  const takeAt = source.indexOf('const stderr = this.takeStderr', completion)
+  const branch = source.slice(completion, takeAt)
+  const settleAt = branch.indexOf('await this.settleStderr()')
+  const stderrSpillAt = branch.indexOf("this.spillWindow('stderr'")
+  assert.ok(settleAt > 0 && stderrSpillAt > 0,
+    `the completion branch must contain both the wait and the stderr spill (settle@${settleAt}, spill@${stderrSpillAt})`)
+  assert.ok(stderrSpillAt > settleAt,
+    'the stderr spill must be taken AFTER the stderr wait — before it, the bytes still in flight reach '
+    + 'the answer (through takeStderr) and never the file')
+  // And before `takeStderr`, which consumes the window it reads.
+  assert.ok(takeAt > completion && completion + stderrSpillAt < takeAt,
+    'the spill has to run before the window is consumed, or the file gets whatever is left')
+  assert.match(branch, /this\.spillWindow\('stderr', this\.err, this\.err\.length\)/,
+    'the stderr spill must be bounded by the window length')
+
+  // And the settled run has to report the overflow it performed. `stderrTruncated: false` was a
+  // constant on this path — the flag was cleared before the run was built — so a 1.29 MB stderr came
+  // back `truncated: false` with a spill file beside it, and the tool had nothing to render a note
+  // from.
+  const settledRun = source.slice(takeAt, source.indexOf('const caused = armed.signal.aborted', takeAt))
+  assert.ok(settledRun.includes('run: {'), 'the settled run was not found, so this check is vacuous')
+  assert.doesNotMatch(settledRun, /stderrTruncated: false/,
+    'the settled run must not hardcode stderrTruncated: false — that is the constant that hid the truncation')
+  assert.match(settledRun, /truncated, stderrTruncated,/,
+    'the run must carry the captured stderrTruncated alongside the stdout one')
+  const captureAt = source.indexOf('const truncated = this.outTruncated', takeAt)
+  const resetAt = source.indexOf('this.errTruncated = false', captureAt)
+  assert.ok(captureAt > takeAt && resetAt > captureAt,
+    `the capture and the reset must both sit in the settle path (capture@${captureAt}, reset@${resetAt})`)
+  assert.match(source.slice(captureAt, resetAt), /const stderrTruncated = this\.errTruncated/,
+    'stderrTruncated must be captured before the reset, the way `truncated` is')
+})
+
+test('a NUL the command wrote to stderr is data, and only the marker is protocol', async () => {
+  // The marker is one NUL written after the command, and nothing else is written to fd 2 for that
+  // frame — so it is the last byte of the chunk that carries it, and a NUL anywhere else belongs to
+  // the command. The reader used to filter *every* NUL in the chunk: `printf 'a\0b\n' >&2` came back
+  // `ab` while the same bytes on stdout kept theirs.
+  const { splitStderrMarker } = await import('../src/host/wsl-bash-session.ts')
+
+  // The command's own NUL, in a chunk with no marker in it: kept.
+  const data = Buffer.from('a\0b\n', 'latin1')
+  assert.deepEqual(splitStderrMarker(data), { kept: data, markerSeen: false },
+    'a chunk that does not end on a NUL carries no marker, so every byte of it is the command’s')
+
+  // The marker alone, and the marker sharing a chunk with the command's bytes: exactly one byte goes.
+  assert.deepEqual(splitStderrMarker(Buffer.from([0])), { kept: Buffer.alloc(0), markerSeen: true })
+  const shared = splitStderrMarker(Buffer.from('a\0b\n\0', 'latin1'))
+  assert.equal(shared.markerSeen, true, 'a trailing NUL is the marker')
+  assert.equal(shared.kept.toString('latin1'), 'a\0b\n',
+    'and the command’s own NUL survives it — this is the byte the old filter ate')
+
+  // An empty chunk is not a marker (a zero-length `data` event is legal).
+  assert.deepEqual(splitStderrMarker(Buffer.alloc(0)), { kept: Buffer.alloc(0), markerSeen: false })
+})
+
+test('the stderr spill file carries the command’s bytes, not our echoed frame', () => {
+  // The shell's line editor writes the line it just read to stderr, and that echo is the first thing
+  // on the frame's stderr — so it was the file's first line. `stripRecords` removes the records but
+  // not the echo, and `dropProtocolEcho` (which does) only ever ran on the answer. Measured
+  // 2026-10-11: the file began `… } | base64 -w0 )" # __DSH_WSL_BASH_REC`.
+  //
+  // The predicate is the answer's own, so the file and the body agree on what counts as protocol.
+  const source = read(join(repoRoot, 'src', 'host', 'wsl-bash-session.ts'), 'utf8')
+  assert.match(source, /dropLeadingFrameEcho\(bytes, this\.framePayload, this\.frameStdinPayload\)/,
+    'the stderr spill must run its first window through the echo filter the answer uses')
+  const helper = source.slice(source.indexOf('function dropLeadingFrameEcho'))
+  assert.match(helper.slice(0, helper.indexOf('\n}')),
+    /dropProtocolEcho\(first, payload \?\? '', stdinPayload\) === ''/,
+    'and it must decide with dropProtocolEcho rather than a second, weaker predicate')
+  assert.ok(source.includes('this.framePayload = frame.payload'),
+    'the frame in flight has to be reachable from the spill path, or the filter gets nothing to match')
+})
+

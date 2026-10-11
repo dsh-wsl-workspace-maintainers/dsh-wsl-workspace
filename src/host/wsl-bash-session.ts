@@ -77,6 +77,50 @@ function functionCountOf(state: string): number | undefined {
   return line === undefined ? undefined : Number(line.trim())
 }
 
+/**
+ * Drop a leading frame echo from bytes on their way into the stderr spill file.
+ *
+ * The shell's line editor writes the line it just read to stderr, and that echo is the first thing
+ * on the frame's stderr — so it is the file's first line. `stripRecords` removes the records but not
+ * the echo, and `dropProtocolEcho` — which does remove it — only ever ran on the answer. Measured
+ * 2026-10-11: the spill file's first line was `… } | base64 -w0 )" # __DSH_WSL_BASH_REC`.
+ *
+ * The predicate is the answer's own (`dropProtocolEcho`), so the file and the body agree on what is
+ * protocol; only a first line that filter would have removed is dropped, and a line the command
+ * itself wrote is never touched.
+ * @param bytes - the window about to be written, already free of records.
+ * @param payload - the frame's encoded payload, for the echo predicate.
+ * @param stdinPayload - the frame's encoded stdin text, when it carried one.
+ * @returns the same bytes without a leading echo line.
+ */
+function dropLeadingFrameEcho(bytes: Buffer, payload: string | undefined, stdinPayload: string | undefined): Buffer {
+  const newline = bytes.indexOf(0x0a)
+  if (newline < 0) return bytes
+  const first = bytes.subarray(0, newline + 1).toString('utf8')
+  return dropProtocolEcho(first, payload ?? '', stdinPayload) === '' ? bytes.subarray(newline + 1) : bytes
+}
+
+/**
+ * Take the frame's stderr-end marker out of one chunk, keeping every other byte.
+ *
+ * The marker is a single NUL written after the command, and nothing else is written to fd 2 for this
+ * frame — the next frame only goes out once this call has settled — so the marker is the **last byte
+ * of the chunk that carries it**. That is the whole rule, and it is what makes a NUL anywhere else
+ * the command's own data. Measured 2026-10-11: `printf 'a\0b\n' >&2` came back `ab`, because the
+ * reader used to filter *every* NUL in the chunk while the same bytes on stdout kept theirs.
+ *
+ * The one shape this cannot tell apart is a command whose stderr happens to end on a chunk boundary
+ * with a NUL of its own; that byte is read as the marker, which settles the wait a little early and
+ * costs that one byte. The alternative — treating any NUL as the marker — costs every NUL the
+ * command wrote, which is the defect.
+ * @param chunk - one `data` event from the stderr pipe.
+ * @returns the bytes to keep, and whether this chunk carried the marker.
+ */
+export function splitStderrMarker(chunk: Buffer): { kept: Buffer; markerSeen: boolean } {
+  if (chunk.length === 0 || chunk[chunk.length - 1] !== 0) return { kept: chunk, markerSeen: false }
+  return { kept: chunk.subarray(0, chunk.length - 1), markerSeen: true }
+}
+
 /** One command's outcome, in the shape the tool layer renders. */
 export interface WslBashRun {
   stdout: string
@@ -208,6 +252,19 @@ export class WslBashSession {
   private errSpill: { path: string, fd: number } | undefined
   private errSeen = 0
   private errWritten = 0
+  /**
+   * Whether this frame's stderr spill file has been written to yet.
+   *
+   * The shell's line editor writes the line it just read to stderr, and that echo is the first
+   * thing on the frame's stderr — so it is the first line of the file unless it is dropped on the
+   * way in. `stripRecords` removes the records but not the echo, and `dropProtocolEcho` (which
+   * does) only ever ran on the answer; measured 2026-10-11, the file's first line was
+   * `… } | base64 -w0 )" # __DSH_WSL_BASH_REC`.
+   */
+  private errSpillStarted = false
+  /** The frame in flight, for the echo filter the spill file shares with the answer. */
+  private framePayload: string | undefined
+  private frameStdinPayload: string | undefined
   private journal = ''
   private functionsBody = ''
   private functionCount: number | undefined
@@ -343,11 +400,9 @@ export class WslBashSession {
     })
     handle.stderr?.on('data', (chunk: Buffer) => {
       // The frame's own stderr-end marker: everything the command wrote to fd 2 was written before it.
-      // The byte itself is protocol, so it is dropped before anything the model could read it from —
-      // and `errSeen` counts what is kept, because the spill bookkeeping measures against the buffer.
-      const hasMarker = chunk.indexOf(0) >= 0
-      if (hasMarker) this.errEnded = true
-      const kept = hasMarker ? Buffer.from(chunk.filter(byte => byte !== 0)) : chunk
+      // Only that one byte is protocol; a NUL the command wrote is its data and survives.
+      const { kept, markerSeen } = splitStderrMarker(chunk)
+      if (markerSeen) this.errEnded = true
       this.err = Buffer.concat([this.err, kept])
       this.errSeen += kept.length
       this.wakeReaders()
@@ -380,8 +435,16 @@ export class WslBashSession {
     const from = Math.max(written, streamStart)
     const to = streamStart + upto
     if (to <= from) return
+    let bytes = stripRecords(buffer.subarray(from - streamStart, upto))
+    // The frame's own echo is the first line of the frame's stderr, so it is dropped here with the
+    // same predicate the answer uses — the file is the answer's complete stream, not a place protocol
+    // bytes are allowed to survive.
+    if (!isOut && !this.errSpillStarted) {
+      this.errSpillStarted = true
+      bytes = dropLeadingFrameEcho(bytes, this.framePayload, this.frameStdinPayload)
+    }
     try {
-      writeSync(target.fd, stripRecords(buffer.subarray(from - streamStart, upto)))
+      writeSync(target.fd, bytes)
     } catch {
       // A spill failure leaves the result with `truncated` and no path, which is what the host's own
       // reader does (`Spill failures reach the plugin logger; the log line is the only trace`).
@@ -438,6 +501,8 @@ export class WslBashSession {
     // This frame's stderr-end marker has not been seen yet; the settle path waits for it.
     this.errEnded = false
     this.shellInterrupted = false
+    // Each frame gets a fresh echo filter for its own spill file.
+    this.errSpillStarted = false
     // A spill file belongs to one command. Left open across commands, the second call's answer would
     // carry the first call's `full output` path — measured in `bash-parity-real`, where every probe
     // after a 200 000-line one reported a spill.
@@ -454,31 +519,41 @@ export class WslBashSession {
     // the look found. Only a frame whose shell pid is known can be watched, because the look walks
     // that pid's descendants.
     const watch: FrameWatch = { startedAt: Date.now(), lastBytes: this.out.length + this.err.length, lastLookAt: 0, ownTerminal, looks: 0, failed: 0, witnessed: false, viaRoot: false }
+    this.framePayload = frame.payload
+    this.frameStdinPayload = frame.stdinPayload
     stdin.write(frame.line)
     for (;;) {
       const done = readCompletion(this.out, frame.nonce)
       if (done !== undefined) {
-        // The spill file also gets the bytes that never left memory, so the path the model is given
-        // really is the complete stream.
-        this.spillWindow('stderr', this.err, this.err.length)
         // stderr travels on its own pipe, so the completion record on stdout can arrive first: the wait
-        // has to happen **before** stdout is taken, or it waits for nothing (measured on the src plane:
-        // `echo oops >&2` came back `(no output)` and those bytes landed in the next call's window).
+        // has to happen **before** either stream is taken, or it waits for nothing (measured on the src
+        // plane: `echo oops >&2` came back `(no output)` and those bytes landed in the next call's
+        // window).
         await this.settleStderr()
-        // …and the spill of stdout has to happen **after** that wait too, not before it. WSL1 measured
-        // this: `seq 1 200000` produced a spill file holding 194341 of the 200000 lines, while WSL2
+        // Both spills are taken **after** that wait, and to the whole window. WSL1 measured the stdout
+        // arm: `seq 1 200000` produced a spill file holding 194341 of the 200000 lines, while WSL2
         // produced all 200000. The two differ only in how finely the 9P pipe fragments the stream, so
         // the extra chunks that arrive *during* the stderr wait are the ones missing — they were below
         // `recordStart` when the spill was taken, and above it by the time the slice was read, so they
         // reached neither the answer nor the file. 36 kB, about half a pipe chunk.
         //
+        // The stderr arm had the same defect and kept it longer, because its spill sat *before* the
+        // wait: measured 2026-10-11 on this machine, a `seq 1 200000 >&2` file held 1 011 753 of
+        // 1 288 895 bytes and ended mid-number, while the answer — which `takeStderr` reads after the
+        // wait — had the tail. What was still in flight reached the model and never the file.
+        //
         // `this.out.length`, not `done.recordStart`: the record is still in the window, and the slice
         // below strips it, so spilling to the record's offset throws away the bytes after it rather than
         // the record. What the model is told the file holds has to be what the file holds.
+        this.spillWindow('stderr', this.err, this.err.length)
         this.spillWindow('stdout', this.out, this.out.length)
         const stdout = stripRecords(this.out.subarray(0, done.recordStart)).toString('utf8')
         const stderr = this.takeStderr(frame.payload, frame.stdinPayload)
         const truncated = this.outTruncated
+        // Captured before the reset below, exactly as `truncated` is: the run has to report the
+        // overflow this call performed, not the state after it was cleared. Hardcoding `false` here is
+        // how a 1.29 MB stderr came back as `truncated: false` with a spill file beside it.
+        const stderrTruncated = this.errTruncated
         this.out = this.out.subarray(done.nextOffset)
         this.outTruncated = false
         this.errTruncated = false
@@ -494,7 +569,7 @@ export class WslBashSession {
           settled: true,
           run: {
             stdout, stderr, exitCode: done.status, timedOut: false, aborted: false, shellExited: false, restarted: false,
-            truncated, stderrTruncated: false, ...this.spillPaths(), ...this.starvedFields(watch),
+            truncated, stderrTruncated, ...this.spillPaths(), ...this.starvedFields(watch),
           },
         }
       }
