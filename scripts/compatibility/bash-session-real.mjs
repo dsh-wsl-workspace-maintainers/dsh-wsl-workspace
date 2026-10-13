@@ -582,8 +582,10 @@ try {
   check('large output spills the whole stream and says where', big.value?.stdout?.truncated === true
     && typeof spillPath === 'string' && spillPath.length > 0
     && big.rendered.includes(`[output truncated; full output: ${spillPath}]`)
+    && big.rendered.includes('[the path above holds the whole stream')
     && spilled.trim().split('\n').length === 200_000,
-  `spill=${JSON.stringify(spillPath ?? null)} fileLines=${spilled.trim() === '' ? 0 : spilled.trim().split('\n').length}`)
+  `spill=${JSON.stringify(spillPath ?? null)} fileLines=${spilled.trim() === '' ? 0 : spilled.trim().split('\n').length} `
+    + `note=${big.rendered.includes('the path above')}`)
 
   // The stderr arm of the same promise, which kept three defects the stdout arm had already lost.
   // Measured 2026-10-11 on this machine, all three at once on `seq 1 200000 >&2`: the file held
@@ -600,10 +602,12 @@ try {
     bigErr.value?.stderr?.truncated === true
     && typeof errSpill === 'string' && errSpill.length > 0
     && bigErr.rendered.includes(`[stderr truncated; full output: ${errSpill}]`)
+    && bigErr.rendered.includes('[the path above holds the whole stream')
     && errLines === 200_000
     && !errSpilled.includes('__DSH_WSL_BASH'),
     `spill=${JSON.stringify(errSpill ?? null)} fileLines=${errLines} `
-    + `truncated=${String(bigErr.value?.stderr?.truncated)} echo=${errSpilled.includes('__DSH_WSL_BASH')}`)
+    + `truncated=${String(bigErr.value?.stderr?.truncated)} echo=${errSpilled.includes('__DSH_WSL_BASH')} `
+    + `note=${bigErr.rendered.includes('the path above')}`)
   // A NUL the command wrote is its data: the reader used to filter every NUL in a chunk, so this
   // came back `ab` on stderr while the same bytes on stdout kept theirs.
   const nulOut = await call(`printf 'a\\000b\\n'`)

@@ -151,6 +151,7 @@
 | 9.5 | `yes \| head -c 100000 \| wc -c` | 100000 且无 SIGPIPE 噪声 | 同 | 实测（本机隔离实例，两侧同日） |
 | 9.6 | 期限打断长命令：`echo BEFORE; sleep 6; echo AFTER`（给 1500 ms） | 原生无期限概念 | `BEFORE` 必须在、`AFTER` 必须不在、要报 `timed out after …` 并指出后台出路；不断言快慢 | 已入 live gate |
 | 9.7 | `seq 1 200000 >&2`（整条流走 fd 2，不重定向进文件） | 全量都到 fd 2：本机同日实测 **1 288 895 B / 200 000 行 / 12 ms**，原生没有上限也不落文件 | 溢写件必须装下整条流（数到 200 000 行、末尾不是半截数字）；正文要**点名这是 stderr**（`[stderr truncated; full output: …]`）；文件首行不许是我们自己的回显帧；命令自己写的 NUL 要留在流里 | 已入 live gate（`bash-session-real` 两格，#79） |
+| 9.8 | `seq 1 250000`（stdout 大输出，看一条答案给几个指针） | 原生一次给全：本机同日实测 **1 638 895 B / 250 000 行**，既没有上限也不落文件 | 一句答案里并存两个"完整输出"路径时（我们的 `dsh-subprocess-*` ＋宿主追加的 `Full formatted result stored at:`），**必须点名哪一条装整条流**——我们那句原句一字不动，紧随一句 `[the path above holds the whole stream; …]`；宿主那句不许改 | 已入 live gate（`bash-session-real` 两格断言注句＋`bash-parity-real` 的 markers 对照） |
 
 ### G10 真工具、真网络（最接近"日常开发"）
 

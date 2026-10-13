@@ -213,11 +213,23 @@ function toolAborted(): Error {
  * otherwise see — a restart, a skipped section, a reaped process — is appended as its own bracketed
  * line rather than left in a log the user of Desktop cannot read.
  */
+/**
+ * Say which of the two paths in one answer holds the whole stream.
+ *
+ * The host appends its own `(Omitted … bytes. Full formatted result stored at: …)` sentence beside
+ * ours, and the file that sentence names holds a *formatted excerpt*: measured 2026-10-09 on
+ * `seq 1 250000`, it kept 74 890 of the 250 000 lines while our spill held all of them, and the model
+ * read the excerpt first and reported that count. Both arms carry the note, because the host's excerpt
+ * sits beside whichever sentence appears — and `#79` put a path in the body for stderr too.
+ */
+const SPILL_PATH_NOTE = '[the path above holds the whole stream; if this answer also names a "formatted result" path, that one is the host\'s excerpt and can hold fewer lines]'
+
 function renderRun(value: ForegroundOutput): { type: 'text'; text: string }[] {
   let body = value.stdout.text
   if (value.stdout.truncated && value.stdout.spillPath !== undefined) {
     if (body.length > 0 && !body.endsWith('\n')) body += '\n'
     body += `[output truncated; full output: ${value.stdout.spillPath}]`
+    body += '\n' + SPILL_PATH_NOTE
   }
   if (value.stderr.text.length > 0) {
     if (body.length > 0 && !body.endsWith('\n')) body += '\n'
@@ -232,6 +244,7 @@ function renderRun(value: ForegroundOutput): { type: 'text'; text: string }[] {
   if (value.stderr.truncated && value.stderr.spillPath !== undefined) {
     if (body.length > 0 && !body.endsWith('\n')) body += '\n'
     body += `[stderr truncated; full output: ${value.stderr.spillPath}]`
+    body += '\n' + SPILL_PATH_NOTE
   }
   if (body.length === 0) body = '(no output)'
   const markers: string[] = []

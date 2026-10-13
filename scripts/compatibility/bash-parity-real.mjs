@@ -76,7 +76,7 @@ const probes = [
  * the body itself. Comparing only the fields would pass a tool that answers the right *kind* of
  * question with the wrong words. */
 function signature(value, rendered, normalize) {
-  const markers = [...String(rendered).matchAll(/\[(exit code|timed out after|killed by signal|output truncated|stderr truncated|stderr|the shell[^\]]*|still running[^\]]*)/g)]
+  const markers = [...String(rendered).matchAll(/\[(exit code|timed out after|killed by signal|output truncated|stderr truncated|stderr|the path above|the shell[^\]]*|still running[^\]]*)/g)]
     .map(match => match[1].replace(/[^a-z ]/g, '').trim())
   const spillPath = value?.stdout?.spillPath
   const errSpillPath = value?.stderr?.spillPath

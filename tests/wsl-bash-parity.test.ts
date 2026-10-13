@@ -186,6 +186,32 @@ test('the markers the client parses are the ones we emit, in the host’s senten
   assert.ok(rendered.includes('[exit code: 3]'), rendered)
   assert.ok(rendered.includes('[timed out after 5000ms]'), rendered)
   assert.ok(rendered.includes('[output truncated; full output: /tmp/dsh-spill.log]'), rendered)
+  // The host appends its own `(Omitted … bytes. Full formatted result stored at: …)` sentence beside
+  // ours, and its file holds a formatted excerpt rather than the whole stream: 74 890 of 250 000 lines
+  // on 2026-10-09, and the model read that one first. Our note has to say which path is which, and it
+  // has to say it without touching the sentence the client recognises. `#79` put a spill path in the
+  // body for stderr as well, so the same sentence has to follow that arm too.
+  assert.ok(rendered.includes('[the path above holds the whole stream'), rendered)
   assert.ok(rendered.includes('[stderr]\nnoise'), rendered)
   assert.ok(rendered.includes('[the shell was restarted]'), rendered)
+})
+
+test('a spilled stderr names its own path and says that path holds the whole stream', () => {
+  // `#79` put a spill path into the body for fd 2, and the host's excerpt sentence lands beside
+  // whichever arm spilled — so the note has to follow this arm too. And when only fd 2 overflowed,
+  // the stdout sentence must not appear beside it.
+  const rendered = ourToolSurface().render({}, {
+    kind: 'foreground',
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    aborted: false,
+    timeoutMs: 5_000,
+    stdout: { text: '', truncated: false },
+    stderr: { text: 'progress', truncated: true, spillPath: '/tmp/dsh-spill-stderr.log' },
+    notes: [],
+  }).map(part => part.text).join('')
+  assert.ok(rendered.includes('[stderr truncated; full output: /tmp/dsh-spill-stderr.log]'), rendered)
+  assert.ok(rendered.includes('[the path above holds the whole stream'), rendered)
+  assert.doesNotMatch(rendered, /\[output truncated; full output:/, rendered)
 })
