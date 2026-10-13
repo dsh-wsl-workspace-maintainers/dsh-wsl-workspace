@@ -828,7 +828,7 @@ async function waitForSubprocess(ctx: Context): Promise<SubprocessProbeFace | un
 async function materializeVariants(
   agentPresets: AgentPresetsService,
   dshHome: string,
-  paths: { shell: string; fs: string; relay: string; node: string; sandbox: string; search: string; jobs: string; bashTool: string; terminalTool: string; shellMode: 'session' | 'pty' },
+  paths: { shell: string; fs: string; relay: string; node: string; sandbox: string; search: string; jobs: string; bashTool: string; terminalTool: string; image: string; shellMode: 'session' | 'pty' },
   persistentShell: boolean,
   track: (dispose: unknown) => void,
   generation: number,
@@ -926,7 +926,7 @@ async function materializeOne(
   agentPresets: AgentPresetsService,
   preset: AgentPresetRosterEntry,
   userRoot: string,
-  paths: { shell: string; fs: string; relay: string; node: string; sandbox: string; search: string; jobs: string; bashTool: string; terminalTool: string; shellMode: 'session' | 'pty' },
+  paths: { shell: string; fs: string; relay: string; node: string; sandbox: string; search: string; jobs: string; bashTool: string; terminalTool: string; image: string; shellMode: 'session' | 'pty' },
   persistentShell: boolean,
   track: (dispose: unknown) => void,
   generated: Set<string>,
@@ -940,7 +940,7 @@ async function materializeOne(
     bashPath: paths.bashTool,
     terminalTool: paths.terminalTool,
     mode: paths.shellMode,
-  } : undefined, paths.search, paths.jobs)
+  } : undefined, paths.search, paths.jobs, paths.image)
   // 0.1.7-alpha.1+ publishes a variant as a declaration row (the composition is
   // already the exact entry-list dialect the declaration wants, so the only
   // conversion is YAML back to rows); earlier releases still discover one as
@@ -1045,6 +1045,11 @@ export function apply(ctx: Context, config: Config): void {
   // The persistent shell has no `run_in_background` of its own; this is the
   // producer that gives the world's `job_*` tools something to track.
   const jobsPath = join(packageRoot, 'lib', 'wsl-jobs.js').replace(/\\/g, '/')
+  // The world's answer for `read_image`. The host's registration of that name is made inside
+  // `ctx.inject(['attachments'], …)` and its injected-proxy lookup cannot cross the realm this
+  // world cuts, so it answers `cannot get property "fs" without inject` here (issue #54); this row
+  // resolves `fs` by realm key instead. See `src/host/wsl-image-tool.ts`.
+  const imagePath = join(packageRoot, 'lib', 'wsl-image-tool.js').replace(/\\/g, '/')
 
   const agentPresets = ctx.get('agentPresets') as unknown as AgentPresetsService | undefined
   if (agentPresets !== undefined) {
@@ -1143,6 +1148,7 @@ export function apply(ctx: Context, config: Config): void {
           jobs: jobsPath,
           bashTool: bashToolPath,
           terminalTool: terminalToolPath,
+          image: imagePath,
           shellMode,
         }, persistentShell, track, myGeneration)
       })().catch((error) => {

@@ -48,6 +48,9 @@ export default defineConfig([
       'wsl-bash-tool': 'src/host/wsl-bash-tool.ts',
       // And the keyboard door beside it: the model-facing shape over the host's PTY registry.
       'wsl-terminal-tool': 'src/host/wsl-terminal-tool.ts',
+      // And the world's own image read, mounted beside the `tool-fs` row whose `read_image`
+      // registration cannot reach this realm (issue #54).
+      'wsl-image-tool': 'src/host/wsl-image-tool.ts',
     },
     outDir: 'lib',
     format: ['esm'],

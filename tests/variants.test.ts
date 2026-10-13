@@ -565,6 +565,21 @@ test('the session tier mounts the pipe tool and the keyboard door, never the hos
   assert.equal(out.match(/- id: pty\n/g)?.length, 1, 'exactly one terminals registry is provided')
 })
 
+test('the image read rides the world group exactly once, and only when it is built', () => {
+  const JOBS_PATH = 'D:/plugin/lib/wsl-jobs.js'
+  const IMAGE = 'D:/plugin/lib/wsl-image-tool.js'
+  const withImage = transformPresetForWsl(STANDARD_LIKE, SHELL, FS, undefined, SEARCH, JOBS_PATH, IMAGE)
+  assert.ok(withImage.includes(`- id: read-image-wsl\n      name: '${IMAGE}'`), 'the world carries its own image read')
+  assert.equal(withImage.match(/- id: read-image-wsl\n/g)?.length, 1, 'exactly one answer for the name is mounted')
+  // A preset copied from a generated variant carries the row inside its own `wsl-world` group; the
+  // generator retires that group wholesale, so the copy must not leave a second image row behind.
+  const copied = transformPresetForWsl(COPIED_VARIANT_LIKE, SHELL, FS, undefined, undefined, undefined, IMAGE)
+  assert.equal(copied.match(/- id: read-image-wsl\n/g)?.length, 1, 'a copied world contributes no second image row')
+  // No path means no row: a build-less installation must not mount a row that names nothing.
+  const without = transformPresetForWsl(STANDARD_LIKE, SHELL, FS, undefined, SEARCH, JOBS_PATH)
+  assert.ok(!without.includes('read-image-wsl'), 'no imagePath emits no row')
+})
+
 test('the pty tier still reaches the host stack when asked for', () => {
   const out = transformPresetForWsl(STANDARD_LIKE, SHELL, FS,
     { relayPath: RELAY, nodePath: NODE, sandboxPath: SANDBOX, bashPath: BASH, terminalTool: TERMINAL, mode: 'pty' }, SEARCH, 'D:/plugin/lib/wsl-jobs.js')

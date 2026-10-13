@@ -22,6 +22,16 @@ const EDITOR_ROWS = new Set(['str-replace-editor', 'tool-str-replace-editor'])
 const WSL_WORLD_PROVIDER_IDS = ['shell-wsl', 'fs-wsl']
 
 /**
+ * The row id of the world's own image read.
+ *
+ * A preset copied from a generated variant carries it *inside* the `wsl-world` group, so
+ * {@link isWslWorldGroup} retires the copied group wholesale and this generator re-emits exactly
+ * one image row; the id is named here because the row it mounts is the answer to issue #54 (see
+ * {@link wslWorldGroup}).
+ */
+const IMAGE_ROW_ID = 'read-image-wsl'
+
+/**
  * How long the door's terminal backend may see no output before it returns control
  * without having recognised a prompt — the host's `idleSilenceMs`, default 3000.
  *
@@ -208,6 +218,7 @@ function wslWorldGroup(
   searchPath?: string,
   jobsPath?: string,
   sawJobs = false,
+  imagePath?: string,
 ): string {
   return [
     '# ── WSL execution world (dsh-wsl-workspace variant) ─────────────────────',
@@ -241,6 +252,15 @@ function wslWorldGroup(
       : []),
     '    - id: tool-fs',
     "      name: '@deepseek-ai/dsh-tool-fs'",
+    // The world's answer for `read_image`, mounted beside the row whose registration of it cannot
+    // reach this realm. See `src/host/wsl-image-tool.ts` for what it takes over and why the
+    // isolation above stays.
+    ...(imagePath === undefined
+      ? []
+      : [
+          `    - id: ${IMAGE_ROW_ID}`,
+          `      name: '${imagePath.replace(/'/g, "''")}'`,
+        ]),
     // `grep`/`glob` run inside the distribution, not through the host suite's
     // Windows ripgrep: same tool names, same model-facing contract, Linux paths
     // and Linux symlinks. Older editor builds pass no cwd, so the provider
@@ -484,6 +504,8 @@ function appendPersona(lines: readonly string[], span: { start: number; end: num
  *   `grep`/`glob` tools; mounted only for a source that had `tool-fs-search`.
  * @param jobsPath - absolute path of the plugin's built background-job producer
  *   for the persistent shell; mounted only alongside that shell.
+ * @param imagePath - absolute path of the plugin's built image read, which answers for
+ *   `read_image` inside this realm; mounted only when a build is supplied for it.
  * @returns the variant composition text.
  */
 export function transformPresetForWsl(
@@ -493,6 +515,7 @@ export function transformPresetForWsl(
   persistent?: { relayPath: string; nodePath: string; sandboxPath: string; bashPath: string; terminalTool: string; mode: 'session' | 'pty' },
   searchPath?: string,
   jobsPath?: string,
+  imagePath?: string,
 ): string {
   const lines = source.split('\n')
   const spans = topLevelSpans(lines)
@@ -540,7 +563,7 @@ export function transformPresetForWsl(
   if (source.includes('tool-jobs')) sawJobs = true
   const result = [...kept]
   if (result.length > 0 && result[result.length - 1] !== '') result.push('')
-  result.push(wslWorldGroup(shellPath, fsPath, sawEditor, persistent, sawSearch ? searchPath : undefined, jobsPath, sawJobs))
+  result.push(wslWorldGroup(shellPath, fsPath, sawEditor, persistent, sawSearch ? searchPath : undefined, jobsPath, sawJobs, imagePath))
   return result.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\n+$/, '\n')
 }
 

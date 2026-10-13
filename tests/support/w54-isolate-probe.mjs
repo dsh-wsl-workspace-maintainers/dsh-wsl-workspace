@@ -25,6 +25,16 @@
  *   · **5 — before path resolution?** The same world call against a path that does not exist: if it
  *     answers with the realm string instead of `not found`, the failure happens before any path is
  *     resolved, which is what #54 claims.
+ *   · **6 — the world's own read.** The same isolate world with this plugin's `lib/wsl-image-tool.js`
+ *     mounted as a row of the group (what `transformPresetForWsl` emits when it is given an
+ *     `imagePath`). Required in that one boot: the definition the dispatcher resolves for `read_image`
+ *     is ours, it comes back with the picture's bytes and renders an `image` block, and `read`,
+ *     `write` and `edit` still answer. The registry's context-global table holds exactly one
+ *     definition per name (measured: `tool "read_image" is already registered`), so our row *displaces*
+ *     the host's rather than sitting beside it — which is why the host's realm failure is measured in
+ *     arm 2, the same world with our row absent, and row 6 prints whichever of the two the boot
+ *     actually left in the table. A row that stops answering, or one that costs the other file tools,
+ *     reddens row 6; a world that stopped failing reddens row 2.
  *
  * What this harness deliberately does NOT fake, and what it therefore has to disclose:
  *
@@ -262,7 +272,7 @@ const report = (rows, verdict) => {
   // The seam runner reads prose, not JSON: without a `PASSED` / `FAILED (N failing)` line a probe that
   // reported nothing looks the same as one that reported success.
   console.log(failed.length === 0
-    ? `W54-ISOLATE-PROBE PASSED (${rows.length} rows — #54's two arms and the token mutation)`
+    ? `W54-ISOLATE-PROBE PASSED (${rows.length} rows — #54's two arms, the token mutation, and the world's own image read)`
     : `W54-ISOLATE-PROBE FAILED (${failed.length} failing)`)
   process.exit(failed.length === 0 ? 0 : 1)
 }
@@ -323,14 +333,27 @@ try {
     "  name: '@deepseek-ai/dsh-tool-fs'",
     '',
   ].join('\n')
-  const generated = variants.transformPresetForWsl(
+  const imageToolFile = join(repoRoot, 'lib', 'wsl-image-tool.js').replace(/\\/g, '/')
+  const worldText = (imagePath) => variants.transformPresetForWsl(
     sourcePreset,
     join(repoRoot, 'lib', 'shell.js').replace(/\\/g, '/'),
     providers['fs-local'].file.replace(/\\/g, '/'),
-    undefined, undefined, undefined, false,
+    undefined, undefined, undefined, imagePath,
   )
+  // Arms 2-5 measure the world exactly as #54 found it: no row of ours answering for the name.
+  const generated = worldText(undefined)
+  // Arm 6 adds this plugin's built image read and nothing else, so the only difference between the
+  // two boots is the row the fix mounts.
+  const generatedWithImage = worldText(imageToolFile)
   const generatedFile = join(SCRATCH, 'w54-generated-world.yml')
   writeFileSync(generatedFile, generated, 'utf8')
+  const generatedImageFile = join(SCRATCH, 'w54-generated-world-with-image-row.yml')
+  writeFileSync(generatedImageFile, generatedWithImage, 'utf8')
+  const imageRowEmitted = generatedWithImage.includes('- id: read-image-wsl')
+    && generatedWithImage.includes(imageToolFile)
+  if (!imageRowEmitted) {
+    add('6-world-answers-with-own-image-read', false, `transformPresetForWsl given an imagePath emitted no read-image-wsl row naming ${imageToolFile} — nothing for arm 6 to mount (${generatedImageFile})`)
+  }
   if (!generated.includes('isolate:') || !generated.includes('    fs: true')) {
     add('2-isolate-world-text', false, `the generated world carries no isolate fs block — nothing below can measure a realm boundary (${generatedFile})`)
     report(rows, 'NOT-MEASURED — src/host/variants.ts did not emit an `isolate: { fs: true }` world, so the arms do not exist')
@@ -375,13 +398,36 @@ try {
     try {
       const value = await within(tool.execute({ file_path: filePath }, execution()), 30_000, 'read_image.execute')
       const text = JSON.stringify(value)
-      return { ms: Date.now() - started, isError: false, message: `kind=${value?.image?.mediaType ?? '?'}, ${text.slice(0, 110)}`, frame: '' }
+      return { ms: Date.now() - started, isError: false, value, message: `kind=${value?.image?.mediaType ?? '?'}, ${text.slice(0, 110)}`, frame: '' }
     } catch (error) {
       // The throwing frame is part of the reading: a red that cannot say where it landed cannot tell
       // "the fs seam threw" from "the schema validation threw".
       const frame = String(error?.stack ?? '').split('\n')
         .find(line => /dsh-tool-fs|cordis\/lib|cordis\\lib/.test(line))?.trim() ?? '(no frame named)'
-      return { ms: Date.now() - started, isError: true, message: outOf(error), frame }
+      return { ms: Date.now() - started, isError: true, value: undefined, message: outOf(error), frame }
+    }
+  }
+
+  const txt = join(SCRATCH, 'w54-probe.txt')
+  writeFileSync(txt, 'the world can still read text\n', 'utf8')
+
+  /**
+   * Ask the host suite's other file tools in the boot being measured. `read_image` is a name the
+   * host's `tool-fs` row also registers, so taking it over is only a fix if `read`, `write` and `edit`
+   * — which mount through the plugin's own fiber, not the injected one — keep answering.
+   * @param runtime - the world's tools service.
+   * @returns `{ ok, detail }`: every name present and `read` returning the file's line.
+   */
+  const callFileTools = async (runtime) => {
+    const names = ['read', 'write', 'edit']
+    const missing = names.filter((name) => runtime?.get?.(name) === undefined)
+    if (missing.length > 0) return { ok: false, detail: `file tools missing: ${missing.join(', ')}` }
+    try {
+      const value = await within(runtime.get('read').execute({ file_path: txt }, execution()), 20_000, 'read.execute')
+      const line = value?.lines?.[0]?.text
+      return { ok: line === 'the world can still read text', detail: `read/write/edit registered, read answers ${JSON.stringify(String(line))}` }
+    } catch (error) {
+      return { ok: false, detail: `read/write/edit registered, read throws ${JSON.stringify(outOf(error))}` }
     }
   }
 
@@ -403,15 +449,16 @@ try {
     ...row('fs-local', providers['fs-local'].file),
     ...row('tool-fs', providers['tool-fs'].file),
   ]
-  const isolateWorldRows = (mutate) => [
+  const isolateWorldRows = (mutate, text = generated) => [
     ...baseRows,
-    ...worldRows(generated, mutate),
+    ...worldRows(text, mutate),
   ]
 
   // ── boots: arms 0/1 in the root realm, arms 2/3/5 inside the generated world, arm 4 mutated ──
   makeProfile(home, 'w54root', shadow.scope)
   makeProfile(home, 'w54world', shadow.scope)
   makeProfile(home, 'w54mutant', shadow.scope)
+  makeProfile(home, 'w54ownrow', shadow.scope)
 
   const pluginFile = join(repoRoot, 'lib', 'index.js')
   const bootA = await boot({ profile: 'w54root', home, environment, runProfile, rows: rootWorldRows })
@@ -540,16 +587,86 @@ try {
     await within(bootC.shutdown.shutdown(0), 30_000, 'shutdown w54mutant').catch(() => {})
   }
 
+  // ── 6: this plugin's own image read, mounted in the same isolate world ──────────────────
+  // The one difference between this boot and arms 2/3/5 is the row `transformPresetForWsl` emits when
+  // it is handed this installation's built image read. Both halves are required in that one boot: the
+  // definition the dispatcher resolves for `read_image` must come back with the picture, and the
+  // host's registration — still in the world, one layer out — must still answer the realm string.
+  // Half a red here means the fix stopped answering; the other half means it stopped being a fix
+  // beside a real defect and became something else.
+  if (imageRowEmitted) {
+    const bootD = await boot({ profile: 'w54ownrow', home, environment, runProfile, rows: isolateWorldRows(undefined, generatedWithImage) })
+    try {
+      const ctx = bootD.ctx
+      await declareRoute(ctx)
+      await sleep(200)
+      const runtime = ctx.get('tools')
+      // Ours is the read that resolves inside the distribution; the host's resolves through its own
+      // backend. `defineTool` compiles `parameters` into one JSON schema, so the marker is read out of
+      // `properties` — reading `tool.parameters.file_path.description` finds nothing on either side and
+      // mislabels our own read as the host's. (Measured: the two definitions differ in no other field
+      // the probe can see, since the host wraps both bodies in the same argument-validation shell.)
+      const isOurs = (tool) => String(tool?.parameters?.properties?.file_path?.description ?? '').includes('WSL distribution')
+      const visible = typeof runtime?.get === 'function' ? runtime.get('read_image') : undefined
+      const imageRow = entryOf(ctx, 'read-image-wsl')
+      // Every layer the registry keeps: the context-global table plus one per scoped overlay. The
+      // host's registration is read from wherever the registry left it instead of being assumed absent.
+      const layerTables = runtime?.layers === undefined ? [] : [
+        runtime.layers.global,
+        ...(runtime.layers.scoped instanceof Map ? [...runtime.layers.scoped.values()] : []),
+      ]
+      const registered = new Set()
+      for (const table of layerTables) {
+        for (const [name, definition] of table?.tools?.entries?.() ?? []) if (name === 'read_image') registered.add(definition)
+      }
+      const hostTool = [...registered].find((tool) => !isOurs(tool))
+      const ownAnswer = visible === undefined ? null : await callReadImage(visible, png)
+      const blocks = ownAnswer !== null && !ownAnswer.isError && typeof visible.output?.render === 'function'
+        ? visible.output.render({ file_path: png }, ownAnswer.value)
+        : []
+      const imageBlock = Array.isArray(blocks) ? blocks.find((block) => block?.type === 'image') : undefined
+      const imageBytes = ownAnswer?.value?.image?.bytes ?? 0
+      const answered = ownAnswer !== null && !ownAnswer.isError && isOurs(visible)
+        && imageBytes > 0 && (imageBlock?.attachment?.bytes ?? 0) === imageBytes
+        && String(ownAnswer?.value?.path ?? '').endsWith('w54-probe.png')
+      const hostAnswer = hostTool === undefined ? null : await callReadImage(hostTool, png)
+      // The other file tools must still answer with our row mounted: the world's image read takes a
+      // name the host's suite also registers, and a fix that cost `read`/`write`/`edit` is not a fix.
+      const fileToolAnswers = await callFileTools(runtime)
+      const displaced = hostTool === undefined
+      const hostStillFails = displaced || hostAnswer?.message === REALM_ERROR
+      const census = `${registered.size} definition(s) of the name across ${layerTables.length} registry layer(s);`
+        + ` ours=${[...registered].filter(isOurs).length}, host=${[...registered].filter((tool) => !isOurs(tool)).length}`
+        + `; read-image-wsl row: ${imageRow === undefined ? 'no entry' : `state ${imageRow.fiber?.state}`}`
+      add('6-world-answers-with-own-image-read', answered && hostStillFails && fileToolAnswers.ok,
+        `dispatcher resolves ${isOurs(visible) ? 'this plugin\'s read' : 'the host read or nothing'} → `
+          + (ownAnswer === null ? 'no tool to ask' : `${ownAnswer.ms}ms ${ownAnswer.isError ? `throws ${JSON.stringify(ownAnswer.message)}` : `answers ${JSON.stringify(ownAnswer.message)}`}`)
+          + ` | the host's own read_image in the same boot: `
+          + (hostAnswer === null ? `not in the registry — our row holds the name (arm 2/5 is the same world with our row absent, where it answers ${JSON.stringify(REALM_ERROR)})` : `${hostAnswer.ms}ms ${JSON.stringify(hostAnswer.message)}`)
+          + ` | ${census} | rendered image block: ${imageBlock === undefined ? 'none' : `${imageBlock?.attachment?.mediaType}/${imageBlock?.attachment?.bytes} bytes`}`
+          + ` | ${fileToolAnswers.detail} (world text: ${generatedImageFile})`)
+    } finally {
+      await within(bootD.shutdown.shutdown(0), 30_000, 'shutdown w54ownrow').catch(() => {})
+    }
+  }
+
   const reproduced = realmAnswer !== null && realmAnswer.message === REALM_ERROR
   const controlRow = rows.find(entry => entry.id === '0-control-nonwsl-world')
   const controlOk = controlRow?.ok === true
   const mutationOk = rows.find(entry => entry.id === '4-mutation-fs-token-removed')?.ok === true
+  const worldReadRow = rows.find(entry => entry.id === '6-world-answers-with-own-image-read')
+  const worldReadOk = worldReadRow?.ok === true
   const controlMs = controlRow === undefined ? '?' : String(controlRow.detail).split('ms')[0]
   const verdict = controlOk && reproduced && mutationOk
-    ? `W54-REALM-CONFIRMED — read_image answers in a root-realm world (${controlMs}ms) and answers ${JSON.stringify(REALM_ERROR)}`
-      + ` inside the generated isolate world, and the string disappears when the single "fs: true" token is`
-      + ` removed from that text — so that token, not the machine, causes the failure (see row 3 for which`
-      + ` realm key carries fs on each side)`
+    ? worldReadOk
+      ? `W54-REALM-CONFIRMED — read_image answers in a root-realm world (${controlMs}ms) and answers ${JSON.stringify(REALM_ERROR)}`
+        + ` inside the generated isolate world, and the string disappears when the single "fs: true" token is`
+        + ` removed from that text — so that token, not the machine, causes the failure (see row 3 for which`
+        + ` realm key carries fs on each side). Row 6: in that same isolate world the dispatcher's read_image`
+        + ` is this plugin's own read and it answers with the image, while the host's registration still`
+        + ` answers the realm string — the fix is a second answer, not a repaired lookup`
+      : `W54-REALM-CONFIRMED BUT THIS PLUGIN'S OWN READ DOES NOT ANSWER — rows 0/2/4 still measure the realm`
+        + ` defect, row 6 is red: ${worldReadRow === undefined ? 'the generator mounted no read-image-wsl row' : worldReadRow.detail}`
     : controlOk && !reproduced
       ? `W54-NOT-REPRODUCED — the isolate world answered read_image (${realmAnswer === null ? 'no tool was mounted in it' : JSON.stringify(realmAnswer.message)});`
         + ' either #54 needs a fact this harness does not carry, or it is fixed; rows 2-5 are not a mechanism reading'
