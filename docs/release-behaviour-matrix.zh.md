@@ -185,6 +185,7 @@
 | 12.4 | `timeoutMs` 填 0 / 负数 | 无对应原生 | 拒绝或夹紧，不许静默变 0 秒即死 | 实测（timeoutMs: 0 被夹紧） |
 | 12.5 | 同一命令连败 3 次 | 终端不管 | 只提示"这已连败 N 次"，仍照跑，不禁止 | 已入 live gate |
 | 12.6 | 取消（`AbortSignal`） | 用户按停 | 报"被取消"，**不许**把取消报成 `[exit code: …]` | 已入 |
+| 12.7 | `read_image`（PNG，wsl 会话内） | 非 WSL 会话、同一宿主今日实测 60 ms 返回图像本身（w54 探针 arm 0；标准会话可读） | wsl 世界内 `read_image` 必须由本插件的读取回答、返回真实图像字节并渲染 image 块；宿主那条跨 realm 的 `fs` 失败只在没有我这行时才落在派发上（#54，探针 arm 2） | 实测（w54-isolate-probe row 6，维护者本机；ubuntu runner 无 `@deepseek-ai/dsh-attachment`，CI 里该臂 SKIP） |
 
 ## 3. 本轮（2026-10-09，构建 = main + #68）已定案的行
 
