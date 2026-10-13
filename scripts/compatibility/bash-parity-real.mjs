@@ -50,6 +50,10 @@ const probes = [
   { name: 'absolute workdir', args: { command: 'pwd', workdir: '/tmp' } },
   { name: 'relative workdir', row: 'behaviour-workdir-missing-layer', args: { command: 'pwd', workdir: 'definitely-not-here-parity' } },
   { name: 'large output spills', row: 'behaviour-spill-shape', normalize: 'numbers', args: { command: 'seq 1 200000', timeoutMs: 60_000 } },
+  // The same promise on the other descriptor. `#79` fixed four defects here for our session tool and
+  // measured none of them against the host's one-shot tool, so until this probe runs the two worlds'
+  // stderr overflow is not a difference and not an alignment — it is unmeasured.
+  { name: 'large stderr spills', row: 'behaviour-stderr-spill-shape', normalize: 'numbers', args: { command: 'seq 1 200000 >&2', timeoutMs: 60_000 } },
   { name: 'prompt is empty', args: { command: 'printf "PS1=[%s]\\n" "$PS1"' } },
   { name: 'no controlling terminal', args: { command: 'tty; stty size 2>&1' } },
   // The host's schema does not forbid extra properties, so this reaches its tool with `tty` ignored —
@@ -72,9 +76,10 @@ const probes = [
  * the body itself. Comparing only the fields would pass a tool that answers the right *kind* of
  * question with the wrong words. */
 function signature(value, rendered, normalize) {
-  const markers = [...String(rendered).matchAll(/\[(exit code|timed out after|killed by signal|output truncated|stderr|the shell[^\]]*|still running[^\]]*)/g)]
+  const markers = [...String(rendered).matchAll(/\[(exit code|timed out after|killed by signal|output truncated|stderr truncated|stderr|the shell[^\]]*|still running[^\]]*)/g)]
     .map(match => match[1].replace(/[^a-z ]/g, '').trim())
   const spillPath = value?.stdout?.spillPath
+  const errSpillPath = value?.stderr?.spillPath
   return {
     kind: String(value?.kind ?? 'threw'),
     exitCode: value?.exitCode === null || value?.exitCode === undefined ? 'null' : typeof value.exitCode,
@@ -84,7 +89,12 @@ function signature(value, rendered, normalize) {
     spill: spillPath === undefined ? 'absent' : 'present',
     // The promise of a spill file is that it holds the whole stream, so that is what gets compared —
     // how many bytes each path keeps in memory is a buffer-cap detail of the two implementations.
+    // The stderr arm carries the same promise and had no reading beside it: `bash-session-real` can
+    // say our session keeps it, and only this file can say whether the host's one-shot tool does too.
     spillLines: spillPath === undefined ? 'absent' : readFileSync(spillPath, 'utf8').trim().split('\n').length,
+    errTruncated: String(value?.stderr?.truncated ?? 'absent'),
+    errSpill: errSpillPath === undefined ? 'absent' : 'present',
+    errSpillLines: errSpillPath === undefined ? 'absent' : readFileSync(errSpillPath, 'utf8').trim().split('\n').length,
     markers: [...new Set(markers)].sort().join(','),
     body: (normalize === 'numbers'
       ? String(rendered).replace(/\d+/g, 'N')
@@ -248,6 +258,7 @@ for (const probe of probes) {
   // signature alone. Only the lines that print a detail carry it, so a green cell stays quiet.
   const detail = `${JSON.stringify(theirs.signature)} vs ${JSON.stringify(ours.signature)}`
     + ` — spill: host ${describeSpill(theirs.spill)}, session ${describeSpill(ours.spill)}`
+    + ` | stderr spill: host ${describeSpill(theirs.errSpill)}, session ${describeSpill(ours.errSpill)}`
   // A file that was still growing when it was read is a measurement taken too early, not a
   // difference — the two are identical in the signature. It gets its own verdict so the red says
   // "read it again" rather than "the two worlds disagree": frame 37888856516 printed the host's
@@ -282,10 +293,11 @@ async function ask(world, probe) {
     // size to hold still, keep the whole-stream promise as the assertion, and carry the poll's own
     // verdict out so a failure can say whether the file had finished when it was read.
     const spill = await settleSpill(value?.stdout?.spillPath)
+    const errSpill = await settleSpill(value?.stderr?.spillPath)
     const rendered = (world.tool.output?.render?.(args, value) ?? []).map(part => String(part?.text ?? '')).join('')
-    return { signature: signature(value, rendered, probe.normalize), spill }
+    return { signature: signature(value, rendered, probe.normalize), spill, errSpill }
   } catch (error) {
-    return { signature: { kind: 'threw', error: String(error?.message ?? error).slice(0, 60) }, spill: undefined }
+    return { signature: { kind: 'threw', error: String(error?.message ?? error).slice(0, 60) }, spill: undefined, errSpill: undefined }
   }
 }
 
@@ -354,9 +366,14 @@ async function settleSpill(path) {
  * @returns whether the pair converged, how long it took, and the sizes it settled at.
  */
 async function reconcileSpillReads(theirs, ours, budgetMs = 30_000) {
-  const pathOf = side => (typeof side?.spill?.path === 'string' ? side.spill.path : '')
-  const [hostPath, sessionPath] = [pathOf(theirs), pathOf(ours)]
-  if (hostPath === '' || sessionPath === '') return { converged: true, waitedMs: 0, sizes: [0, 0] }
+  // Whichever arm spilled is the pair that has to agree: a `seq … >&2` run leaves no stdout file at
+  // all, and waiting on an absent path would report a measurement that was never taken.
+  const armOf = side => [side?.spill, side?.errSpill]
+    .find(handle => typeof handle?.path === 'string' && handle.path !== '')
+  const hostArm = armOf(theirs)
+  const sessionArm = armOf(ours)
+  if (hostArm === undefined || sessionArm === undefined) return { converged: true, waitedMs: 0, sizes: [0, 0] }
+  const [hostPath, sessionPath] = [hostArm.path, sessionArm.path]
   const sizeOf = file => {
     try {
       return statSync(file).size
@@ -378,8 +395,14 @@ async function reconcileSpillReads(theirs, ours, budgetMs = 30_000) {
   const converged = previous[0] === previous[1] && previous[0] > 0
   const lines = file => readFileSync(file, 'utf8').trim().split('\n').length
   if (converged) {
-    if (typeof theirs.signature?.spillLines === 'number') theirs.signature.spillLines = lines(hostPath)
-    if (typeof ours.signature?.spillLines === 'number') ours.signature.spillLines = lines(sessionPath)
+    // Re-count the arm this pair actually ran, or the stderr probe would be judged on a stdout count
+    // that was never there.
+    const rederive = (side, arm) => {
+      const field = arm === side.spill ? 'spillLines' : 'errSpillLines'
+      if (typeof side.signature?.[field] === 'number') side.signature[field] = lines(arm.path)
+    }
+    rederive(theirs, hostArm)
+    rederive(ours, sessionArm)
   }
   return { converged, waitedMs: Date.now() - started, sizes: previous }
 }

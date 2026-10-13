@@ -20,6 +20,10 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   filtered **every** NUL in a chunk, so `printf 'a\0b\n' >&2` came back `ab` while the same bytes on
   stdout kept theirs. The marker is now read as what it is — the last byte of the chunk that carries
   it, since nothing else is written to fd 2 for that frame.
+  *What this leaves open, named*: a command whose stderr ends with a NUL of its own exactly on a chunk
+  boundary loses that byte, because that shape is indistinguishable from the marker. The alternative —
+  filtering every NUL — is the defect above. It is asserted as behaviour in
+  `tests/wsl-bash-spill.test.ts`, not left as a comment in the session file.
 - **What a user installs is now the plugin, not a copy of the repository.** `package.json#files` shipped
   `src/` and both README screenshots: a fresh `npm pack` of the previous tree is **2,757,545 B across 79
   members**, of which 2,265,091 B (82.1%) was the 30 source files and the 2 images — neither of which

@@ -246,6 +246,14 @@ test('a NUL the command wrote to stderr is data, and only the marker is protocol
 
   // An empty chunk is not a marker (a zero-length `data` event is legal).
   assert.deepEqual(splitStderrMarker(Buffer.alloc(0)), { kept: Buffer.alloc(0), markerSeen: false })
+
+  // The one shape this rule cannot tell apart is asserted as the behaviour it is, not left in prose:
+  // a command whose stderr ends on a chunk boundary with a NUL of its own reads as the marker, so that
+  // byte goes and the settle wait is a byte short. The alternative — filtering every NUL — is the
+  // defect this test exists for, and it costs every NUL the command wrote.
+  assert.deepEqual(splitStderrMarker(Buffer.from('x\0', 'latin1')),
+    { kept: Buffer.from('x', 'latin1'), markerSeen: true },
+    'the documented trade-off: a trailing NUL is read as the marker even when the command wrote it')
 })
 
 test('the stderr spill file carries the command’s bytes, not our echoed frame', () => {
