@@ -47,13 +47,14 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const LEDGER = join(repoRoot, 'docs', 'CONSUMER-COVERAGE.md')
 
 /**
- * Rows that are not `已调用` as of 2026-10-13: 44 of 45. The single covered pair is
- * `shell` x `dsh-tool-bash`, executed by `scripts/compatibility/bash-parity-real.mjs`.
+ * Rows that are not `已调用` as of 2026-10-13: 43 of 45. The two covered pairs are `shell` x
+ * `dsh-tool-bash` (`scripts/compatibility/bash-parity-real.mjs`) and `fs` x `dsh-tool-fs`
+ * (`tests/support/w54-isolate-probe.mjs`, the #54 arms).
  *
  * Lower this number by covering a row; never raise it without a named reason in the PR — the point of
  * the ceiling is that a host upgrade adding a consumer becomes a red frame, not a silent new row.
  */
-const NOT_COVERED_CEILING = 44
+const NOT_COVERED_CEILING = 43
 
 /** Parse the ledger's table body: rows whose first cell is a backticked service name. */
 function ledgerRows () {

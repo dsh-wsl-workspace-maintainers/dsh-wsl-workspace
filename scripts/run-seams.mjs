@@ -33,6 +33,14 @@ const SUITES = [
   ['search-run-fakes (§6 transport seams)', ['tests/search-run-fakes.mjs']],
   ['tech-debt-exposure (cmd.exe fallback, registry decode, NUL sniff)',
     ['--test', '--experimental-strip-types', 'tests/tech-debt-exposure.test.ts']],
+  // The two consumer-side probes. They are here rather than only in `package.json` because a check
+  // nobody runs is not a check: #54 and #78 sat for days with their cause already known and no gate
+  // that could re-observe it. Both arms are required — a probe that only ever shows the red is exactly
+  // the "instrument reporting its own absence" failure these files exist to prevent.
+  ['w54-isolate-probe (read_image: answers in a root-realm world, throws in the generated isolate world, mutation removes the token)',
+    ['--experimental-strip-types', 'tests/support/w54-isolate-probe.mjs']],
+  ['w78-confine-probe (run_code resolves the host ACL runner at the root realm; our no-op answers only inside wsl-world)',
+    ['--experimental-strip-types', 'tests/support/w78-confine-probe.mjs']],
 ]
 
 const legacy = process.argv.includes('--legacy')

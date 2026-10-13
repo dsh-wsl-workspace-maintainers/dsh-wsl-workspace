@@ -24,7 +24,7 @@
 
 **派生规则**：服务名来自我们自己生成的 preset 里的 `isolate:` 键（`src/host/variants.ts` 的 `wslWorldGroup`），一次性世界与持久 shell 世界都读（`sandbox` 只在挂了会走 confinement 的 shell 时才发出）；消费者来自 `ci/deps/node_modules/@deepseek-ai/<包>/lib` 下的全部 `.js`（>3 MB 的 vendored bundle 跳过）。现量 **4 个服务 / 45 对 / 38 个包**，跑一次约 3 秒。
 
-**棘轮**：状态非 `已调用` 的行数钉在闸里（今天 **44/45**），只许降不许升；升了说明宿主升级带来了一个我们没看过的新消费者——先探针看清它，再改这张表。
+**棘轮**：状态非 `已调用` 的行数钉在闸里（今天 **43/45**），只许降不许升；升了说明宿主升级带来了一个我们没看过的新消费者——先探针看清它，再改这张表。
 
 | 服务 | 宿主包 | 状态 | 凭据（`文件 :: 锚点`）与出口 |
 | `fs` | `dsh-agent-instructions` | `挂载未调用` | `-`；与 #54 同一条 realm 题，探针覆盖 `fs` 时一并判 |
@@ -36,24 +36,24 @@
 | `fs` | `dsh-fs-local` | `挂载未调用` | `-`；新入表（并集形状后才发现的消费者），出口待判 |
 | `fs` | `dsh-fs-sandbox` | `未挂载` | `-`；新入表（并集形状后才发现的消费者），出口待判 |
 | `fs` | `dsh-headless` | `未挂载` | `-`；headless 装配，非 Desktop 路径 |
-| `fs` | `dsh-llm` | `未挂载` | `-`；模型侧读文件（附件/图片）——#54 的邻居，值得单独判 |
-| `fs` | `dsh-llm-pi-ai` | `未挂载` | `-`；同上 |
+| `fs` | `dsh-llm` | `挂载未调用` | `-`；模型侧读文件（附件/图片）——#54 的邻居，值得单独判 |
+| `fs` | `dsh-llm-pi-ai` | `挂载未调用` | `-`；同上 |
 | `fs` | `dsh-office-to-pdf` | `未挂载` | `-`；文档转换工具面 |
-| `fs` | `dsh-ptc-runtime-node` | `未挂载` | `-`；**#78**，见下面 `sandbox` 那行 |
+| `fs` | `dsh-ptc-runtime-node` | `挂载未调用` | `-`；**#78**，见下面 `sandbox` 那行 |
 | `fs` | `dsh-repeat-tool-reminder` | `未挂载` | `-`；装配期插件，#60 同族 |
 | `fs` | `dsh-skill-filesystem` | `挂载未调用` | `-`；skill 提供方。我们的 skill 面另有 `scripts/compatibility/skills-real.mjs`，但它不调这个包 |
 | `fs` | `dsh-spill-policy` | `未挂载` | `-`；宿主的溢写策略与我们那两套，B1 相关，值得单独判 |
 | `fs` | `dsh-tmux-context` | `未挂载` | `-`；UI 上下文 |
-| `fs` | `dsh-tool-fs` | `挂载未调用` | `-`；**#54**。出口：`tests/support/w54-isolate-probe.mjs`（对照臂＝standard 世界里 `read_image` 成功） |
+| `fs` | `dsh-tool-fs` | `已调用` | `tests/support/w54-isolate-probe.mjs :: get('read_image')`——两臂都在：root-realm 世界 60 ms 回 `image/png`，isolate 世界 1 ms 回 `cannot get property "fs" without inject`，且抽掉 `fs: true` 一个 token 后那句话消失（#54 定案） |
 | `fs` | `dsh-tool-fs-search` | `挂载未调用` | `-`；我们的 `grep`/`glob` 与之的同名冲突由 `scripts/check-rank-parity.mjs` 管，但没人调用它 |
 | `fs` | `dsh-tool-present` | `未挂载` | `-`；展示类工具 |
 | `fs` | `dsh-tool-str-replace-editor` | `挂载未调用` | `-`；文件编辑面，`workspace-write` 下会撞策略 |
 | `sandbox` | `dsh-bash-sandbox` | `未挂载` | `-`；宿主 bash 的沙箱封装 |
-| `sandbox` | `dsh-ptc-runtime-node` | `未挂载` | `-`；**#78**。出口：`tests/support/w78-confine-probe.mjs`（判 run_code 拿到的是谁的 provider，并真调一次 `confine`） |
+| `sandbox` | `dsh-ptc-runtime-node` | `挂载未调用` | `-`；**#78**。出口：`tests/support/w78-confine-probe.mjs`（判 run_code 拿到的是谁的 provider，并真调一次 `confine`） |
 | `sandbox` | `dsh-pwsh-local` | `未挂载` | `-`；新入表（并集形状后才发现的消费者），出口待判 |
 | `sandbox` | `dsh-pwsh-sandbox` | `未挂载` | `-`；pwsh 侧同类 |
-| `sandbox` | `dsh-sandbox` | `未挂载` | `-`；`SandboxProvider` 接口包本体 |
-| `sandbox` | `dsh-sandbox-local` | `未挂载` | `-`；新入表（并集形状后才发现的消费者），出口待判 |
+| `sandbox` | `dsh-sandbox` | `挂载未调用` | `-`；`SandboxProvider` 接口包本体 |
+| `sandbox` | `dsh-sandbox-local` | `挂载未调用` | `-`；新入表（并集形状后才发现的消费者），出口待判 |
 | `sandbox` | `dsh-terminal-bash` | `挂载未调用` | `-`；PTY 后端在 spawn 前调 `confine`，与我们世界的 `sandbox: true` 直接相关 |
 | `shell` | `dsh-bash-sandbox` | `未挂载` | `-`；新入表（并集形状后才发现的消费者），出口待判 |
 | `shell` | `dsh-client-ui-settings-shell` | `未挂载` | `-`；UI 面 |
@@ -64,7 +64,7 @@
 | `shell` | `dsh-pwsh-sandbox` | `未挂载` | `-`；新入表（并集形状后才发现的消费者），出口待判 |
 | `shell` | `dsh-shell` | `挂载未调用` | `-`；`shell` 服务接口包 |
 | `shell` | `dsh-tmux-context` | `未挂载` | `-`；UI 上下文 |
-| `shell` | `dsh-tool-bash` | `已调用` | `scripts/compatibility/bash-parity-real.mjs :: tools.get('bash')`——一次性世界里执行宿主 bash 工具、由我们的 executor 承接（#51 的 gate）。这是今天**唯一**一行真调用 |
+| `shell` | `dsh-tool-bash` | `已调用` | `scripts/compatibility/bash-parity-real.mjs :: tools.get('bash')`——一次性世界里执行宿主 bash 工具、由我们的 executor 承接（#51 的 gate）。这是两处真调用之一（另一处 `fs`×`dsh-tool-fs`） |
 | `shell` | `dsh-tool-cordis` | `未挂载` | `-`；新入表（并集形状后才发现的消费者），出口待判 |
 | `shell` | `dsh-tool-fs-search` | `挂载未调用` | `-`；新入表（并集形状后才发现的消费者），出口待判 |
 | `shell` | `dsh-tool-pwsh` | `挂载未调用` | `-`；pwsh 工具面，我们不生成它 |

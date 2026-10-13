@@ -37,6 +37,8 @@
     "prepublishOnly": "node scripts/verify-install.mjs && node scripts/verify-lib-sync.mjs",
     "test:docs-claims": "node --experimental-strip-types scripts/run-docs-claims.mjs",
     "test:host-probe": "node tests/support/w51-probe.mjs",
+    "test:realm-probe": "node --experimental-strip-types tests/support/w54-isolate-probe.mjs",
+    "test:confine-probe": "node --experimental-strip-types tests/support/w78-confine-probe.mjs",
     "test:command-census": "node tests/support/w51-command-census.mjs"
   },
   "exports": {
