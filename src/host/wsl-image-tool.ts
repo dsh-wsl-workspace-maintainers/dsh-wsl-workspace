@@ -110,6 +110,45 @@ interface ImageOutcome {
   image: ImageRef
 }
 
+/**
+ * The slice of the host's tools registry this read uses. `register` is the public insertion API;
+ * `layers.global.tools` is the context-global named table the registry resolves an unscoped `get`
+ * against. Its `data` is the backing map — reached only to retire a stale host entry when that table
+ * already holds `read_image`; the shapes are read defensively so a release that stops exposing them
+ * throws the ordinary duplicate rather than mutating something it does not understand.
+ */
+interface ToolRegistry {
+  register?: (tool: unknown) => unknown
+  layers?: {
+    global?: {
+      tools?: {
+        has?: (name: string) => boolean
+        data?: Map<string, unknown>
+      }
+    }
+  }
+}
+
+/**
+ * Take the context-global slot for `read_image`. Register through the public path; when the host's
+ * `tool-fs` row already holds the name with its realm-crossing closure, retire that one table entry
+ * and insert ours instead, so the world answers for the name regardless of which fiber settled first.
+ * @param registry - the host tools registry.
+ * @param tool - the compiled definition to mount.
+ */
+function mountGlobalRead (registry: ToolRegistry, tool: unknown): void {
+  try {
+    registry.register?.(tool)
+    return
+  } catch (error) {
+    const duplicate = /already registered/.test(String((error as Error | undefined)?.message ?? error))
+    const table = registry.layers?.global?.tools
+    if (!duplicate || table?.data === undefined || table.has?.(TOOL_NAME) !== true) throw error
+    table.data.delete(TOOL_NAME)
+    registry.register?.(tool)
+  }
+}
+
 /** The media type a path claims by extension, or undefined when it claims none. */
 export function imageMediaTypeForPath (filePath: string): string | undefined {
   return IMAGE_EXTENSIONS[extname(filePath).toLowerCase()]
@@ -168,17 +207,27 @@ export function formatImageReadOutput (displayPath: string, image: ImageRef): st
 }
 
 /**
- * Register the world's image read, beside the `tool-fs` row whose `read_image` cannot reach this
- * world's filesystem.
+ * Register the world's image read, taking over the `read_image` name whose host registration cannot
+ * reach this world's filesystem.
  *
  * Services resolve through `ctx.get`, never the injected proxy property: the host loader hands
  * cordis `exports.default ?? exports`, so a module-level `inject` never reaches the fiber, and the
  * property form is precisely the lookup that cannot cross the realm this world cuts — the mistake
  * `src/host/wsl-bash-tool.ts:456-466` already records for the shell.
+ *
+ * Registration channel. The name is answered for in the registry's CONTEXT-GLOBAL layer
+ * (`@deepseek-ai/dsh-tools` keeps one definition per name there; `ToolRuntime.get(name)` without a
+ * scope resolves only that layer — `view`/`get`, lib/index.js:2959-2997). A per-agent `agent.ctx`
+ * registration lands in a scoped layer that an unscoped `get` never consults, so it cannot displace
+ * the host here. The host's `tool-fs` row registers `read_image` from a deferred
+ * `ctx.inject(['attachments'], …)` callback whose closure crosses the realm (issue #54), and the boot
+ * ordering of that callback against this row is not fixed — it flips when one process backs more than
+ * one profile — so simply registering and losing, or re-placing the row, is not a fix. This therefore
+ * takes the global slot deterministically (see {@link mountGlobalRead}).
  * @param ctx - the world's plugin context, in whose scope `fs` is this distribution's backend.
  */
 export function apply (ctx: Context): void {
-  const tools = ctx.get('tools') as unknown as { register?: (tool: unknown) => unknown } | undefined
+  const tools = ctx.get('tools') as unknown as ToolRegistry | undefined
   if (tools?.register === undefined) return
 
   const tool = defineTool({
@@ -270,7 +319,7 @@ export function apply (ctx: Context): void {
       return { path: displayPath, image: ref }
     },
   })
-  tools.register(tool)
+  mountGlobalRead(tools, tool)
 }
 
 export default apply
