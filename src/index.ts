@@ -38,6 +38,7 @@ import { canonicalWslUnc, getWindowsWorkspace, getWorkspaceUsername, listWorkspa
 import { defaultDistro, listDistros } from './shared/wsl.ts'
 import { isElectronHost, persistentShellAllowed, resolveRelayNode } from './shared/relay-node.ts'
 import { probePersistentShellReadiness } from './host/pty-readiness.ts'
+import { applyRunCodeGuard } from './host/wsl-run-code-guard.ts'
 import { PROBE_CONFIG, buildSessionSpec } from './host/wsl-bash-tool.ts'
 import { probeWslBashSession, type WslBashSpawnHost } from './host/wsl-bash-session.ts'
 import { isWslVariantId, transformPresetForWsl, unquoteScalar, variantIdFor } from './host/variants.ts'
@@ -1050,6 +1051,11 @@ export function apply(ctx: Context, config: Config): void {
   // world cuts, so it answers `cannot get property "fs" without inject` here (issue #54); this row
   // resolves `fs` by realm key instead. See `src/host/wsl-image-tool.ts`.
   const imagePath = join(packageRoot, 'lib', 'wsl-image-tool.js').replace(/\\/g, '/')
+
+  // Issue #78: `run_code` is the host's, and on a `\\wsl.localhost\…` root with `workspace-write` the
+  // Windows sandbox cannot start at all. Refuse that one shape in words instead of letting the worker
+  // die with a Win32 code. See `src/host/wsl-run-code-guard.ts` for the measurements behind it.
+  applyRunCodeGuard(ctx)
 
   const agentPresets = ctx.get('agentPresets') as unknown as AgentPresetsService | undefined
   if (agentPresets !== undefined) {
