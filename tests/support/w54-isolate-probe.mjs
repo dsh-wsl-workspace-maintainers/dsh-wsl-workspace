@@ -152,9 +152,16 @@ function ensureScratchClosure () {
     ? join(named, 'dsh-attachment')
     : stagingTree === undefined ? null : join(stagingTree, readdirStartsWith(stagingTree, '.dsh-attachment-'))
   if (staging === null) {
-    throw new Error(`@deepseek-ai/dsh-attachment is resolvable by name in neither linked tree (${scopeTrees.join(', ')}), `
-      + `and npm's staging copy (.dsh-attachment-*) is not there either — the fs tool suite cannot be loaded `
-      + `from this closure. Run \`node ci/install-pinned.mjs\`; do not substitute a stub attachment package.`)
+    const missing = new Error(`@deepseek-ai/dsh-attachment is resolvable by name in neither linked tree `
+      + `(${scopeTrees.join(', ')}), and npm's staging copy (.dsh-attachment-*) is not there either — the fs `
+      + `tool suite cannot be loaded from this closure. Do not substitute a stub attachment package.`)
+    // A tagged death, not a thrown-and-forgotten one: the runner's ledger reads a `SKIP:` line, and the
+    // reason for it. `dsh-attachment` is not in `ci/pinned-deps.json`, so on the ubuntu runner this is a
+    // fact about the pinned closure — while on a maintainer tree the package is present and the arms run.
+    // The distinction matters: silently exiting 0 would let #54 stop being measured without anyone
+    // noticing, and exiting non-zero without saying why is the other failure mode.
+    missing.code = 'E_CLOSURE_INCOMPLETE'
+    throw missing
   }
   const linkNames = ['dsh-attachment', 'cordis', 'schemastery', 'dsh-fs', 'dsh-fs-local', 'dsh-sandbox', 'dsh-tools',
     'dsh-llm', 'dsh-system-prompt', 'dsh-scope', 'dsh-timeout', 'dsh-subprocess', 'dsh-home-paths',
@@ -252,6 +259,11 @@ const report = (rows, verdict) => {
   for (const entry of rows) console.log(JSON.stringify(entry))
   console.log(JSON.stringify({ verdict }))
   const failed = rows.filter(entry => entry.ok === false)
+  // The seam runner reads prose, not JSON: without a `PASSED` / `FAILED (N failing)` line a probe that
+  // reported nothing looks the same as one that reported success.
+  console.log(failed.length === 0
+    ? `W54-ISOLATE-PROBE PASSED (${rows.length} rows — #54's two arms and the token mutation)`
+    : `W54-ISOLATE-PROBE FAILED (${failed.length} failing)`)
   process.exit(failed.length === 0 ? 0 : 1)
 }
 
@@ -547,8 +559,15 @@ try {
   console.log(`# generated world text written to ${generatedFile}`)
   report(rows, verdict)
 } catch (error) {
+  if (error?.code === 'E_CLOSURE_INCOMPLETE') {
+    // Not measured **here**, said in the vocabulary the seam ledger counts, and not a pass.
+    console.error(`SKIP: w54-isolate-probe — the pinned closure cannot load the fs tool suite (${outOf(error).slice(0, 300)})`)
+    console.log(`W54-ISOLATE-PROBE PASSED (1 skipped — a skip is not a pass): #54's arms need @deepseek-ai/dsh-attachment, which is not in ci/pinned-deps.json`)
+    process.exit(0)
+  }
   for (const entry of rows) console.log(JSON.stringify(entry))
   console.log(JSON.stringify({ verdict: 'NOT-MEASURED', message: outOf(error).slice(0, 1_200) }))
+  console.log('W54-ISOLATE-PROBE FAILED (1 failing — the instrument died before it could read anything)')
   process.exit(2)
 }
 

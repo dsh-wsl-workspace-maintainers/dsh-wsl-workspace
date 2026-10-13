@@ -12,6 +12,13 @@
  *      shape. So a new regression turns the frame red, and so does a red that quietly went green —
  *      which is the failure mode a permanently-red branch would have hidden.
  *
+ *      Rule 2 has a precondition it did not enforce until 2026-10-13: the observed set is made of
+ *      **named** reds. A suite that dies before emitting one (`rc` non-zero, no `not ok:`/`✖` line — a
+ *      missing package, a changed verdict protocol) contributed nothing, so `declared 0 / observed 0`
+ *      matched and the frame went green over two dead probes (frame 38350052793). Such a death is now
+ *      itself an observed red, named `harness-exit: <suite>`, which has to be fixed or declared like
+ *      any other red. A check nobody can see fail is not a check.
+ *
  * Why not just let the suites decide the verdict: because #46 ships five assertions that must fail
  * until issue #44 §6 is repaired, and this project's accepted surface is "cloud checks green". A red
  * frame that is expected is a frame that cannot warn. Moving the gate to the ledger keeps the reds
@@ -75,6 +82,19 @@ for (const [label, argv] of SUITES) {
     observedSkip.push(name)
   }
   console.log(`\n=== ${label}: rc ${result.status} — ${verdict || '(no verdict line)'} ===`)
+  if (result.status !== 0 && collected.red.length === 0) {
+    // A suite that exits non-zero **without naming a red** was invisible to the ledger: the observed set
+    // stayed empty, `declared 0 / observed red 0` matched, and the frame went green over two dead
+    // probes on the ubuntu runner (measured 2026-10-13, frame 38350052793). Count the death itself as
+    // the red, named after its suite, so an unowned exit must be either fixed or declared like any
+    // other red — and so a suite whose verdict protocol changed cannot quietly stop reporting.
+    const name = `harness-exit: ${label} (rc ${result.status}, no red line emitted)`
+    if (!seenRed.has(name)) {
+      seenRed.add(name)
+      observedRed.push(name)
+      suiteOfRed.set(name, label)
+    }
+  }
   if (verdict === '') {
     // A suite that dies before its verdict line (a missing dependency, a bad import) would otherwise
     // contribute zero reds, and the ledger would report its declared reds as "missing" — the wrong

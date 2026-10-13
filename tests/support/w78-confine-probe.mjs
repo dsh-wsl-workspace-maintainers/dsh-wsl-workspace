@@ -83,14 +83,26 @@ const within = (promise, ms, label) => {
 
 const report = (rows, verdict) => {
   console.log(JSON.stringify({ verdict, rows }, null, 2))
-  process.exit(rows.some(row => row.ok === false) ? 1 : 0)
+  // The verdict in prose the seam runner can actually read. `run-seams` builds its line out of
+  // `PASSED` / `FAILED (N failing)` / TAP counts; a probe whose answer nobody can parse looks exactly
+  // like a probe that passed, so the string is emitted in that vocabulary and not only as JSON.
+  const failing = rows.filter(row => row.ok === false).length
+  console.log(failing === 0
+    ? `W78-CONFINE-PROBE PASSED (${rows.length} rows — #78's ownership reading)`
+    : `W78-CONFINE-PROBE FAILED (${failing} failing)`)
+  process.exit(failing === 0 ? 0 : 1)
 }
 
 if (process.platform !== 'win32') {
   // Every row below reads a win32-only seam (the ACL runner chain, the UNC form). Anywhere else the
-  // honest answer is that the instrument does not run, not that it passed.
-  console.log(JSON.stringify({ verdict: 'NOT-WIN32 — this probe reads the windows-acl chain only', rows: [] }))
-  process.exit(2)
+  // honest answer is that the instrument does not run, not that it passed — and it is said in the one
+  // vocabulary this repository's seam ledger reads. Exiting non-zero with no line to register used to
+  // look like a pass to `run-seams` (frame 38350052793 was green over exactly that); a `SKIP:` is
+  // counted and reported, which is the difference between "not measured here" and "not measured".
+  console.error(`SKIP: w78-confine-probe — platform cannot answer it here (${process.platform} has no `
+    + 'Windows ACL runner, no `SetNamedSecurityInfoW` chain, and no `\\\\wsl.localhost\\…` spelling to feed it)')
+  console.log('W78-CONFINE-PROBE PASSED (1 skipped — a skip is not a pass): the #78 ownership reading is a win32 measurement')
+  process.exit(0)
 }
 
 // Scratch lives outside the worktree, always: the generated composition, the profile home the boot

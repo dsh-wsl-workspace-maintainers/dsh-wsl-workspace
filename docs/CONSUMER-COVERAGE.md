@@ -24,7 +24,7 @@
 
 **派生规则**：服务名来自我们自己生成的 preset 里的 `isolate:` 键（`src/host/variants.ts` 的 `wslWorldGroup`），一次性世界与持久 shell 世界都读（`sandbox` 只在挂了会走 confinement 的 shell 时才发出）；消费者来自 `ci/deps/node_modules/@deepseek-ai/<包>/lib` 下的全部 `.js`（>3 MB 的 vendored bundle 跳过）。现量 **4 个服务 / 45 对 / 38 个包**，跑一次约 3 秒。
 
-**棘轮**：状态非 `已调用` 的行数钉在闸里（今天 **43/45**），只许降不许升；升了说明宿主升级带来了一个我们没看过的新消费者——先探针看清它，再改这张表。
+**棘轮**：状态非 `已调用` 的行数钉在闸里（今天 **43/45**；两枚探针在 ubuntu runner 上是 `SKIP:`——`dsh-attachment` 不在钉住的闭包里、windows-acl 那条链在 linux 上不存在，所以"探针进了 CI"不等于"CI 测到了"，只许降不许升；升了说明宿主升级带来了一个我们没看过的新消费者——先探针看清它，再改这张表。
 
 | 服务 | 宿主包 | 状态 | 凭据（`文件 :: 锚点`）与出口 |
 | `fs` | `dsh-agent-instructions` | `挂载未调用` | `-`；与 #54 同一条 realm 题，探针覆盖 `fs` 时一并判 |
