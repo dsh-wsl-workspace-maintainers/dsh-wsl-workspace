@@ -256,6 +256,20 @@ export function apply (ctx: Context): void {
               bytes: { type: 'number', required: true },
               width: { type: 'number', required: true },
               height: { type: 'number', required: true },
+              // The two the attachment service can add. `saveImage` returns them and the body passes
+              // them straight through, so leaving them undeclared makes the host reject every oversized
+              // read with `value.image.name" is not a declared property` — measured on a real session
+              // 2026-10-13, where the file read succeeded and the answer died at the output gate.
+              // Property names and shapes mirror `@deepseek-ai/dsh-tool-fs`'s own read_image schema.
+              name: { type: 'string' },
+              originalDimensions: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  width: { type: 'number', required: true },
+                  height: { type: 'number', required: true },
+                },
+              },
             },
           },
         },

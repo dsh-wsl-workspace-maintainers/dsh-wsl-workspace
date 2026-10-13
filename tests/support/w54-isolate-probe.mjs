@@ -626,9 +626,21 @@ try {
         : []
       const imageBlock = Array.isArray(blocks) ? blocks.find((block) => block?.type === 'image') : undefined
       const imageBytes = ownAnswer?.value?.image?.bytes ?? 0
+      // The gate the product puts every tool answer through, run with the host's own validator: a body
+      // that returns a field its declared schema does not name is rejected before the model sees it
+      // (`"<path>" is not a declared property (additionalProperties: false)`). This probe's call path did
+      // not run it, and a real WSL session hit exactly that on 2026-10-13: the read produced the image,
+      // the answer died at the output gate. Measured here, that cannot pass as a green row.
+      const validate = providers.tools.namespace?.validateJsonSchemaValue
+      const violations = validate === undefined
+        ? ['validateJsonSchemaValue is not exported by the linked dsh-tools']
+        : ownAnswer?.value === undefined || visible?.output?.schema === undefined
+          ? ['no schema/value pair to check']
+          : validate(visible.output.schema, ownAnswer.value, 'value')
       const answered = ownAnswer !== null && !ownAnswer.isError && isOurs(visible)
         && imageBytes > 0 && (imageBlock?.attachment?.bytes ?? 0) === imageBytes
         && String(ownAnswer?.value?.path ?? '').endsWith('w54-probe.png')
+        && violations.length === 0
       const hostAnswer = hostTool === undefined ? null : await callReadImage(hostTool, png)
       // The other file tools must still answer with our row mounted: the world's image read takes a
       // name the host's suite also registers, and a fix that cost `read`/`write`/`edit` is not a fix.
@@ -644,6 +656,7 @@ try {
           + ` | the host's own read_image in the same boot: `
           + (hostAnswer === null ? `not in the registry — our row holds the name (arm 2/5 is the same world with our row absent, where it answers ${JSON.stringify(REALM_ERROR)})` : `${hostAnswer.ms}ms ${JSON.stringify(hostAnswer.message)}`)
           + ` | ${census} | rendered image block: ${imageBlock === undefined ? 'none' : `${imageBlock?.attachment?.mediaType}/${imageBlock?.attachment?.bytes} bytes`}`
+        + ` | host output gate on our value: ${violations.length === 0 ? 'clean' : JSON.stringify(violations).slice(0, 300)}`
           + ` | ${fileToolAnswers.detail} (world text: ${generatedImageFile})`)
     } finally {
       await within(bootD.shutdown.shutdown(0), 30_000, 'shutdown w54ownrow').catch(() => {})

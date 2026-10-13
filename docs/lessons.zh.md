@@ -37,6 +37,12 @@
    正是唯一的使用点（`w51-probe.mjs:81` 加载 `lib/shell.js`）。
 3. **夹具代答**：注入式夹具把 `join` / `AbortSignal` 这类绑定补齐，于是测试通过，而真实文件里
    那个绑定根本不存在（CI 上直接 `ReferenceError`）。
+4. **装置少跑一道关卡**：探针从工具的 `execute` 拿到返回值、自己调 `output.render` 渲染，于是
+   全程没经过宿主派发时的那道输出校验（`dsh-tools` 的 `validateJsonSchemaValue`）。#54 的复刻件在
+   探针里 7 行全绿，真机一发却死在这里——`Error: tool "read_image" returned invalid output:
+   "value.image.name" is not a declared property (additionalProperties: false)`（373 ms，图已经读到了）。
+   凡"重新实现宿主已有的工具"，声明的 schema 必须逐字段抄宿主的，并且装置要**用宿主那只校验函数**
+   过一遍返回值（`providers.tools.namespace.validateJsonSchemaValue`，`w54-isolate-probe` row 6 现在这么做）。
 
 ## `verify-runtime`
 
@@ -105,6 +111,13 @@ quiet sentinel `>3_500` 读到 4016 ms），但 WSL1 上那条 pager cell **曾�
 
 第 3 档抓到过真东西：`wsl.exe … bash -c '<文本>'` 会多过一层 shell，`$?` 在到达 `bash` 前就被展开，
 于是"基准"给出 `code=0` 而会话给出正确的 `code=3`。修法是两边跑**同一个脚本文件**，输入按构造即相同。
+
+上面三档都不 boot 真会话。还有第 4 档：**真模型在真宿主实例里点这个工具**（`dsh` 起 profile、`session/create`
+带 preset、`session/prompt` 让模型自己发调用）。它抓到的是**装置形状与派发形状不同**这件事：
+`tools.get(name)` 不带 scope 只看 context-global 层，而宿主的执行路径是 `this.get(name, agent)`
+（`dsh-tools/lib/index.js:3140`），会按该 agent 的层链覆盖 global。2026-10-13 那轮因此同时纠正了两件事——
+第 2 档的绿盖不住输出校验那道关（见 `verify-fake-green` 第 4 条），而第 2 档看到的"必须顶掉 global 名"
+在第 4 档下并不成立：同一实例里 wsl 会话拿到本插件的读取、standard 会话仍拿到宿主的，各按各的层链解析。
 
 ## `env-network`
 

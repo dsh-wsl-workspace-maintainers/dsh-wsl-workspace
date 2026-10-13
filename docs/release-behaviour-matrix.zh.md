@@ -185,7 +185,7 @@
 | 12.4 | `timeoutMs` 填 0 / 负数 | 无对应原生 | 拒绝或夹紧，不许静默变 0 秒即死 | 实测（timeoutMs: 0 被夹紧） |
 | 12.5 | 同一命令连败 3 次 | 终端不管 | 只提示"这已连败 N 次"，仍照跑，不禁止 | 已入 live gate |
 | 12.6 | 取消（`AbortSignal`） | 用户按停 | 报"被取消"，**不许**把取消报成 `[exit code: …]` | 已入 |
-| 12.7 | `read_image`（PNG，wsl 会话内） | 非 WSL 会话、同一宿主今日实测 60 ms 返回图像本身（w54 探针 arm 0；标准会话可读） | wsl 世界内 `read_image` 必须由本插件的读取回答、返回真实图像字节并渲染 image 块；宿主那条跨 realm 的 `fs` 失败只在没有我这行时才落在派发上（#54，探针 arm 2） | 实测（w54-isolate-probe row 6，维护者本机；ubuntu runner 无 `@deepseek-ai/dsh-attachment`，CI 里该臂 SKIP） |
+| 12.7 | `read_image`（PNG，wsl 会话内） | 同一宿主实例里的**非 WSL 会话**今日实测：装了本 PR 的 24 ms、没装的 125 ms，都返回图像本身（446x568／61992 B，读的是 `D:\Temp\issue54-token-20261013\ctl\probe.png`）；它拿到的仍是宿主那条定义 | wsl 世界内 `read_image` 必须由本插件的读取回答、返回真实图像字节并渲染 image 块，**且必须过宿主那道输出校验**；宿主那条跨 realm 的 `fs` 失败只在没有我这行时才落在派发上（#54，探针 arm 2） | 实测两档：w54-isolate-probe row 6（维护者本机，ubuntu runner 无 `@deepseek-ai/dsh-attachment` 故 CI 里该臂 SKIP）＋真模型真会话两臂（`D:\Temp\issue54-token-20261013\drive-{shipped,pr83}-both.log`，同一实例先 wsl 后 standard） |
 
 ## 3. 本轮（2026-10-09，构建 = main + #68）已定案的行
 
