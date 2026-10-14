@@ -120,6 +120,52 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   echo of a frame reaches stderr as only its *tail*, so a fragment of our own framing was in the
   model's body on every call. Both are fixed and both are now gated by cells that enter through the
   channel the product uses.
+- **When an answer names two files, it now says which one holds everything.** A truncated `bash` result can
+  carry both our `[output truncated; full output: …]` path and the host's appended
+  `Full formatted result stored at:` path, and nothing said which is which. One sentence now follows both
+  the stdout and the stderr arm: `[the path above holds the whole stream; if this answer also names a
+  "formatted result" path, that one is the host's excerpt and can hold fewer lines]`. Measured in a real
+  session on the client's own build (2026-10-13, `seq 1 250000`): the path we name holds
+  **1 638 895 bytes / 250 000 lines** — the same size the bare command produces — while the formatted
+  excerpt holds 524 511 bytes / 74 892 lines; the stderr arm measures 1 638 895 against 357 165 / 50 985.
+  The two sentences the client recognizes are untouched, so nothing that parsed them before stops parsing
+  now.
+- **`read_image` answers inside the WSL world again (issue #54).** The host registers that tool from a
+  context whose realm chain does not reach the world this plugin cuts, so every image read in a WSL session
+  answered `cannot get property "fs" without inject` in ~12 ms — before the path was even resolved (a path
+  that does not exist gives the same sentence). The world now mounts its own read beside the host's row,
+  resolving `fs` by realm key, and answers with the real bytes: measured in a real session, **296 ms,
+  `image/png` 446x568 / 61992 bytes** for a file inside the distribution. Two things this took, recorded
+  because both were invisible to the offline gates: the returned value must satisfy the **host's own output
+  validation** (our first build read the file correctly and then died with
+  `"value.image.name" is not a declared property`, because the schema declared five fields while the
+  attachment service returns seven), and a real session resolves tools per agent
+  (`dsh-tools` `get(name, agent)`), so a non-WSL session in the same process keeps the host's read and was
+  re-measured at 22 ms. The image formats accepted are the same four the host accepts, and the same
+  image-capable-route refusal is applied, so switching to this read loses no check.
+- **`run_code` in the one shape where it cannot start now says so, with the ways out (issue #78).** On
+  Windows the file sandbox grants write by reading the workspace root's security descriptor, and a
+  `\\wsl.localhost\…` root is a 9P share that has none, so a PTC session under `workspace-write` failed at
+  worker startup with `GetNamedSecurityInfoW failed (Win32 1)` — a bare Win32 code, no cause, no exit, and
+  every retry identical. A `tools.guard()` now refuses exactly that shape (that tool, that mode, a root
+  under `\\wsl.localhost\` or `\\wsl$\`) and names the three settings that do run: switch the session to
+  read-only, switch it to danger-full-access, or use the world's own tools. Measured on the machine, same
+  installed build: the refused call answers in **2 ms** with the rejected root quoted; the same program
+  still answers `1` under `read-only` (829 ms, the host marking enforcement partial) and under
+  `danger-full-access` (478 ms); and `bash` in the refused mode still reaches the distribution
+  (448 ms, kernel `6.18.40.1-microsoft-standard-WSL2`). This **does not give the WSL world a real sandbox**
+  — confinement that holds would have to be enforced inside the distribution; the refusal is the honest
+  state until that exists, and the cause itself sits with the host's Windows ACL runner.
+- **For maintainers: a consumer ledger, two probes, and a gate that used to be green while a suite was
+  dead.** `docs/CONSUMER-COVERAGE.md` derives, on every run, every `(service, host package)` pair that asks
+  for a service our generated worlds isolate, and `tests/consumer-coverage.test.mjs` holds the count down
+  (43 of 45 pairs have never been executed) — the gap that let #54 and #78 arrive unseen, because every
+  harness entered through a tool we register ourselves. `npm run test:realm-probe` and
+  `npm run test:confine-probe` answer both issues' two arms against a real booted host; `run-seams` now
+  treats a suite that exits non-zero without naming a red as an observed red, which had let two probes die
+  silently on the ubuntu runner inside a green frame. Both probes are measured on the maintainer machine
+  and **SKIP in CI** (the pinned closure has no `@deepseek-ai/dsh-attachment`): a check in a job that cannot
+  run it is not coverage.
 
 ## 0.7.6 — 2026-10-01
 - **A second pass made the session `bash` answer like the host's `bash`, field by field.** A matrix of
