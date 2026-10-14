@@ -5,6 +5,7 @@
 本文件为中文记录（0.4.3 及更早为摘要）；英文原文见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 0.7.7 — 2026-10-07
+
 - **stderr 那一侧的溢出文件，现在和 stdout 那一侧守同样的承诺。** 四条都在真实发行版上量过（2026-10-11，
   Ubuntu，`seq 1 200000 >&2`），四条都已修。
   （1）*文件是短的*：流共 1 288 895 字节，文件只装了 1 011 753 字节，末尾断在数字中间——因为 stderr 的落盘
@@ -63,6 +64,36 @@
 
   新增一条单元门禁，复刻 0.2.x 的 drain 循环去拉取生产者产出的 `output` source，在旧生产者（无 source，或 source 不吐字节）上必定失败，故此类回归无法再静默复现。
 
+- **一条答案里出现两个文件时，现在会说明哪个装着全部内容。** 被截断的 `bash` 结果可能同时带着我们的
+  `[output truncated; full output: …]` 路径和宿主追加的 `Full formatted result stored at:` 路径，原先没说
+  哪个算哪个。现在 stdout 与 stderr 两臂都在那句之后跟一句：`[the path above holds the whole stream;
+  if this answer also names a "formatted result" path, that one is the host's excerpt and can hold fewer
+  lines]`。在客户端自带构建的真实会话里量过（2026-10-13，`seq 1 250000`）：我们点名的那条装着
+  **1 638 895 字节／250 000 行**，与裸命令同尺；宿主的格式化切片是 524 511 字节／74 892 行；stderr 臂是
+  1 638 895 对 357 165／50 985。客户端识别的那两句原文一字未动，原先能解析的现在照样解析。
+- **`read_image` 在 WSL 世界里重新能答了（issue #54）。** 宿主注册这个工具时所在上下文的 realm 链到不了我们切出的
+  世界，所以 WSL 会话里每次读图都在约 12 ms 内回 `cannot get property "fs" without inject`——连路径都还没解析
+  （不存在的路径回的是同一句）。现在世界在自己的行旁边挂上本插件的读取，按 realm 键解析 `fs`，用真实字节回答：
+  真实会话里量到 **296 ms、`image/png` 446x568／61992 字节**（文件在发行版内）。这件事付了两笔离线门禁看不见的学费，
+  在此记明：返回值必须过**宿主自己的输出校验**（第一版真的读到了图，却死在 `"value.image.name" is not a declared
+  property`——附件服务回七个字段，我们的 schema 只声明了五个），而真实会话是按 agent 解析工具的
+  （`dsh-tools` 的 `get(name, agent)`），所以同一进程里的非 WSL 会话仍拿宿主那条，复测 22 ms 正常。接受的图像格式与
+  宿主同为四种，也同样拦下未声明图像输入的模型档位，换成这条读取不丢任何检查。
+- **`run_code` 在"根本起不来"的那一格现在会明说，并给出出路（issue #78）。** Windows 上的文件沙箱靠读取工作区根的
+  安全描述符来授予写权限，而 `\\wsl.localhost\…` 是 9P 共享、没有这个东西，所以 PTC 会话在 `workspace-write` 下
+  一律死在 worker 启动阶段，报 `GetNamedSecurityInfoW failed (Win32 1)`——一个裸 Win32 码，没有成因、没有出路、
+  重试必然相同。现在 `tools.guard()` 只拒那一格（这个工具名、这个档位、根在 `\\wsl.localhost\` 或 `\\wsl$\`），
+  并点名三条真能跑的设置：把会话切到「仅可查看」、切到「完全访问」，或用世界自己的工具。同一份已安装产物在本机实测：
+  被拒那一发 **2 ms** 给出我方那句（内含被拒的根）；同一程序在「仅可查看」829 ms、在「完全访问」478 ms 仍回 `1`；
+  被拒档位下的 `bash` 仍打到发行版（448 ms，内核 `6.18.40.1-microsoft-standard-WSL2`）。这**没有给 WSL 世界一个真沙箱**
+  ——要站得住的强制必须搬进发行版内部；在那之前，一句可读的拒绝才是诚实的状态，而成因本身在宿主的 Windows ACL runner。
+- **给维护者的：一张消费方台账、两枚探针，以及一枚"套件死了还报绿"的门禁。** `docs/CONSUMER-COVERAGE.md` 每次运行都从
+  树上重新派生"哪些 `(服务, 宿主包)` 在向我们要被隔离的服务"，`tests/consumer-coverage.test.mjs` 把没跑过的数量钉住
+  （45 对里 43 对从未被执行）——这正是让 #54 和 #78 溜过去的缝：仓里所有装置都从"我们自己注册的工具"进去。
+  `npm run test:realm-probe` 与 `npm run test:confine-probe` 在真启动的宿主上打两枚 issue 的两臂；`run-seams` 现在把
+  "非零退出却没吐任何可登记的红"也算一枚观察到的红——此前两枚探针在 ubuntu runner 上就这么在绿帧里死掉过。两枚探针
+  都在 ubuntu runner 上 **SKIP**（钉住的闭包里没有 `@deepseek-ai/dsh-attachment`），只在维护者机器上真测：把检查放进
+  一个跑不动它的 job 不叫覆盖。
 ## 0.7.6 — 2026-10-01
 
 - **DSH Desktop 0.2.x 上 WSL 工作区里每一次 `bash` 调用都失败（issue #51），修的是三件事。**
