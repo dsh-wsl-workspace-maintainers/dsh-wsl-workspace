@@ -2,6 +2,25 @@
 
 All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](README.md); the Chinese record is [CHANGELOG.zh.md](CHANGELOG.zh.md).
 
+## Unreleased
+- **The WSL sentence no longer carries a prompt variable, so every `wsl-*` session stops dying at turn 1
+  step 1** ([#87](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/87)).
+  `PERSONA_APPEND` said `Your working directory {{cwd}} is inside a WSL …`, and `appendPersona()` puts
+  that sentence into the persona's model-facing scalar. A persona is a template, and
+  `@deepseek-ai/dsh-system-prompt` resolves every `{{…}}` group against the variables registered for
+  that assembly — throwing `unknown prompt variable "{{cwd}}" in section "deployment:persona-prefix"`
+  before any model request when one is missing. DSH 0.2.x registers only `provider` and `model`: the
+  working directory moved to the working-directory service, which supplies the path as literal user
+  context, and its own documentation says a custom persona must not depend on a built-in `{{cwd}}`.
+  So the one clause this plugin appended was the one clause that could not resolve, and because the
+  persona section sits at order 0 it took the whole variant with it — all four, since they share one
+  transform. The sentence now reads `Your working directory is inside a WSL …`: same claim to the
+  model, no variable to register, and nothing that can drift out of sync with someone else's registry.
+  What the model is told is unchanged in substance — the path itself still arrives from the service
+  that owns it. `tests/variants.test.ts` and `tests/host-materialize.mjs` pin the appended line, so
+  both moved with it; the assertions that used to expect `{{cwd}}` inside the appended sentence now
+  expect its absence.
+
 ## 0.7.7 — 2026-10-07
 - **The stderr arm of the spill file keeps the same promises the stdout arm does.** Four things were
   measured on a real distribution (2026-10-11, Ubuntu, `seq 1 200000 >&2`) and all four are fixed.

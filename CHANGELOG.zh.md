@@ -4,6 +4,21 @@
 
 本文件为中文记录（0.4.3 及更早为摘要）；英文原文见 [CHANGELOG.md](CHANGELOG.md)。
 
+## 未发布
+- **WSL 那句说明不再带提示词变量，于是每个 `wsl-*` 会话不会再死在 turn 1 step 1**
+  （[#87](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/87)）。
+  `PERSONA_APPEND` 原文是 `Your working directory {{cwd}} is inside a WSL …`，而 `appendPersona()`
+  会把这句话写进 persona 面向模型的标量里。persona 是一份模板：`@deepseek-ai/dsh-system-prompt`
+  会拿本次组装注册的变量去解析每一个 `{{…}}` 组，缺一个就在**发出任何模型请求之前**抛
+  `unknown prompt variable "{{cwd}}" in section "deployment:persona-prefix"`。DSH 0.2.x 只注册
+  `provider` 与 `model`——工作目录改由 working-directory 服务提供（它把路径作为字面用户上下文给出），
+  且上游文档明确写了自定义 persona 不得依赖内置 `{{cwd}}`。于是本插件追加的那一个从句，恰好就是解析
+  不了的那一个从句；又因为 persona 段位于 order 0，它连带整个变体一起失败——四个变体全中，因为它们
+  共用同一套 transform。这句话现在写作 `Your working directory is inside a WSL …`：对模型是同一个
+  断言，却没有需要注册的变量，也没有任何会与别人的注册表脱节的东西。实质信息没有减少——路径本身仍由
+  拥有它的那个服务提供。`tests/variants.test.ts` 与 `tests/host-materialize.mjs` 逐字节钉住了这行
+  追加文本，故一并更新；原先断言"追加句里有 `{{cwd}}`"的用例，现在断言的是它不在。
+
 ## 0.7.7 — 2026-10-07
 - **stderr 那一侧的溢出文件，现在和 stdout 那一侧守同样的承诺。** 四条都在真实发行版上量过（2026-10-11，
   Ubuntu，`seq 1 200000 >&2`），四条都已修。

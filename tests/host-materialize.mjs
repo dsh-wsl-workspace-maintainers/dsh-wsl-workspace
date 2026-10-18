@@ -319,7 +319,7 @@ assert(existsSync(newVariant), 'v0.1.3+ persona-shape variant generated')
 const newYaml = readFileSync(join(newVariant, 'agent.cordis.yml'), 'utf8')
 assert(newYaml.includes('inside a WSL'), 'v0.1.3+ persona shape is amended (issue #22 guard)')
 assert(
-  /suffix: >-\n\s+Your working directory is \{\{cwd\}\}\.\n\s+Your working directory \{\{cwd\}\} is inside a WSL/.test(newYaml),
+  /suffix: >-\n\s+Your working directory is \{\{cwd\}\}\.\n\s+Your working directory is inside a WSL/.test(newYaml),
   'the note joins the suffix sentence it belongs to',
 )
 assert(newYaml.indexOf('inside a WSL') < newYaml.indexOf('prefix: >-'), 'the note stays in the suffix block, not the prefix')

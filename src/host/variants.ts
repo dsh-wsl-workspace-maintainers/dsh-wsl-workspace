@@ -300,8 +300,20 @@ function wslWorldGroup(
   ].join('\n')
 }
 
-/** The sentence appended to a standard-like persona when the variant runs in WSL. */
-const PERSONA_APPEND = ' Your working directory {{cwd}} is inside a WSL (Windows Subsystem for Linux) distribution: the bash tool and the file read/write/edit tools use Linux paths, and the Windows filesystem is reachable as /mnt/<drive> for file migration.'
+/**
+ * The sentence appended to a standard-like persona when the variant runs in WSL.
+ *
+ * It carries no `{{…}}` group on purpose. A persona is a template, and
+ * `dsh-system-prompt` resolves every group against the variables registered for
+ * that assembly, throwing `unknown prompt variable` before any model request
+ * when one is missing. DSH 0.2.x registers only `provider` and `model` — the
+ * working directory moved to the working-directory service, which supplies the
+ * path as literal user context — so a `{{cwd}}` here killed every `wsl-*`
+ * session at turn 1 step 1 (issue #87). The path is still the model's to learn;
+ * it just arrives from the service that owns it, not from a template group this
+ * plugin would have to keep in sync with someone else's registry.
+ */
+const PERSONA_APPEND = ' Your working directory is inside a WSL (Windows Subsystem for Linux) distribution: the bash tool and the file read/write/edit tools use Linux paths, and the Windows filesystem is reachable as /mnt/<drive> for file migration.'
 
 /** The upstream local-skill provider row, whose watcher cannot watch a UNC share. */
 const SKILL_FILESYSTEM_ROW = 'skill-filesystem'
