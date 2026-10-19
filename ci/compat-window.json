@@ -1,4 +1,4 @@
 {
   "_comment": "Rolling compatibility window: the dsh releases the CI matrix (compat.yml) installs, boots and probes. Newest first. Keep the head entry in sync with ci/pinned-deps.json's umbrella version; when a new dsh release lands, prepend it and drop the tail. versions.json in scripts/compatibility stays the full historical ledger for the manual PS sweep.",
-  "window": ["0.2.0-rc.2", "0.2.0-rc.1", "0.1.7-rc.2"]
+  "window": ["0.2.1-rc.2", "0.2.0-rc.2", "0.2.0-rc.1"]
 }

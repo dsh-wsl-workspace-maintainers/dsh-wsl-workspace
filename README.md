@@ -30,10 +30,11 @@ This build declares these DSH releases, each verified on an isolated instance (i
 `DSH_HOME`, dependencies pinned to that release, the full check suite):
 
 `0.1.0-rc.7` · `0.1.0-rc.8` · `0.1.1-rc.1` · `0.1.1-rc.2` · `0.1.2-rc.1` · `0.1.3-alpha.2` ·
-`0.1.5-rc.1` · `0.1.5-rc.2` · `0.1.7-rc.1` · `0.1.7-rc.2` · `0.2.0-rc.2`
+`0.1.5-rc.1` · `0.1.5-rc.2` · `0.1.7-rc.1` · `0.1.7-rc.2` · `0.2.0-rc.2` · `0.2.1-rc.2`
 
 The list mirrors `dsh.compatibility.dshReleases` in `package.json`, and a unit test fails if
-the two drift apart. `0.2.0-rc.2` is the DSH release DSH Desktop `0.2.0-rc.2` ships, so the
+the two drift apart. `0.2.1-rc.2` is the DSH release DSH Desktop `0.2.1-rc.2` ships — verified
+against the host inside that application's own bundle, not only against the npm release — so the
 Desktop is covered by the same declaration; the app's help panel (the dialog's "?" button)
 shows the same chips next to the plugin version. The plugin detects the DSH generation at
 runtime and picks the matching API, and a release exposing neither fails loudly instead of

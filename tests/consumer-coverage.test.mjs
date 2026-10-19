@@ -47,14 +47,25 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const LEDGER = join(repoRoot, 'docs', 'CONSUMER-COVERAGE.md')
 
 /**
- * Rows that are not `已调用` as of 2026-10-13: 43 of 45. The two covered pairs are `shell` x
+ * Rows that are not `已调用` as of 2026-10-19: 46 of 48. The two covered pairs are `shell` x
  * `dsh-tool-bash` (`scripts/compatibility/bash-parity-real.mjs`) and `fs` x `dsh-tool-fs`
  * (`tests/support/w54-isolate-probe.mjs`, the #54 arms).
  *
  * Lower this number by covering a row; never raise it without a named reason in the PR — the point of
  * the ceiling is that a host upgrade adding a consumer becomes a red frame, not a silent new row.
+ *
+ * THIS IS THAT RAISE, AND THE REASON IS NAMED: pinning the host to 0.2.1-rc.2 derived five pairs we
+ * had never carried (`fs` x `dsh-experimental-worktree`, `fs` x `dsh-working-directory`, `fs` x
+ * `dsh-workspace-changes`, `sandbox` x `dsh-experimental-worktree`, `terminals` x `dsh-tool-terminal`)
+ * and dropped two (`shell` x `dsh-hooks-claude-code`, `shell` x `dsh-hooks-codex` — those packages are
+ * gone from the release). 43 + 5 - 2 = 46. What was done before writing the rows: each package was read
+ * for the shape it reaches with, the line it reaches on, whether it reaches at boot or per call, and why
+ * the worlds we generate do not mount it — recorded in the row's own evidence cell. What was NOT done:
+ * the probes named in those cells, so no row here may be read as covered. The maintainer authorised the
+ * raise on 2026-10-19 with the condition that the five exits stay in the table; covering one lowers this
+ * number, and the debt is not allowed to be forgotten by the number itself.
  */
-const NOT_COVERED_CEILING = 43
+const NOT_COVERED_CEILING = 46
 
 /** Parse the ledger's table body: rows whose first cell is a backticked service name. */
 function ledgerRows () {
