@@ -26,6 +26,7 @@ import { join, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { load, plane } from './plane.mjs'
+import { provideWorkingDirectory } from './host-services.mjs'
 
 const repoRoot = resolve(import.meta.dirname, '..', '..')
 
@@ -97,6 +98,7 @@ async function boot(executor) {
   }
   await ctx.plugin(executor, config)
   const bash = await asPlugin('@deepseek-ai/dsh-tool-bash')
+  provideWorkingDirectory(ctx, sessionCwd)
   // The tool package registers from `apply`, which the DI lifecycle would call for us; calling it
   // directly is how this repo's other host drivers enter a plugin (tests/host-declare.mjs).
   await bash.apply(ctx, new bash.Config({}))

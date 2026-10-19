@@ -49,7 +49,7 @@
 | `fs` | `dsh-tool-fs-search` | `挂载未调用` | `-`；我们的 `grep`/`glob` 与之的同名冲突由 `scripts/check-rank-parity.mjs` 管，但没人调用它 |
 | `fs` | `dsh-tool-present` | `未挂载` | `-`；展示类工具 |
 | `fs` | `dsh-tool-str-replace-editor` | `挂载未调用` | `-`；文件编辑面，`workspace-write` 下会撞策略 |
-| `fs` | `dsh-working-directory` | `未挂载` | `-`；0.2.1-rc.2 新入表，宿主"每会话工作目录"服务：`static inject` 含 `"fs"`（`lib/index.js:13-17`），`ctx.fs.resolve / stat` 在 `ensure()`、`directory()` 里懒取（`:90-91`、`:125-132`）。它也是宿主前台结果新加的 `cwd` 那一条的供给方（见 docs/bash-parity.md 的 `field-cwd`）——我们的世界用会话 cwd＋重启重放维持目录、不挂它。出口：探针要先答"宿主挂上后目录由谁供给" |
+| `fs` | `dsh-working-directory` | `挂载未调用` | `-`；0.2.1-rc.2 新入表，宿主"每会话工作目录"服务：`static inject` 含 `"fs"`（`lib/index.js:13-17`），`ctx.fs.resolve / stat` 在 `ensure()`、`directory()` 里懒取（`:90-91`、`:125-132`）。语料里引用它的一处是 `scripts/compatibility/host-services.mjs` 的**注释**——它说明为什么三枚真机驱动只 `provide` 一个 `ensure` 而不挂真包（挂上就要连带 `fs`/`sessionProjections`/`systemPrompt`），引用≠挂载，所以这行是 `挂载未调用` 而不是 `未挂载`。它也是宿主前台结果新加的 `cwd` 那一条的供给方（见 docs/bash-parity.md 的 `field-cwd`）——我们的世界用会话 cwd＋重启重放维持目录、不挂它。出口：探针要先答"宿主挂上后目录由谁供给" |
 | `fs` | `dsh-workspace-changes` | `未挂载` | `-`；包不新，**pair 新**：0.2.0-rc.2 的 `inject` 只有 `["subprocess"]`，0.2.1-rc.2 扩成 `["subprocess","fs"]`（`lib/index.js:949`，`ctx.fs.processPath` 在写意图事件里懒取，`:1073`）。这条是宿主升级自己带进来的新消费面，不是我们改了它 |
 | `sandbox` | `dsh-bash-sandbox` | `未挂载` | `-`；宿主 bash 的沙箱封装 |
 | `sandbox` | `dsh-experimental-worktree` | `未挂载` | `-`；同一枚包的另一只手：`await ctx.sandbox.confine(command, {`（`lib/index.js:131`），与 #78 的 `dsh-ptc-runtime-node` 同族——我们的 `wsl-sandbox` provider 让它拒还是放行，只能靠真调一次 `confine` 判，不靠散文。出口同 `sandbox x dsh-ptc-runtime-node` 那行（`tests/support/w78-confine-probe.mjs`） |

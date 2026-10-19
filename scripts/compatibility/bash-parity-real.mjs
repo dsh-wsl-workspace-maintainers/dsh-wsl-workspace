@@ -19,6 +19,7 @@ import { join, resolve as resolvePath } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { load, plane } from './plane.mjs'
+import { provideWorkingDirectory } from './host-services.mjs'
 
 const repoRoot = resolvePath(import.meta.dirname, '..', '..')
 const at = p => pathToFileURL(p).href
@@ -116,6 +117,7 @@ async function worldOneShot() {
     maxOutputBytes: 64 * 1024, maxSpillBytes: 4 * 1024 * 1024, graceMs: 500,
   })
   const bash = await import(at(host('@deepseek-ai/dsh-tool-bash')))
+  provideWorkingDirectory(ctx, sessionCwd)
   await bash.apply(ctx, new bash.Config({}))
   await new Promise(resolve => setTimeout(resolve, 50))
   const tool = ctx.tools.get('bash')

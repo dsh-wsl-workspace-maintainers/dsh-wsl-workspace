@@ -24,6 +24,7 @@ import { join, resolve as resolvePath } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { load, plane } from './plane.mjs'
+import { provideWorkingDirectory } from './host-services.mjs'
 
 const repoRoot = resolvePath(import.meta.dirname, '..', '..')
 const at = p => pathToFileURL(p).href
@@ -1044,6 +1045,7 @@ try {
     backendType: 'wsl', shellDialect: 'bash', shellPath: relay?.path ?? process.execPath,
     shellArgs: [`${repoRoot}/lib/wsl-relay.js`],
   }))
+  provideWorkingDirectory(ptyCtx, ptyCwd)
   await persistent.apply(ptyCtx, new persistent.Config({ backendType: 'wsl', timeoutMs: 8_000 }))
   const ptyTool = ptyCtx.tools.get('bash')
   controlRan = ptyTool !== undefined
