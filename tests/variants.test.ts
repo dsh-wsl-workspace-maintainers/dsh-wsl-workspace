@@ -587,3 +587,62 @@ test('the pty tier still reaches the host stack when asked for', () => {
   assert.ok(out.includes(`shellPath: '${NODE}'`), 'the relay interpreter is still handed to the backend')
   assert.ok(!out.includes('id: bash-wsl'), 'and our tool is not mounted alongside it')
 })
+
+/**
+ * Issue #87 locks. The byte assertions above pin the appended sentence, so they go red
+ * if `{{cwd}}` itself comes back. These two catch the general shape instead: any `{{…}}`
+ * group this transform introduces, from any constant, on any persona shape. A persona is
+ * a template - `dsh-system-prompt` resolves every group against the variables registered
+ * for that assembly and throws before the first model request when one is missing, and
+ * the persona section sits at order 0, so one stray group takes the whole session down.
+ */
+
+/** Persona shapes whose own text carries no `{{`, so any group in the output is ours. */
+const BARE_PERSONA_SHAPES: [string, string][] = [
+  ['inline suffix', `- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    suffix: You are a coding agent.
+`],
+  ['folded suffix and prefix', `- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    suffix: >-
+      You are a coding agent.
+    prefix: >-
+      Keep going.
+`],
+  ['folded prefix only', `- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    prefix: >-
+      You are a coding agent.
+`],
+  ['legacy text block', `- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: >-
+      You are a coding agent.
+`],
+]
+
+test('the appended WSL note introduces no prompt variable', () => {
+  for (const [label, source] of BARE_PERSONA_SHAPES) {
+    const out = transformPresetForWsl(source, SHELL, FS)
+    // The control under the control: with nothing appended the scan below would have no
+    // object and pass for the wrong reason, which is exactly how issue #22 hid.
+    assert.ok(out.includes('inside a WSL'), `${label}: the note was never appended, so the group scan has no object`)
+    assert.ok(!out.includes('{{'), `${label}: the note added a {{…}} group to a persona that had none, and the host resolves it against a registry this plugin does not own`)
+  }
+})
+
+/** Every complete `{{name}}` group of a composition, in order of appearance. */
+const promptGroups = (text: string) => text.match(/\{\{[A-Za-z_][A-Za-z0-9_]*\}\}/g) ?? []
+
+test('the transform adds no reference occurrence the source did not carry', () => {
+  const out = transformPresetForWsl(STANDARD_LIKE, SHELL, FS)
+  // The source's own {{model}} and {{cwd}} are legitimate template input and stay verbatim;
+  // what must not move is their count. Re-adding a group to PERSONA_APPEND turns this red by
+  // one occurrence - the half the byte assertions cannot see, because they only know cwd.
+  assert.deepEqual(promptGroups(out), promptGroups(STANDARD_LIKE), 'the variant carries exactly the references the source carried')
+})

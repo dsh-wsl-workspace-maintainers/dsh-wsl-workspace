@@ -324,6 +324,61 @@ assert(
 )
 assert(newYaml.indexOf('inside a WSL') < newYaml.indexOf('prefix: >-'), 'the note stays in the suffix block, not the prefix')
 
+// ── the appended sentence has to interpolate against the host's own registry ──────────
+// A persona is a template. dsh-system-prompt resolves every `{{…}}` group against the
+// variables registered for that assembly and throws `unknown prompt variable` before the
+// first model request when one is missing; the persona section sits at order 0, so one
+// stray group takes the whole `wsl-*` session down (issue #87). The registry handed to the
+// host here is EMPTY on purpose: interpolate() rejects any group against an empty registry,
+// so this cell claims nothing about which variables a given host release registers and
+// cannot rot when upstream changes that list. It proves only what has to be true: the
+// sentence this plugin writes resolves without depending on anyone's registry.
+// Resolved the way scripts/check-host-prompt-parity.mjs resolves the host lib: the linked
+// scope first, then the pinned tree ci/install-pinned.mjs materialises. The bare specifier
+// alone is not enough here, because only the packages ci/pinned-deps.json names are linked
+// into the repo root and dsh-system-prompt imports a scope sibling that is not among them.
+const hostPrompt = await import('@deepseek-ai/dsh-system-prompt')
+  .catch(() => import('../ci/deps/node_modules/@deepseek-ai/dsh-system-prompt/lib/index.js'))
+  .catch(() => null)
+assert(
+  hostPrompt !== null,
+  'the host prompt module resolves — run `node ci/install-pinned.mjs` first, this cell is NOT VERIFIED without it',
+)
+const { renderPrompt } = hostPrompt
+/** Render one text through the host's interpolator with no variable registered at all. */
+const renderPersona = (text) => renderPrompt({
+  sections: [{ name: 'deployment:persona-prefix', text }],
+  variables: {},
+})
+
+const appendedNote = /^[^\n]*inside a WSL[^\n]*/m.exec(newYaml)?.[0]?.trim() ?? ''
+assert(appendedNote.length > 0, 'the appended sentence is present in the generated variant to interpolate')
+let noteFailure = null
+try {
+  renderPersona(appendedNote)
+} catch (error) {
+  noteFailure = error
+}
+assert(
+  noteFailure === null,
+  noteFailure === null
+    ? 'the appended sentence interpolates with no variable registered at all'
+    : `the appended sentence must interpolate with nothing registered, and the host refused it: ${noteFailure.message}`,
+)
+
+// Positive control: the device must bite on the sentence that shipped until #87, or the
+// green above would only say that the scan found nothing to look at.
+let controlOutcome = 'DID NOT THROW'
+try {
+  renderPersona('Your working directory {{cwd}} is inside a WSL (Windows Subsystem for Linux) distribution.')
+} catch (error) {
+  controlOutcome = error.message
+}
+assert(
+  controlOutcome === 'unknown prompt variable "{{cwd}}" in section "deployment:persona-prefix"; registered variables: (none)',
+  'the host interpolator refuses an unregistered group exactly as the live failure did',
+)
+
 const newCompleteVariant = join(home, '.agent-presets', 'wsl-standard-new-complete')
 assert(existsSync(newCompleteVariant), 'v0.1.3+ opt-out variant generated')
 const newCompleteYaml = readFileSync(join(newCompleteVariant, 'agent.cordis.yml'), 'utf8')
