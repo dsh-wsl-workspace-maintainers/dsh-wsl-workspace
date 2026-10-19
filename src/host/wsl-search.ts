@@ -71,7 +71,7 @@ import type { RetainedItems } from '@deepseek-ai/dsh-output-retention'
 import type { SpillRef } from '@deepseek-ai/dsh-spill'
 import { isAbsoluteLinuxPath, parseWslUnc, windowsToMntPath } from '../shared/paths.ts'
 import { decodeWslOutput, defaultDistroSync } from '../shared/wsl.ts'
-import { getWorkspaceUsername } from '../shared/wsl-credentials.ts'
+import { getWindowsWorkspace, getWorkspaceUsername } from '../shared/wsl-credentials.ts'
 
 /**
  * The fixed `grep` script the distribution runs. Model-controlled values arrive
@@ -738,7 +738,9 @@ export interface WslSearchTarget {
 /**
  * Resolve the distribution and Linux workdir one search runs in, mirroring the
  * shell and filesystem providers' chain: a WSL UNC cwd carries both, an absolute
- * Linux cwd uses the configured distribution (then the host default).
+ * Linux cwd uses the configured distribution (then the host default), and a
+ * Windows-drive cwd is a `/mnt/<drive>` workspace whose distribution comes from
+ * the registration the dialog wrote.
  * @param cwd - the calling session's cwd.
  * @param configured - the world's configured distribution, when any.
  * @returns the target, or undefined when the cwd is not in a WSL world.
@@ -751,10 +753,26 @@ export function resolveTarget(cwd: string | undefined, configured: string | unde
     const username = getWorkspaceUsername(cwd)
     return { distro: unc.distro, linuxCwd, ...username === undefined ? {} : { username } }
   }
-  if (!isAbsoluteLinuxPath(cwd)) return undefined
-  const distro = configured !== undefined && configured.trim() !== '' ? configured.trim() : defaultDistroSync()
+  const wanted = configured !== undefined && configured.trim() !== '' ? configured.trim() : undefined
+  if (isAbsoluteLinuxPath(cwd)) {
+    const distro = wanted ?? defaultDistroSync()
+    if (distro === undefined || distro === '') return undefined
+    return { distro, linuxCwd: cwd }
+  }
+  // A Windows-drive cwd is the third WSL world this plugin serves: 9P cannot export drvfs, so
+  // such a workspace registers under its drive path and the path itself names no distribution.
+  // The distribution is therefore read from that registration, in the same order the persistent
+  // shell walks it (src/host/wsl-relay.ts: configured → stored entry → registry default), so
+  // `grep` searches the distribution the session's `bash` is running in rather than whichever
+  // one the registry happens to call default. Anything that is not a drive path at all — a
+  // relative or foreign cwd — still has no world to search and stays refused.
+  const mnt = windowsToMntPath(cwd)
+  if (mnt === null) return undefined
+  const stored = getWindowsWorkspace(cwd)
+  const distro = wanted ?? stored?.distro ?? defaultDistroSync()
   if (distro === undefined || distro === '') return undefined
-  return { distro, linuxCwd: cwd }
+  const username = stored?.username
+  return { distro, linuxCwd: mnt, ...username === undefined || username === '' ? {} : { username } }
 }
 
 /**

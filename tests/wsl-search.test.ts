@@ -10,6 +10,9 @@
 
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { ItemRetainer } from '@deepseek-ai/dsh-output-retention'
 import {
   formatGlobOutput,
@@ -50,6 +53,31 @@ const CONFIG = {
   rawOutputMaxBytes: 20_000_000,
   timeoutMs: 30_000,
   wslPath: 'wsl.exe',
+}
+
+/**
+ * Run one assertion set against a workspace store the test owns.
+ *
+ * A `/mnt/<drive>` session resolves its distribution from the registration the dialog wrote,
+ * and the CI runners have no WSL registry to fall back to — so a drive case that did not
+ * supply its own entry would be measuring "this machine has no default distribution" rather
+ * than the branch under test.
+ * @param entries - the store contents, keyed by canonical Windows drive path.
+ * @param run - the assertions to make while `DSH_HOME` points at them.
+ */
+function withStore(entries: Record<string, { distro?: string; username?: string }>, run: () => void | Promise<void>): Promise<void> | void {
+  const previous = process.env.DSH_HOME
+  const home = mkdtempSync(join(tmpdir(), 'dsh-wsl-search-store-'))
+  writeFileSync(join(home, 'wsl-workspaces.json'), JSON.stringify(entries))
+  process.env.DSH_HOME = home
+  const restore = () => {
+    if (previous === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previous
+    rmSync(home, { recursive: true, force: true })
+  }
+  const outcome = run()
+  if (outcome instanceof Promise) return outcome.finally(restore)
+  restore()
 }
 
 describe('parseGrepRecords', () => {
@@ -283,10 +311,39 @@ describe('target and argv resolution', () => {
     assert.equal(target?.linuxCwd, '/home/mille/ws')
   })
 
-  it('refuses a cwd that is not in a WSL world', () => {
-    assert.equal(resolveTarget('C:\\Users\\mille\\ws', undefined), undefined)
+  it('refuses a cwd that names no world at all', () => {
+    // Issue #86: this cell used to also assert `resolveTarget('C:\\Users\\mille\\ws') === undefined`,
+    // which encoded the defect as the contract — a Windows-drive cwd is not "no world", it is the
+    // `/mnt/<drive>` workspace shape the file, shell and env providers already serve. What genuinely
+    // names no world is a missing, empty or relative cwd, and those stay refused.
     assert.equal(resolveTarget(undefined, undefined), undefined)
     assert.equal(resolveTarget('', undefined), undefined)
+    assert.equal(resolveTarget('home/mille/ws', undefined), undefined, 'a relative cwd names no world')
+  })
+
+  it('resolves a registered drive-letter workspace from its registration (issue #86)', () => {
+    // The reported shape: cwd `F:\TechEnergy\Code\Scanner`, registered because 9P cannot export
+    // drvfs. The generated `search-wsl` row carries no `config:` block, so `configured` is
+    // undefined here exactly as it is in a real session — the distribution can only come from the
+    // registration, and the Linux workdir only from the drive translation.
+    withStore({ 'f:\\techenergy\\code\\scanner': { distro: 'Ubuntu-24.04', username: 'linte' } }, () => {
+      const target = resolveTarget('F:\\TechEnergy\\Code\\Scanner', undefined)
+      assert.equal(target?.distro, 'Ubuntu-24.04', 'the registered distribution, not whatever the registry calls default')
+      assert.equal(target?.linuxCwd, '/mnt/f/TechEnergy/Code/Scanner', 'the same translation the file tools apply')
+      assert.equal(target?.username, 'linte', 'the stored run-as user, symmetric with the UNC branch')
+    })
+  })
+
+  it('keeps the distribution chain of its sibling providers for a drive cwd', () => {
+    withStore({ 'f:\\proj': { distro: 'Ubuntu-24.04' } }, () => {
+      // configured → stored entry → registry default, the order src/host/wsl-relay.ts walks, so
+      // `grep` searches the distribution the session's `bash` runs in.
+      assert.equal(resolveTarget('F:\\proj', 'Debian')?.distro, 'Debian', 'the row config wins over the registration')
+      assert.equal(resolveTarget('F:\\proj', '   ')?.distro, 'Ubuntu-24.04', 'a blank config is no config')
+      const stored = resolveTarget('F:\\proj', undefined)
+      assert.equal(stored?.linuxCwd, '/mnt/f/proj')
+      assert.equal('username' in (stored ?? {}), false, 'no stored user means the distribution default, stated by absence not by an empty string')
+    })
   })
 
   it('uses the configured or default distribution for a Linux-absolute cwd', () => {
@@ -358,6 +415,33 @@ describe('apply', () => {
 
   it('does nothing when the tools registry is absent', () => {
     assert.doesNotThrow(() => apply({ get: () => undefined }, CONFIG))
+  })
+
+  it('does not refuse a drive-letter session cwd (issue #86)', async () => {
+    // Where the defect actually surfaced: both tools threw `grep is only available in a WSL
+    // workspace session` for a `/mnt/<drive>` session while `bash`, `read`, `write` and `edit` in
+    // the same session worked. `wslPath` names a command that cannot start, so reaching the spawn
+    // is observable without a distribution — and the assertion is about the refusal sentence, not
+    // about search results.
+    return withStore({ 'f:\\techenergy\\code\\scanner': { distro: 'Ubuntu-24.04' } }, async () => {
+      const ctx = registry()
+      // Cast at the use site rather than re-typing `registry()`: the six existing `apply(ctx, …)`
+      // calls in this file each already carry a baseline type error for the same reason, and
+      // re-typing the shared fake rippled into 23 new ones (measured 2026-10-19).
+      apply(ctx as unknown as Parameters<typeof apply>[0], { ...CONFIG, wslPath: 'dsh-issue-86-no-such-command' })
+      const exec = { agent: { session: { header: { cwd: 'F:\\TechEnergy\\Code\\Scanner' } } }, signal: undefined }
+      for (const name of ['grep', 'glob']) {
+        let message = 'the call returned without reaching the spawn'
+        try {
+          await ctx.tools.get(name).execute({ pattern: 'x' }, exec)
+          message = ''
+        } catch (error) {
+          message = (error as Error).message
+        }
+        assert.equal(message.includes('only available in a WSL workspace session'), false, `${name} refused a WSL drive workspace`)
+        assert.equal(message.includes('dsh-issue-86-no-such-command'), true, `${name} never reached the distribution spawn: ${message}`)
+      }
+    })
   })
 
   it('mounts with schema defaults when the row carries no config at all', () => {

@@ -191,6 +191,30 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
   four persona shapes whose source text has no `{{` assert the variant has none either, the variant's reference
   multiset must equal the source's, and the generated sentence must interpolate through the host's own
   `renderPrompt` against an empty registry — with the pre-fix sentence kept as the control that the device bites.
+- **`grep` and `glob` answer inside a `/mnt/<drive>` WSL workspace instead of refusing it** ([#86](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/86)).
+  A workspace registered under a Windows drive path (`F:\TechEnergy\Code\Scanner`, because 9P cannot
+  export drvfs) gave the model `grep is only available in a WSL workspace session` on **every** call,
+  while `bash`, `read`, `write` and `edit` in the same session worked — so the session was healthy and
+  only search thought it was somewhere else. `resolveTarget()` knew two cwds: a WSL UNC and an absolute
+  Linux path. A drive cwd was neither, so it returned `undefined` and both tools threw. It now takes the
+  third shape the rest of the plugin already serves: `windowsToMntPath` for the Linux workdir, and the
+  distribution from the registration the dialog wrote, in the order the persistent shell walks it
+  (`src/host/wsl-relay.ts`: configured → stored entry → registry default) so `grep` searches the
+  distribution the session's `bash` runs in rather than whichever one the registry calls default. A
+  relative or empty cwd still names no world and is still refused. **One thing to know before calling
+  this a one-line patch**: `tests/wsl-search.test.ts` had a cell asserting
+  `resolveTarget('C:\\Users\\mille\\ws') === undefined` under the name "refuses a cwd that is not in a
+  WSL world" — the defect was written down as the contract, so the cell is split rather than edited:
+  what genuinely names no world stays refused, and the drive shape gets its own cases. Measured both
+  ways: with the pre-fix source the three new drive cells are red and the fourth — which calls the
+  registered `grep`/`glob` tools and asserts the refusal sentence is not what comes back — fails with
+  `grep refused a WSL drive workspace`; with the fix, 36/36 in that file, 226 tests in `test:unit`,
+  111 in the `test:node` host bucket with both materializer tiers PASSED, `typecheck-gate` 209 =
+  baseline, `test:docs` 11/11. The same round also ran against the **built** `lib/wsl-search.js`, not the
+  source: main's copy reproduces both reported sentences verbatim, this build returns
+  `Found 1 match … ISSUE86-NEEDLE-…` from `grep` and `needle.txt` from `glob` — real `wsl.exe`, real
+  distribution, a real drive-path cwd, and a registration naming **only** the distribution, which is the
+  shape the generated `search-wsl` row actually produces.
 
 ## 0.7.6 — 2026-10-01
 - **A second pass made the session `bash` answer like the host's `bash`, field by field.** A matrix of

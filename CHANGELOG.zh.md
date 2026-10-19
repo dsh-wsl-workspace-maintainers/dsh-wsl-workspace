@@ -110,6 +110,22 @@
   `{{`，所以整个注入面已被 [PR #90](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/90) 锁住：
   四种自带文本里没有 `{{` 的 persona 形状要求产物也没有，变体的引用多重集必须等于源的，生成的那句还要过宿主自己的
   `renderPrompt` 且注册表为空——并把修复前那句留在同一格作正对照，证明这把尺真的会咬。
+- **`grep` 与 `glob` 在 `/mnt/<drive>` 型 WSL 工作区里开始回答，而不是把它当成门外**（[#86](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/86)）。
+  按 Windows 盘符路径登记的工作区（`F:\TechEnergy\Code\Scanner`——因为 9P 无法导出 drvfs），模型**每一次**
+  调用都会拿到 `grep is only available in a WSL workspace session`，而同一会话里 `bash`、`read`、`write`、
+  `edit` 全部正常：会话是好的，只有搜索以为自己不在 WSL 里。`resolveTarget()` 只认两种 cwd——WSL UNC 与
+  Linux 绝对路径，盘符 cwd 两者都不是，于是返回 `undefined`，两个工具一起抛。现在它接住插件其余部分早就
+  在服务的那第三种形态：Linux 工作目录走 `windowsToMntPath`，发行版取自对话框写下的登记项，顺序与常驻
+  shell 走的那条一致（`src/host/wsl-relay.ts`：配置 → 登记项 → 注册表默认），因此 `grep` 搜的就是会话
+  `bash` 所在的那个发行版，而不是注册表恰好叫"默认"的那一个。相对路径与空 cwd 仍然不指名任何世界，仍然被拒。
+  **在把它当成一行补丁之前要知道的一件事**：`tests/wsl-search.test.ts` 里有一格名为
+  "refuses a cwd that is not in a WSL world"，断言 `resolveTarget('C:\\Users\\mille\\ws') === undefined`
+  ——缺陷被写成了契约。所以这一格是**拆开**而不是改掉：真正不指名世界的仍然拒，盘符形态各拿自己的用例。
+  两半都量过：退回未修源码时，三枚新的盘符格全红，第四枚（去调已登记的 `grep`/`glob` 工具、断言回来的
+  不是那句拒绝）报 `grep refused a WSL drive workspace`；修后该文件 36/36、`test:unit` 226 枚、
+  `test:node` 宿主桶 111 枚且两档 materializer 均 PASSED、`typecheck-gate` 209＝基线、`test:docs` 11/11。同一发也打在**打好的** `lib/wsl-search.js` 上、不是源码：
+  main 那份逐字复现两句报错，本产物 `grep` 回 `Found 1 match … ISSUE86-NEEDLE-…`、`glob` 回 `needle.txt`
+  ——真 `wsl.exe`、真发行版、真盘符 cwd，且登记项**只**给发行版，正是生成的 `search-wsl` 行在真实会话里的形状。
 
 ## 0.7.6 — 2026-10-01
 
