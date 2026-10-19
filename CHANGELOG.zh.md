@@ -4,21 +4,6 @@
 
 本文件为中文记录（0.4.3 及更早为摘要）；英文原文见 [CHANGELOG.md](CHANGELOG.md)。
 
-## 未发布
-- **WSL 那句说明不再带提示词变量，于是每个 `wsl-*` 会话不会再死在 turn 1 step 1**
-  （[#87](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/87)）。
-  `PERSONA_APPEND` 原文是 `Your working directory {{cwd}} is inside a WSL …`，而 `appendPersona()`
-  会把这句话写进 persona 面向模型的标量里。persona 是一份模板：`@deepseek-ai/dsh-system-prompt`
-  会拿本次组装注册的变量去解析每一个 `{{…}}` 组，缺一个就在**发出任何模型请求之前**抛
-  `unknown prompt variable "{{cwd}}" in section "deployment:persona-prefix"`。DSH 0.2.x 只注册
-  `provider` 与 `model`——工作目录改由 working-directory 服务提供（它把路径作为字面用户上下文给出），
-  且上游文档明确写了自定义 persona 不得依赖内置 `{{cwd}}`。于是本插件追加的那一个从句，恰好就是解析
-  不了的那一个从句；又因为 persona 段位于 order 0，它连带整个变体一起失败——四个变体全中，因为它们
-  共用同一套 transform。这句话现在写作 `Your working directory is inside a WSL …`：对模型是同一个
-  断言，却没有需要注册的变量，也没有任何会与别人的注册表脱节的东西。实质信息没有减少——路径本身仍由
-  拥有它的那个服务提供。`tests/variants.test.ts` 与 `tests/host-materialize.mjs` 逐字节钉住了这行
-  追加文本，故一并更新；原先断言"追加句里有 `{{cwd}}`"的用例，现在断言的是它不在。
-
 ## 0.7.7 — 2026-10-07
 - **stderr 那一侧的溢出文件，现在和 stdout 那一侧守同样的承诺。** 四条都在真实发行版上量过（2026-10-11，
   Ubuntu，`seq 1 200000 >&2`），四条都已修。
@@ -77,6 +62,54 @@
   生产者现在**双通道齐发**，各自版本线读取自己理解的那一个：`spec.output` 内两个 pull-source——`stdout` 与一个带 `stderr` 标签的 source——各自从 shell 进程自身的逐流 `observed` reader 读取（与 `readOutput` 所 drain 的是同一组独立游标，互不抢字节），同时保留 `run()` 返回的 `readOutput` 给 0.1.x 注册表使用。`spillPath` 原样透传，因此溢出流仍会报告其 spill 文件，`stderr` 也借由 channel 标签留在自己的通道上。
 
   新增一条单元门禁，复刻 0.2.x 的 drain 循环去拉取生产者产出的 `output` source，在旧生产者（无 source，或 source 不吐字节）上必定失败，故此类回归无法再静默复现。
+- **一条答案里出现两个文件时，现在会说明哪个装着全部内容。** 被截断的 `bash` 结果可能同时带着我们的
+  `[output truncated; full output: …]` 路径和宿主追加的 `Full formatted result stored at:` 路径，原先没说
+  哪个算哪个。现在 stdout 与 stderr 两臂都在那句之后跟一句：`[the path above holds the whole stream;
+  if this answer also names a "formatted result" path, that one is the host's excerpt and can hold fewer
+  lines]`。在客户端自带构建的真实会话里量过（2026-10-13，`seq 1 250000`）：我们点名的那条装着
+  **1 638 895 字节／250 000 行**，与裸命令同尺；宿主的格式化切片是 524 511 字节／74 892 行；stderr 臂是
+  1 638 895 对 357 165／50 985。客户端识别的那两句原文一字未动，原先能解析的现在照样解析。
+- **`read_image` 在 WSL 世界里重新能答了（issue #54）。** 宿主注册这个工具时所在上下文的 realm 链到不了我们切出的
+  世界，所以 WSL 会话里每次读图都在约 12 ms 内回 `cannot get property "fs" without inject`——连路径都还没解析
+  （不存在的路径回的是同一句）。现在世界在自己的行旁边挂上本插件的读取，按 realm 键解析 `fs`，用真实字节回答：
+  真实会话里量到 **296 ms、`image/png` 446x568／61992 字节**（文件在发行版内）。这件事付了两笔离线门禁看不见的学费，
+  在此记明：返回值必须过**宿主自己的输出校验**（第一版真的读到了图，却死在 `"value.image.name" is not a declared
+  property`——附件服务回七个字段，我们的 schema 只声明了五个），而真实会话是按 agent 解析工具的
+  （`dsh-tools` 的 `get(name, agent)`），所以同一进程里的非 WSL 会话仍拿宿主那条，复测 22 ms 正常。接受的图像格式与
+  宿主同为四种，也同样拦下未声明图像输入的模型档位，换成这条读取不丢任何检查。
+- **`run_code` 在"根本起不来"的那一格现在会明说，并给出出路（issue #78）。** Windows 上的文件沙箱靠读取工作区根的
+  安全描述符来授予写权限，而 `\\wsl.localhost\…` 是 9P 共享、没有这个东西，所以 PTC 会话在 `workspace-write` 下
+  一律死在 worker 启动阶段，报 `GetNamedSecurityInfoW failed (Win32 1)`——一个裸 Win32 码，没有成因、没有出路、
+  重试必然相同。现在 `tools.guard()` 只拒那一格（这个工具名、这个档位、根在 `\\wsl.localhost\` 或 `\\wsl$\`），
+  并点名三条真能跑的设置：把会话切到「仅可查看」、切到「完全访问」，或用世界自己的工具。同一份已安装产物在本机实测：
+  被拒那一发 **2 ms** 给出我方那句（内含被拒的根）；同一程序在「仅可查看」829 ms、在「完全访问」478 ms 仍回 `1`；
+  被拒档位下的 `bash` 仍打到发行版（448 ms，内核 `6.18.40.1-microsoft-standard-WSL2`）。这**没有给 WSL 世界一个真沙箱**
+  ——要站得住的强制必须搬进发行版内部；在那之前，一句可读的拒绝才是诚实的状态，而成因本身在宿主的 Windows ACL runner。
+- **给维护者的：一张消费方台账、两枚探针，以及一枚"套件死了还报绿"的门禁。** `docs/CONSUMER-COVERAGE.md` 每次运行都从
+  树上重新派生"哪些 `(服务, 宿主包)` 在向我们要被隔离的服务"，`tests/consumer-coverage.test.mjs` 把没跑过的数量钉住
+  （45 对里 43 对从未被执行）——这正是让 #54 和 #78 溜过去的缝：仓里所有装置都从"我们自己注册的工具"进去。
+  `npm run test:realm-probe` 与 `npm run test:confine-probe` 在真启动的宿主上打两枚 issue 的两臂；`run-seams` 现在把
+  "非零退出却没吐任何可登记的红"也算一枚观察到的红——此前两枚探针在 ubuntu runner 上就这么在绿帧里死掉过。两枚探针
+  都在 ubuntu runner 上 **SKIP**（钉住的闭包里没有 `@deepseek-ai/dsh-attachment`），只在维护者机器上真测：把检查放进
+  一个跑不动它的 job 不叫覆盖。
+
+- **WSL 那句说明不再带提示词变量，于是 `wsl-*` 会话不会再死在发出第一次模型请求之前**（[#87](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/87)）。
+  `PERSONA_APPEND` 原文是 `Your working directory {{cwd}} is inside a WSL …`，而 `appendPersona()` 会把这句话写进
+  persona 面向模型的那个标量。persona 是一份模板：`@deepseek-ai/dsh-system-prompt` 会拿本次组装注册的变量去解析每一个
+  `{{…}}` 组，缺一个就抛 `unknown prompt variable "{{cwd}}" in section "deployment:persona-prefix"`；而 persona 段位于
+  order 0，所以整个变体在 turn 1 step 1 就倒下。DSH 是在两个 release 之间撤掉 `cwd` 的，这一点按已发布的包量出来、不是推断：
+  `dsh-agent-loop@0.2.0-rc.2` 注册 `provider`、`model` **和 `cwd`**（`lib/index.js:1566`），而 `0.2.1-rc.2` 只注册
+  `provider` 与 `model`（`lib/index.js:1591-1592`）。这句话现在写作 `Your working directory is inside a WSL …`：
+  对模型是同一个断言，却不再有任何一组的含义依赖别人家的注册表。**中招的是四个变体里的三个，不是四个**——`wsl-minimal`
+  的 persona 带 `complete: true`，从不被追加；issue 原文那句「4 个变体均如此」因此也要改正。报告里有一处是报障者对上游文档的
+  转述、不是这些包能给我们看的：0.2.x 改由某个服务把目录交给模型。本机量到的只是另一支的代价——一个连 token 都没花出去的死会话。
+  真机验证（Desktop `0.2.1-rc.1`，其内置 loop 只注册 `provider`/`model`、不含 `cwd`）：同一句提示词，在
+  `\\wsl.localhost\Ubuntu\home\ruler` 工作区、`wsl-standard` 档位下，装旧产物时回的是 处理失败 +
+  `unknown prompt variable "{{cwd}}"`、`1 轮 1 步`、零 token；换上这份产物后同一发 **6 秒／16.3K tok** 完成，
+  而该会话自己的转录里带着修好的那句、68,810 字节解压文本中**字面 `{{cwd}}` 为 0**。`PERSONA_APPEND` 是 `src/` 里唯一的
+  `{{`，所以整个注入面已被 [PR #90](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/90) 锁住：
+  四种自带文本里没有 `{{` 的 persona 形状要求产物也没有，变体的引用多重集必须等于源的，生成的那句还要过宿主自己的
+  `renderPrompt` 且注册表为空——并把修复前那句留在同一格作正对照，证明这把尺真的会咬。
 
 ## 0.7.6 — 2026-10-01
 
