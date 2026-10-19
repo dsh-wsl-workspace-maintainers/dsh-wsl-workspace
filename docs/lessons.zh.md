@@ -43,6 +43,18 @@
    "value.image.name" is not a declared property (additionalProperties: false)`（373 ms，图已经读到了）。
    凡"重新实现宿主已有的工具"，声明的 schema 必须逐字段抄宿主的，并且装置要**用宿主那只校验函数**
    过一遍返回值（`providers.tools.namespace.validateJsonSchemaValue`，`w54-isolate-probe` row 6 现在这么做）。
+5. **拿两份同一个类的实例做 `instanceof`**：2026-10-19 `w78-confine-probe` 两行红，报的是"槽位里的
+   provider 不是宿主的 `LocalSandboxProvider`"，而 realm、构造器名、`confine()` 的实际行为全都说它是。
+   真因在装置：探针按**绝对路径**导入那个类，overlay 的行却按**包名**挂载，Node 的 ESM 缓存按 URL 记模块，
+   于是同一个文件有了两个类对象，`instanceof` 永远为假。把行改成按同一条绝对路径挂载，六行全绿；
+   只把盘符大小写规范化（`file:///D:/…` vs `file:///d:/…` 确实是两个模块，实测）改不了它——两份副本的
+   realpath 本来就一致，不一致的是**谁去解析**。⇒ 断言"是不是这个类"之前，先确认装置和被告读的是同一份模块：
+   挂载行与探针导入必须共用同一个路径来源，或者干脆只比构造器名＋模块路径并把跨实例 `instanceof` 当诊断信息打出来。
+6. **按 `existsSync` 增量填充的临时目录，会替上一个 release 说话**：同一天 `w54-isolate-probe` 死了，
+   宿主先打四行 `disabling profile plugin row "…": Plugin …@0.2.0-rc.2 is incompatible with dsh 0.2.1-rc.2`。
+   它的 shadow 闭包（link 与 copy 都有 `existsSync` 守卫）里留着升树前的副本，boot 拿这些旧副本去配新的运行时，
+   于是四行被丢掉、探针读到一个空世界。⇒ 一次性目录要么每次重建，要么在挂载前验一次"这份副本的版本 ==
+   本次被测的那一版"（`w54` 现在有 `closure-versions` 那一格；`w92` 在 `hostRow` 里做同样的事）。
 
 ## `verify-runtime`
 

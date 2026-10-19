@@ -43,13 +43,20 @@
  * @module tests/support/w78-confine-probe
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const at = (p) => pathToFileURL(p).href
+/**
+ * Node's ESM cache keys on the URL, not on the file: the same module imported as `file:///D:/…` and
+ * `file:///d:/…` yields **two** class objects, and `x instanceof OtherCopy` is false for an instance of the
+ * other one (measured 2026-10-19 in `D:/Temp/rc2-round/module-identity-case.mjs`). That is what reddened
+ * rows 0 and 4 here after the host bump — the release's own `LocalSandboxProvider` in the slot, judged by a
+ * second copy of the same class. Canonicalise the path so this probe and the loader agree on one instance.
+ */
+const at = (p) => pathToFileURL(realpathSync(p).replace(/^([a-z]):/, (_, letter) => `${letter.toUpperCase()}:`)).href
 
 /**
  * Resolve a host package by path, never by bare specifier.
@@ -199,23 +206,30 @@ try {
     name: 'dsh-profile-w78confine', private: true, dependencies: {}, dsh: { profile: { bundles: [] } },
   }, null, 2)}\n`, 'utf8')
   const overlay = join(home, 'overlay.yml')
+  // Rows are mounted by the absolute path this probe already imported the class from, not by package name.
+  // Mounted by name, the Loader resolves its own copy of the same file, Node's ESM cache keys on the URL,
+  // and `provider instanceof LocalSandboxProvider` is then false for the release's own provider — measured
+  // here 2026-10-19: rows 0 and 4 reddened while every realm and constructor-name reading stayed put, and
+  // canonicalising the drive letter in `at()` did not change it. One file has to mean one class, or the
+  // strongest claim in this probe measures the harness.
+  const mountedPath = (name) => {
+    const found = host(name)
+    if (found === null) throw new Error(missing(name))
+    return realpathSync(found).replace(/^([a-z]):/, (_, letter) => letter.toUpperCase()).replace(/\\/g, '/')
+  }
+  const pathRow = (id, name, configLines = []) => [`    - id: ${id}`, `      name: '${mountedPath(name)}'`, ...configLines]
   writeFileSync(overlay, [
     '- insert:',
-    '    - id: subprocess-local',
-    '      name: "@deepseek-ai/dsh-subprocess-local"',
-    '    - id: fs-local',
-    '      name: "@deepseek-ai/dsh-fs-local"',
-    '    - id: session-projection',
-    '      name: "@deepseek-ai/dsh-session-projection"',
-    '    - id: sandbox-policy',
-    '      name: "@deepseek-ai/dsh-sandbox-policy"',
-    '      config:',
-    '        mode: workspace-write',
-    `        workspaceRoot: "${repoRoot.replaceAll('\\', '\\\\')}"`,
-    '    - id: sandbox',
-    '      name: "@deepseek-ai/dsh-sandbox-local"',
-    '    - id: ptc-runtime',
-    '      name: "@deepseek-ai/dsh-ptc-runtime-node"',
+    ...pathRow('subprocess-local', '@deepseek-ai/dsh-subprocess-local'),
+    ...pathRow('fs-local', '@deepseek-ai/dsh-fs-local'),
+    ...pathRow('session-projection', '@deepseek-ai/dsh-session-projection'),
+    ...pathRow('sandbox-policy', '@deepseek-ai/dsh-sandbox-policy', [
+      '      config:',
+      '        mode: workspace-write',
+      `        workspaceRoot: "${repoRoot.replaceAll('\\', '\\\\')}"`,
+    ]),
+    ...pathRow('sandbox', '@deepseek-ai/dsh-sandbox-local'),
+    ...pathRow('ptc-runtime', '@deepseek-ai/dsh-ptc-runtime-node'),
     '    - id: dsh-wsl-workspace',
     `      name: '${libPath('index.js')}'`,
     ...worldGroupText.split('\n').map(l => (l === '' ? '' : `    ${l}`)),

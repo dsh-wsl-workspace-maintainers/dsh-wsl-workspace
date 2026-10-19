@@ -48,6 +48,10 @@ const SUITES = [
     ['--experimental-strip-types', 'tests/support/w54-isolate-probe.mjs']],
   ['w78-confine-probe (run_code resolves the host ACL runner at the root realm; our no-op answers only inside wsl-world)',
     ['--experimental-strip-types', 'tests/support/w78-confine-probe.mjs']],
+  // The five pairs #92's host bump derived and nobody had executed. They stay rows in
+  // `docs/CONSUMER-COVERAGE.md` only as long as a probe calls them, so this is the arm that pays the ratchet.
+  ['w92-rc2-consumers (the five new consumers of 0.2.1-rc.2, mounted and called: working-directory, workspace-changes, tool-terminal, worktree at both mount levels)',
+    ['--experimental-strip-types', 'tests/support/w92-rc2-consumers.mjs']],
 ]
 
 const legacy = process.argv.includes('--legacy')

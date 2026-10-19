@@ -68,7 +68,7 @@
  *   node tests/support/w54-isolate-probe.mjs
  */
 
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -151,6 +151,14 @@ function ensureScratchClosure () {
   const shadow = join(SCRATCH, 'w54-shadow')
   const nm = join(shadow, 'node_modules')
   const scope = join(nm, '@deepseek-ai')
+  // The shadow is rebuilt on every run. It used to be filled in-place — every link and copy below is
+  // guarded by `existsSync` — so on 2026-10-19 the host bump left the *previous* release's copies sitting
+  // in `D:/Temp/dsh-w54-isolate-probe/w54-shadow`, and the boot reported four rows as
+  // `disabling profile plugin row "tool-fs": Plugin @deepseek-ai/dsh-tool-fs@0.2.0-rc.2 is incompatible
+  // with dsh 0.2.1-rc.2` before dying with `Cannot read properties of undefined (reading 'get')`. A cache
+  // that outlives the release it was built for does not measure that release; it measures the old one and
+  // says nothing.
+  rmSync(shadow, { recursive: true, force: true })
   mkdirSync(scope, { recursive: true })
   // Both linked trees can hold any package (the repo root is what `ci/install-pinned.mjs` links), so every
   // lookup below is a search, not a guess about which tree a name lives in.
@@ -312,7 +320,32 @@ try {
     llm: await hostModule('@deepseek-ai/dsh-llm', overrides),
     'tool-fs': await hostModule('@deepseek-ai/dsh-tool-fs', overrides),
     webserver: await hostModule('@deepseek-ai/dsh-host-webserver', overrides),
+    // `dsh-tool-fs` grew a fifth hand in 0.2.1-rc.2 (`lib/index.js:1188-1193`: tools, fs, systemPrompt,
+    // **workingDirectory**). Without that service the row never activates and the host simply has no
+    // `read_image` — measured 2026-10-19, when six arms went red saying "the fs tool suite did not mount",
+    // including the control arm, whose whole job is to show the host answering. `workingDirectory` itself
+    // injects `fs`, `sessionProjections` and `systemPrompt`, so the projection row comes with it.
+    'working-directory': await hostModule('@deepseek-ai/dsh-working-directory', overrides),
+    'session-projection': await hostModule('@deepseek-ai/dsh-session-projection', overrides),
   }
+
+  // Which release each mounted copy belongs to. The loader takes a path and trusts it, so a copy from the
+  // previous release produces `disabling profile plugin row …` in the host's log and a boot that still
+  // settles — the arms then read an empty world. Assert the release instead of discovering it through a
+  // silent zero.
+  const releaseOf = (file) => {
+    try { return JSON.parse(readFileSync(join(dirname(file), '..', 'package.json'), 'utf8')).version }
+    catch { return '(no package.json beside it)' }
+  }
+  const umbrellaRelease = releaseOf(profileBootFile)
+  const stale = Object.entries(providers)
+    .filter(([, provider]) => releaseOf(provider.file) !== umbrellaRelease)
+    .map(([id, provider]) => `${id} = ${releaseOf(provider.file)} at ${provider.file}`)
+  if (stale.length > 0) {
+    add('closure-versions', false, `${stale.length} provider copy is not @deepseek-ai/dsh ${umbrellaRelease}: ${stale.join(' | ')}`)
+    report(rows, 'NOT-MEASURED — the closure handed back a release other than the one under test')
+  }
+  add('closure-versions', true, `all ${Object.keys(providers).length} mounted providers resolve to ${umbrellaRelease}`)
 
   process.env.DSH_HOME = home
   const environment = createLaunchEnvironmentSnapshot([{ source: 'process', values: { ...process.env } }])
@@ -361,19 +394,45 @@ try {
 
   // The host's own tool call shape (dsh-tool-fs:998 `execute(args, exec)`): `exec.signal`,
   // `exec.agent.session.header.cwd` for path resolution, `exec.agent.session.requestHeader()?.config`
-  // and `exec.agent.options.provider|model` for the image-route gate.
-  const execution = () => ({
-    signal: new AbortController().signal,
-    agent: {
-      id: 'agent-w54',
-      options: { ...route },
-      session: {
-        id: 'w54-session',
-        header: { cwd: SCRATCH, id: 'w54-session' },
-        requestHeader: () => ({ config: { ...route } }),
-      },
-    },
-  })
+  // and `exec.agent.options.provider|model` for the image-route gate. 0.2.1-rc.2 added a fifth read —
+  // the agent's own `ctx.fiber` (`Cannot read properties of undefined (reading 'fiber')`, measured
+  // 2026-10-19) — so the fixture carries the liveness handle a live agent has. It is still a fixture: the
+  // arms measure the host's fs seam, not the agent lifecycle.
+  const { Session, SESSION_FORMAT_VERSION } = (await hostModule('@deepseek-ai/dsh-session', overrides)).namespace
+  const execution = (() => {
+    // A session the host can actually read: 0.2.1-rc.2's tool-fs walks the real session API and died on
+    // `session.snapshotEvents is not a function` with the previous hand-forged literal (measured 2026-10-19,
+    // the same trap `w92-rc2-consumers` records for `workingDirectory.ensure`). `Session.create` is the host's
+    // own detached constructor — no store, no disk — with exactly one method pinned: the image-route gate
+    // reads `session.requestHeader().config`, and a fresh session has no `request/header` event to fold yet.
+    const build = () => {
+      const real = Session.create('w54-session', undefined, {
+        version: SESSION_FORMAT_VERSION, id: 'w54-session', createdAt: Date.now(), isSeeded: false, cwd: SCRATCH,
+      })
+      const session = Object.create(Object.getPrototypeOf(real))
+      Object.assign(session, real)
+      session.requestHeader = () => ({ config: { ...route } })
+      return session
+    }
+    let cached
+    return () => {
+      cached ??= build()
+      return {
+        signal: new AbortController().signal,
+        agent: {
+          id: 'agent-w54',
+          options: { ...route },
+          ctx: { fiber: { assertActive: () => {} } },
+          session: cached,
+        },
+      }
+    }
+  })()
+
+  /** Which loader entries never reached state 2 — the host only says HOW MANY, so the probe names them. */
+  const unactivated = (ctx) => [...(ctx.get('loader')?.entries?.() ?? [])]
+    .filter(entry => entry.fiber?.state !== 2)
+    .map(entry => `${entry.options?.id}=${entry.fiber?.state ?? '(no fiber)'}`).join(', ') || '(all entries report state 2)'
 
   /** Register the image-capable route the tool's gate requires, through the host's own adapter API. */
   const declareRoute = (ctx) => {
@@ -444,14 +503,27 @@ try {
     '        host: 127.0.0.1',
     '        port: 0',
   ]
+  // See the providers note above: the host's fs tool suite will not activate without the session
+  // working-directory service (`lib/index.js:1188-1193` gained that hand in 0.2.1-rc.2), and a suite that
+  // never activated is not a suite that answered "no" — measured as `entries not in state 2:
+  // working-directory=0, shell-wsl=0, tool-bash=0, tool-fs=0`. It is mounted where an `fs` is resolvable:
+  // beside `fs-local` in the root-realm arms, and *inside* the group in the isolate arms, because this
+  // harness deliberately has no root `fs` (that absence is row 3's subject) and a `workingDirectory` that
+  // cannot start also blocks everything that injects it. In the product the two sit in the same realm as
+  // the tool, which is what this shape reproduces.
+  const workingRows = [
+    ...row('session-projection', providers['session-projection'].file),
+    ...row('working-directory', providers['working-directory'].file),
+  ]
   const rootWorldRows = [
     ...baseRows,
+    ...workingRows,
     ...row('fs-local', providers['fs-local'].file),
     ...row('tool-fs', providers['tool-fs'].file),
   ]
-  const isolateWorldRows = (mutate, text = generated) => [
+  const isolateWorldRows = (mutate = (lines) => lines, text = generated) => [
     ...baseRows,
-    ...worldRows(text, mutate),
+    ...worldRows(text, lines => mutate([...lines, ...workingRows])),
   ]
 
   // ── boots: arms 0/1 in the root realm, arms 2/3/5 inside the generated world, arm 4 mutated ──
@@ -468,7 +540,7 @@ try {
     const tool = ctx.get('tools').get('read_image')
     const first = tool === undefined ? null : await callReadImage(tool, png)
     add('0-control-nonwsl-world', first !== null && first.isError === false, first === null
-      ? 'read_image is not registered at all in a root-realm world — the fs tool suite did not mount'
+      ? `read_image is not registered at all in a root-realm world — the fs tool suite did not mount; entries not in state 2: ${unactivated(ctx)}`
       : `${first.ms}ms ${first.isError ? 'isError=true' : 'ok'}: ${first.message}`
         + ` (route ${JSON.stringify(info?.inputModalities)}, tool read from ${providers['tool-fs'].file})`)
 
@@ -514,7 +586,7 @@ try {
     realmAnswer = tool === undefined ? null : await callReadImage(tool, png)
     add('2-isolate-world-read-image', realmAnswer !== null && realmAnswer.message === REALM_ERROR,
       realmAnswer === null
-        ? 'read_image is not registered inside the isolate world — the world did not mount the fs tool suite, so this arm measures the harness'
+        ? `read_image is not registered inside the isolate world — the world did not mount the fs tool suite, so this arm measures the harness; entries not in state 2: ${unactivated(ctx)}`
         : `${realmAnswer.ms}ms ${realmAnswer.isError ? 'isError=true' : 'ok'}: ${JSON.stringify(realmAnswer.message)}`
           + ` (expected verbatim: ${JSON.stringify(REALM_ERROR)}; thrown at ${realmAnswer.frame})`)
 

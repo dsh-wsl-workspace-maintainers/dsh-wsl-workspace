@@ -39,6 +39,7 @@
     "test:host-probe": "node tests/support/w51-probe.mjs",
     "test:realm-probe": "node --experimental-strip-types tests/support/w54-isolate-probe.mjs",
     "test:confine-probe": "node --experimental-strip-types tests/support/w78-confine-probe.mjs",
+    "test:rc2-consumers": "node --experimental-strip-types tests/support/w92-rc2-consumers.mjs",
     "test:command-census": "node tests/support/w51-command-census.mjs"
   },
   "exports": {
