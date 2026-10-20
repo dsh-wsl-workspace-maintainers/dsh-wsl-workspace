@@ -1,0 +1,73 @@
+name: release
+# Publishes the package to npm through **Trusted Publishing** (OIDC): no token, no OTP, no secret on any
+# machine. The one-time half lives on npmjs.com — Package → Settings → Trusted publishing → GitHub Actions,
+# with this repository and the workflow file name below; after that a tag is the whole release gesture.
+#
+# Triggers:
+#   · push of a `v*` tag   — the normal path: the tag names the commit that was gated on main;
+#   · workflow_dispatch    — republish/retry for an existing tag (e.g. the tag that predates this file).
+# The tag is the version: the job refuses to publish when `package.json` disagrees with it.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to publish (e.g. v0.7.8); empty = the ref that triggered the run'
+        required: false
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Resolve the tag this run publishes
+        id: ref
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          if [ -z "$TAG" ]; then TAG="${GITHUB_REF_NAME}"; fi
+          case "$TAG" in
+            v*) ;;
+            *) echo "::error::expected a v* tag, got '$TAG'"; exit 1 ;;
+          esac
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ref.outputs.tag }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: the tag agrees with the package version
+        run: |
+          WANT="${{ steps.ref.outputs.tag }}"
+          WANT="${WANT#v}"
+          HAVE="$(node -p "require('./package.json').version")"
+          if [ "$WANT" != "$HAVE" ]; then
+            echo "::error::tag says $WANT, package.json says $HAVE"; exit 1
+          fi
+      - name: committed lib/ is what HEAD says it is
+        run: node scripts/verify-lib-sync.mjs --check-only
+      - name: rebuild must reproduce the committed lib/ byte-for-byte
+        run: |
+          npm run build
+          if ! git diff --quiet -- lib; then
+            echo "::error::lib/ in the tag is not what a build of its src/ produces"
+            git diff --stat -- lib
+            exit 1
+          fi
+      - name: a plain npm install of this tree works
+        run: node scripts/verify-install.mjs
+      - name: publish through Trusted Publishing
+        # No NODE_AUTH_TOKEN: npm exchanges the workflow's OIDC identity for a short-lived publish grant,
+        # and `--provenance` records which commit and workflow produced these bytes.
+        run: npm publish --registry=https://registry.npmjs.org --access public --provenance
