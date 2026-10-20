@@ -41,7 +41,11 @@ const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></
 })
 globalThis.window = dom.window
 globalThis.document = dom.window.document
-Object.defineProperty(globalThis, 'navigator', { value: dom.window.navigator, configurable: true })
+// Node ships its own `navigator` (a getter, and not configurable on every release). React does not
+// need it, so a refusal here is not a failure — the DOM's document is what the renderer reads.
+try {
+  Object.defineProperty(globalThis, 'navigator', { value: dom.window.navigator, configurable: true })
+} catch { /* keep the runtime's own navigator */ }
 globalThis.HTMLElement = dom.window.HTMLElement
 globalThis.Node = dom.window.Node
 globalThis.Event = dom.window.Event
