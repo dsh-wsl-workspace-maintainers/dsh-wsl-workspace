@@ -274,14 +274,27 @@ export function apply (ctx: Context): void {
           },
         },
       },
-      render: (_args: unknown, value: ImageOutcome) => [{
-        type: 'text',
-        text: formatImageReadOutput(value.path, value.image),
-      }, {
-        type: 'image',
-        attachment: { ...value.image },
-      }],
-      presentationMeta: (_args: unknown, value: ImageOutcome) => ({ path: value.path }),
+      // Typed against the host's own render contract (`dsh-tool-fs`'s `read_image`): the second argument's
+      // `image` is OPTIONAL there, and our callback assumed it was present. With a pinned closure that lacks
+      // `@deepseek-ai/dsh-attachment` the host types resolve to `any` and this never showed; once the closure
+      // is complete, `typecheck:gate` reads 209 -> 210 on exactly this line (measured 2026-10-19). `execute`
+      // below always sets `image`, so the otherwise branch is the shape the type asks for, not a new path.
+      render: (_args: { file_path: string }, value: { path: string; image?: ImageRef }) => {
+        if (value.image === undefined) return [{ type: 'text', text: `<path>${value.path}</path>` }]
+        return [{
+          type: 'text',
+          text: formatImageReadOutput(value.path, value.image),
+        }, {
+          type: 'image',
+          // The host's `ImageBlock.attachment` is `ImageAttachmentRef`, whose `attachmentId` and `mediaType`
+          // are branded strings; our value carries the identical fields as plain strings, and this package
+          // deliberately takes no type dependency on `@deepseek-ai/dsh-attachment` (it is an optional peer of
+          // the fs tool suite, absent from the shipped closure). One field is bridged here, and the runtime
+          // shape is what the host's own schema check validates at the output gate.
+          attachment: { ...value.image } as unknown as never,
+        }]
+      },
+      presentationMeta: (_args: { file_path: string }, value: { path: string }) => ({ path: value.path }),
     },
     presentCall: (args: { file_path?: string }) => ({
       card: 'generic',

@@ -27,6 +27,7 @@
     "@deepseek-ai/dsh-terminal-bash": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-runtime": "0.1.1-rc.2",
     "@deepseek-ai/dsh-client-locale": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-client-ui-sidebar": "0.2.1-rc.2"
+    "@deepseek-ai/dsh-client-ui-sidebar": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-attachment": "0.2.1-rc.2"
   }
 }

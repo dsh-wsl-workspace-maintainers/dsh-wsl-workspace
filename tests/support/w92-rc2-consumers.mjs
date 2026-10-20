@@ -337,12 +337,10 @@ await arm('changes', [
     // The emitter of `fs/write-intent` is `dsh-tool-fs`, whose PEER `@deepseek-ai/dsh-attachment` npm does
     // not install under `ci/deps/.npmrc legacy-peer-deps` — measured both ways on 2026-10-19: with that
     // package in the closure this arm reads `changes-write`/`changes-intent`/`changes-resolve`; without it
-    // the row for `@deepseek-ai/dsh-tool-fs` activates as nothing and there is no tool to ask. Pinning the
-    // peer would make the arm run, and it also unmasks one real type error in our own source
-    // (`src/host/wsl-image-tool.ts:277`, `value.image` optional in the host's type, assumed present here),
-    // which the maintainer chose to keep out of this frame. So this is a named skip, not a pass and not a
-    // red: the pair stays uncovered in the ledger, with the reading it produced on the peer-carrying tree
-    // recorded in that row's cell.
+    // the row for `@deepseek-ai/dsh-tool-fs` activates as nothing and there is no tool to ask. The peer is
+    // pinned as of 2026-10-20 (after the type mismatch it unmasked at `src/host/wsl-image-tool.ts` was
+    // fixed), so this branch is what a tree WITHOUT the peer reports: a named skip, never a red — the row's
+    // cell then says what was read on a tree that carried it.
     if (host('@deepseek-ai/dsh-attachment') === null) {
       console.error('SKIP: w92 arm changes (fs x dsh-workspace-changes) — `dsh-tool-fs`, the emitter of fs/write-intent,'
         + ' needs its peer @deepseek-ai/dsh-attachment, which npm does not install under ci/deps/.npmrc legacy-peer-deps;'

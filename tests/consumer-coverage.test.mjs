@@ -47,16 +47,16 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const LEDGER = join(repoRoot, 'docs', 'CONSUMER-COVERAGE.md')
 
 /**
- * Rows that are not `已调用` as of 2026-10-19: 42 of 48. The six covered pairs are `shell` x
+ * Rows that are not `已调用` as of 2026-10-20: 41 of 48. The seven covered pairs are `shell` x
  * `dsh-tool-bash` (`scripts/compatibility/bash-parity-real.mjs`), `fs` x `dsh-tool-fs`
- * (`tests/support/w54-isolate-probe.mjs`, the #54 arms), and four of the five pairs the 0.2.1-rc.2
- * bump derived (`fs` x `dsh-experimental-worktree`, `fs` x `dsh-working-directory`, `sandbox` x
- * `dsh-experimental-worktree`, `terminals` x `dsh-tool-terminal`), each answered by a call in
- * `tests/support/w92-rc2-consumers.mjs`. The fifth, `fs` x `dsh-workspace-changes`, stays uncovered on
- * purpose: its emitter is `dsh-tool-fs`, whose peer npm does not install under `legacy-peer-deps`, and
- * pinning that peer unmasks a real mismatch at `src/host/wsl-image-tool.ts:277` (the gate goes
- * 209 -> 210) — the maintainer kept the closure change out of this frame, so that arm prints a named
- * SKIP and the row says what was read on the tree that did carry it.
+ * (`tests/support/w54-isolate-probe.mjs`, the #54 arms), and all five pairs the 0.2.1-rc.2 bump
+ * derived (`fs` x `dsh-experimental-worktree`, `fs` x `dsh-working-directory`, `fs` x
+ * `dsh-workspace-changes`, `sandbox` x `dsh-experimental-worktree`, `terminals` x
+ * `dsh-tool-terminal`), each answered by a call in `tests/support/w92-rc2-consumers.mjs`. The last one
+ * needs its emitter (`dsh-tool-fs`) to load, which needs the peer `@deepseek-ai/dsh-attachment` that npm
+ * skips under `legacy-peer-deps`; pinning that peer unmasked a real type mismatch in
+ * `src/host/wsl-image-tool.ts` (the gate read 209 -> 210), so the mismatch was fixed first and the pin
+ * landed second. A tree without the peer prints a named SKIP instead of a red.
  *
  * Lower this number by covering a row; never raise it without a named reason in the PR — the point of
  * the ceiling is that a host upgrade adding a consumer becomes a red frame, not a silent new row.
@@ -68,7 +68,7 @@ const LEDGER = join(repoRoot, 'docs', 'CONSUMER-COVERAGE.md')
  * rows carry what each call answered rather than a bare "done" — including the two answers that say the
  * pair never reaches our provider at all in the shape the product mounts it.
  */
-const NOT_COVERED_CEILING = 42
+const NOT_COVERED_CEILING = 41
 
 /** Parse the ledger's table body: rows whose first cell is a backticked service name. */
 function ledgerRows () {
