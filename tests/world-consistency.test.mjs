@@ -116,23 +116,31 @@ function terminalOf(cwd, requested = '/tmp/g1/probe') {
  * The skill provider's seam, measured in *whether it looked at all*.
  *
  * A catalog that finds no skills and a catalog that never looked are the same empty array to a user,
- * and that is exactly the failure being policed here — so the reading is "how many substrate calls
- * did this lookup make", not "what did it return". A fake substrate (empty directories) keeps the
- * answer platform-free: no UNC string is ever asserted, so this reads the same on the Windows and
- * Ubuntu runners.
+ * and that is exactly the failure being policed here — so the reading is "how many substrate calls did
+ * this lookup make", not "what did it return". A fake substrate (empty directories) keeps the answer
+ * platform-free: no UNC string is ever asserted, so this reads the same on the Windows and Ubuntu
+ * runners.
+ * @param cwd - the session workspace path.
+ * @param tree - optional fake tree, keyed by a normalised path (see {@link normalisePath}).
+ * @returns `{kind:'world'}` with the read count, or `{kind:'quiet'}` when it never touched the substrate.
  */
 async function skillsOf(cwd) {
-  const reads = { count: 0 }
+  const reads = { count: 0, paths: [] }
+  const record = path => { reads.count += 1; reads.paths.push(path) }
   const io = {
-    readdir: async () => { reads.count += 1; return [] },
-    readFile: async () => { reads.count += 1; return '' },
-    stat: async () => { reads.count += 1; return { isDirectory: true } },
+    readdir: async path => { record(path); return [] },
+    readFile: async path => { record(path); return '' },
+    stat: async path => { record(path); return { isDirectory: true } },
   }
   const control = { signal: new AbortController().signal, invalidate: () => {} }
   const provider = new WslSkillsProvider(control, io)
-  await provider.list(cwd === undefined ? {} : { cwd })
-  return reads.count === 0 ? { kind: 'quiet' } : { kind: 'world', reads: reads.count }
+  const candidates = await provider.list(cwd === undefined ? {} : { cwd })
+  if (reads.count === 0) return { kind: 'quiet' }
+  return { kind: 'world', reads: reads.count, paths: reads.paths, candidates }
 }
+
+/** Paths compared as the substrate sees them: either spelling, either slash, case-folded. */
+const normalisePath = path => path.replaceAll('\\', '/').toLowerCase()
 
 /**
  * The table. `world` is what every provider that serves the shape must derive; `expect` names, per
@@ -202,22 +210,13 @@ const SHAPES = [
  * agreeing, so the entry cannot outlive the defect.
  */
 const REGISTERED_GAPS = new Map([
-  [
-    'skills/drive-workspace',
-    'src/host/wsl-skills.ts:651 answers [] before touching the substrate: `parseWslUnc(cwd)` is the '
-    + 'only shape it knows, so a drive-path workspace (which registers under `F:\\…`) gets an empty '
-    + 'catalog with no error — the same user-visible outcome as #10. Owned by #101; the fix is its '
-    + 'own change (translate through `windowsToMntPath` + the stored distro, as search does).',
-  ],
-  [
-    'terminal/drive-workspace',
-    'src/host/wsl-terminal-tool.ts backendCwd refuses a Linux `cwd` when the session workspace is a '
-    + 'drive path, saying the distribution is unknown — true when it was written, stale since #91 '
-    + 'taught the plugin to read the drive registration. The refusal is explicit and has a workaround '
-    + '(pass a drive path), which is why it is registered rather than shipped as a red gate. Owned by '
-    + '#101.',
-  ],
+  // Empty, and that is the reading: the two cells that were registered here (`skills/drive-workspace`
+  // and `terminal/drive-workspace`) were closed by the product change that followed (#101). A gap can
+  // only be recorded against a cell the table expects to work, and the arithmetic below reddens in both
+  // directions — so a new entry has to be earned by a real divergence, not by preference.
 ])
+
+
 
 /** The providers the table drives, in the order a failure is reported. */
 const PROVIDERS = ['search', 'bash', 'terminal', 'skills']
@@ -249,10 +248,10 @@ const gapKey = (shapeId, provider) => `${provider}/${shapeId}`
  * @param reading - what it answered.
  * @returns the disagreements this cell contributes; empty is a pass.
  */
-function judge(shape, provider, reading) {
+function judge(shape, provider, reading, gaps = REGISTERED_GAPS) {
   const expected = shape.expect[provider]
   const key = gapKey(shape.id, provider)
-  const registered = REGISTERED_GAPS.has(key)
+  const registered = gaps.has(key)
 
   if (registered && expected === 'world') {
     // A registered gap is a cell that SHOULD serve the shape and does not. If it starts serving, the
@@ -294,26 +293,26 @@ test('every provider derives the same world for the same cwd, or refuses out lou
 })
 
 test('the registry arithmetic bites in both directions', async () => {
-  // Mutation control for the gate's own logic, in the shape `client-classnames` established. Each
-  // assertion below is one way the gate could be a rubber stamp: a gap that closes and stays
-  // declared, a gap recorded against a cell that was never expected to work, and a provider that
-  // refuses where the table says it serves.
+  // Mutation control for the gate's own logic, in the shape `client-classnames` established: the table
+  // is empty today (the two cells it used to carry were closed by the product change behind #101), so
+  // this exercises the arithmetic against a registry it builds itself — otherwise the control would
+  // disappear exactly when the debt is paid, which is the moment it must still be able to bite.
   const shape = SHAPES.find(entry => entry.id === 'drive-workspace')
-  assert.ok(shape !== undefined, 'the drive-workspace cell must exist for its gap to be recorded')
-  assert.equal(shape.expect.skills, 'world', 'the registered cell must be one the table expects to work')
+  assert.ok(shape !== undefined, 'the drive-workspace cell must exist')
+  const probeGaps = new Map([['skills/drive-workspace', 'control: a registered cell']])
 
-  const closed = judge(shape, 'skills', { kind: 'world', reads: 3 })
+  const closed = judge(shape, 'skills', { kind: 'world', reads: 3 }, probeGaps)
   assert.equal(closed.length, 1, 'a paid debt must redden, not pass')
   assert.match(closed[0], /delete the entry from REGISTERED_GAPS/)
 
-  const stillOpen = judge(shape, 'skills', { kind: 'quiet' })
+  const stillOpen = judge(shape, 'skills', { kind: 'quiet' }, probeGaps)
   assert.deepEqual(stillOpen, [], 'an open, declared gap is the one state that may pass')
 
   const relative = SHAPES.find(entry => entry.id === 'relative')
   assert.ok(relative !== undefined)
   assert.deepEqual(judge(relative, 'terminal', { kind: 'refused' }), [],
     'a cell the table expects to refuse passes when it refuses')
-  const misRegistered = judge({ ...shape, expect: { ...shape.expect, skills: 'quiet' } }, 'skills', { kind: 'quiet' })
+  const misRegistered = judge({ ...shape, expect: { ...shape.expect, skills: 'quiet' } }, 'skills', { kind: 'quiet' }, probeGaps)
   assert.equal(misRegistered.length, 1, 'a gap recorded against a cell the table does not expect to work must redden')
   assert.match(misRegistered[0], /a gap can only be recorded/)
 
@@ -480,3 +479,20 @@ test('the derivation reddens on a provider that was never registered', () => {
 })
 
 test.after(() => { rmSync(home, { recursive: true, force: true }) })
+
+test('a drive workspace is read through the drive spelling, never the 9P share', async () => {
+  // The cell above says the lookup happened; this says it happened *over a readable path*. 9P cannot
+  // serve drvfs — `\\wsl.localhost\<distro>\mnt\f\…` answers `Access is denied`, which is why
+  // `src/fs.ts` and `src/host/wsl-search.ts` translate `/mnt/<drive>` to its drive path. The skill
+  // provider now does the same, and the assertion is on the spelling rather than on the catalog
+  // (the 84-case `tests/wsl-skills.test.ts` owns discovery): every read of a `/mnt/<drive>` path must
+  // name the drive, and none may name the share.
+  const reading = await skillsOf(DRIVE_CWD)
+  assert.equal(reading.kind, 'world', 'a drive workspace must be served at all')
+  const reads = reading.paths
+  assert.ok(reads.some(path => normalisePath(path).startsWith('f:/techenergy/code/scanner')),
+    `not one read used the drive spelling: ${JSON.stringify(reads)}`)
+  const shared = reads.filter(path => normalisePath(path).includes('wsl.localhost') && normalisePath(path).includes('/mnt/'))
+  assert.deepEqual(shared, [],
+    `a /mnt path was read through the share, which drvfs cannot serve: ${JSON.stringify(shared)}`)
+})

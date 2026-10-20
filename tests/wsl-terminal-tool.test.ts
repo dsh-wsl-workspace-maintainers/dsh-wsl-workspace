@@ -92,7 +92,7 @@ test('a Linux cwd is translated through the session distribution, never handed t
   assert.equal(backendCwd('sub/dir', UNC), '\\\\wsl.localhost\\Ubuntu\\home\\ruler\\proj\\sub\\dir', 'a relative path joins the session directory')
   assert.equal(backendCwd('D:\\work', UNC), 'D:\\work', 'a Windows drive path passes through (the relay maps it)')
   assert.equal(backendCwd('\\\\wsl.localhost\\Other\\srv', UNC), '\\\\wsl.localhost\\Other\\srv', 'a UNC path is already usable')
-  assert.throws(() => backendCwd('/tmp', 'D:\\plain'), /not a WSL UNC path/, 'a Linux path with no distribution to translate through is refused, not guessed')
+  assert.throws(() => backendCwd('/tmp', 'D:\\plain'), /names no distribution/, 'a Linux path with no distribution to translate through is refused, not guessed')
 })
 
 test('the only open session needs no name, and an ambiguous pick says which ones exist', () => {

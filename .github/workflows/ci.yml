@@ -216,6 +216,17 @@ jobs:
         run: npm run build
       - name: win32-semantics unit files (wsl-skills + fs-policy assume drive-shaped cwd)
         run: npm run test:win32
+      # The session gate (#101, G5): a real host, the product's own generated world, and six tool calls
+      # inside one session — the reading `compatible` rests on. It boots a profile and drives a
+      # distribution, so it runs once per WSL version on the lib plane only (the world's rows point at
+      # lib/*.js by construction, which makes the src pass redundant for it).
+      #
+      # WSL2 only for now: the probe has been measured there, and WSL1's kernel exposes a different
+      # wait surface. Adding WSL1 is a one-line change once that reading exists — which is the honest
+      # order, not the optimistic one.
+      - name: session gate (real host, six tools, one session)
+        if: matrix.plane == 'lib' && matrix.wslVersion == 2
+        run: npm run test:session
       - name: run the src-plane gates
         # The src pass — the behaviour the gates had before `lib` was ever loaded. `lib/` is what
         # ships (issue #44 §1), so this half is the comparison arm rather than the product claim: it is

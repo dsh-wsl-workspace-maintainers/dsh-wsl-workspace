@@ -29,7 +29,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 
-import { joinUnc, parseWslUnc } from '../shared/paths.ts'
+import { joinUnc, parseWslUnc, windowsToMntPath } from '../shared/paths.ts'
+import { getWindowsWorkspace } from '../shared/wsl-credentials.ts'
 
 /** The tool name this plugin registers. */
 export const TOOL_NAME = 'wsl_terminal'
@@ -152,9 +153,14 @@ const READ_LINES = 40
  * The backend hands this string to the PTY child (this plugin's relay) as its working
  * directory, so it has to be a path a Windows process can start in: a WSL UNC path, or a
  * Windows drive path the relay maps to `/mnt/<drive>`. A Linux path is translated through
- * the session's own distribution, which is the only place its distro is known — and when
- * the session itself is not a UNC workspace there is nothing to translate through, which
- * is said out loud rather than turned into a shell that starts somewhere else.
+ * the session's own distribution.
+ *
+ * Two workspace shapes carry a distribution: a WSL UNC path (in the path itself) and a drive
+ * path registered as a `/mnt/<drive>` workspace, whose distribution the dialog stored — the
+ * same registration #91 taught the search twin to read. When neither names one, the refusal is
+ * out loud rather than a shell that starts somewhere else (issue #101, G1's
+ * `terminal/drive-workspace`: this used to refuse a drive workspace's Linux path although the
+ * store had the answer).
  * @param requested - the caller's `cwd`, if any.
  * @param sessionCwd - the session workspace path.
  * @returns the backend cwd, or undefined to let the backend use the session workspace.
@@ -163,11 +169,14 @@ export function backendCwd(requested: string | undefined, sessionCwd: string | u
   if (requested === undefined || requested === '') return sessionCwd
   if (parseWslUnc(requested) !== null || /^[A-Za-z]:[\\/]/.test(requested)) return requested
   const unc = sessionCwd === undefined ? null : parseWslUnc(sessionCwd)
-  if (unc === null) {
-    throw new Error(`wsl_terminal: "${requested}" is a Linux path but this session's workspace is not a WSL UNC path, so its distribution is unknown — pass an absolute WSL path (\\\\wsl.localhost\\<distro>\\…) or a Windows drive path`)
+  const stored = unc === null && sessionCwd !== undefined ? getWindowsWorkspace(sessionCwd) : undefined
+  const distro = unc !== null ? unc.distro : stored?.distro
+  if (distro === undefined || distro === '') {
+    throw new Error(`wsl_terminal: "${requested}" is a Linux path but this session's workspace names no distribution (not a WSL UNC path, and no stored /mnt/<drive> registration), so it cannot be translated — pass an absolute WSL path (\\\\wsl.localhost\\<distro>\\…) or a Windows drive path`)
   }
+  const linuxCwd = unc !== null ? unc.linuxPath : windowsToMntPath(sessionCwd ?? '') ?? '/'
   const tail = requested.replace(/^\/+/, '')
-  return joinUnc(unc.distro, requested.startsWith('/') ? requested : `${unc.linuxPath.replace(/\/+$/, '')}/${tail}`)
+  return joinUnc(distro, requested.startsWith('/') ? requested : `${linuxCwd.replace(/\/+$/, '')}/${tail}`)
 }
 
 /**

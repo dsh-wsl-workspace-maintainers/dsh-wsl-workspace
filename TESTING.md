@@ -96,9 +96,9 @@ npm run test:session
 `tests/support/g5-session-probe.mjs` boots a real profile with the product's **own generated world**
 inserted verbatim, then calls `bash`, `read`, `grep`, `glob`, `read_image` and (where a jobs registry
 is mounted) `bash` + `job_output` inside one `\\wsl.localhost\<distro>\…` session. It needs Windows, a
-WSL distribution (`WSL_COMPAT_DISTRO`, default `Ubuntu`), the pinned closure and a built `lib/`; it is
-**not** in the per-commit CI, and it is the reading a `compatible` declaration should rest on — the
-compat script answers install/start/uninstall, this answers "and the six tools work".
+WSL distribution (`WSL_COMPAT_DISTRO`, default `Ubuntu`), the pinned closure and a built `lib/`. It runs
+in `wsl-gate` on the lib plane (WSL2), and it is the reading a `compatible` declaration should rest on
+— the compat script answers install/start/uninstall, this answers "and the six tools work".
 
 ## Provider parity and compatibility checks
 

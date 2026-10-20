@@ -36,8 +36,51 @@
 import { readdir, readFile, stat } from 'node:fs/promises'
 import type { Dirent } from 'node:fs'
 import { join as joinWindowsPath, posix } from 'node:path'
-import { isAbsoluteLinuxPath, joinUnc, parseWslUnc, uncToLinux } from '../shared/paths.ts'
+import { isAbsoluteLinuxPath, joinUnc, mntToWindowsPath, parseWslUnc, uncToLinux, windowsToMntPath } from '../shared/paths.ts'
 import { resolveLinuxSymlinks } from '../shared/links.ts'
+import { getWindowsWorkspace } from '../shared/wsl-credentials.ts'
+import { defaultDistroSync } from '../shared/wsl.ts'
+
+
+/**
+ * The path a substrate read should use for one Linux path inside a distribution.
+ *
+ * 9P cannot serve drvfs, so `\\wsl.localhost\<distro>\mnt\d\...` answers `Access is denied` (the same
+ * measurement `src/fs.ts`, `src/host/wsl-search.ts` and issue #86 rest on). A `/mnt/<drive>` path is
+ * therefore read through its Windows drive spelling, exactly as the fs provider translates it, and
+ * everything else stays on the distribution's own share.
+ * @param distro - the distribution the path lives in.
+ * @param linuxPath - an absolute Linux path.
+ * @returns the path to hand `readdir`/`stat`/`readFile`.
+ */
+function readablePath(distro: string, linuxPath: string): string {
+  return mntToWindowsPath(linuxPath) ?? joinUnc(distro, linuxPath)
+}
+
+/**
+ * Which distribution and Linux directory a session cwd names.
+ *
+ * Two workspace shapes reach this provider: a WSL UNC path (the distribution is in the path) and a
+ * Windows drive path registered as a `/mnt/<drive>` workspace (9P cannot serve drvfs, so those register
+ * under their drive path and the distribution comes from the store the dialog wrote, then the session's
+ * own env fact, then the registry default — the same chain bash resolves). Returning `null` here is what
+ * made a drive-path workspace show **no skills and no error**: the provider only knew the UNC shape, and
+ * a lookup that declines silently reads exactly like a project without skills (issue #101, G1's
+ * `skills/drive-workspace`).
+ * @param cwd - the session workspace path.
+ * @returns `{distro, linuxPath}`, or null when this cwd is not a WSL workspace.
+ */
+function workspaceOf(cwd: string | undefined): { distro: string; linuxPath: string } | null {
+  if (cwd === undefined || cwd === '') return null
+  const unc = parseWslUnc(cwd)
+  if (unc !== null) return { distro: unc.distro, linuxPath: unc.linuxPath === '' ? '/' : unc.linuxPath }
+  const linuxPath = windowsToMntPath(cwd)
+  if (linuxPath === null) return null
+  const stored = getWindowsWorkspace(cwd)
+  const distro = stored?.distro ?? process.env.DSH_WSL_DISTRO ?? defaultDistroSync()
+  if (distro === undefined || distro === '') return null
+  return { distro, linuxPath }
+}
 
 /** Project ranks copied from @deepseek-ai/dsh-skill-filesystem so WSL and host entries interleave identically. */
 const PROJECT_DSH_RANK = 100
@@ -202,7 +245,7 @@ async function nearestGitAncestor(distro: string, linuxDir: string, io: WslSkill
   let current = linuxDir
   for (let levels = 0; levels <= MAX_ANCESTOR_WALK; levels += 1) {
     try {
-      await io.stat(joinUnc(distro, posix.join(current, '.git')))
+      await io.stat(readablePath(distro, posix.join(current, '.git')))
       return current
     } catch {
       // No `.git` marker at this level; keep walking towards the filesystem root.
@@ -238,7 +281,7 @@ async function probeDirectory(distro: string, dir: string, depth: number, io: Ws
   let entries: Dirent[] | undefined
   if (depth < MAX_SCAN_DEPTH) {
     try {
-      entries = await io.readdir(joinUnc(distro, dir), { withFileTypes: true })
+      entries = await io.readdir(readablePath(distro, dir), { withFileTypes: true })
     } catch {
       // An unreadable directory (permissions, vanished mid-walk) prunes its
       // subtree, but the directory's own markers may still be worth probing.
@@ -267,7 +310,7 @@ async function probeDirectory(distro: string, dir: string, depth: number, io: Ws
     // bounded: every hop increments the depth (capped by MAX_SCAN_DEPTH)
     // and the walk as a whole by MAX_VISITED_DIRECTORIES.
     try {
-      const target = await io.stat(joinUnc(distro, childPath))
+      const target = await io.stat(readablePath(distro, childPath))
       // A substrate that resolves Linux links itself answers here; a link
       // to a file is not a project directory either way.
       if (target.isDirectory()) children.push([childPath, depth + 1])
@@ -381,7 +424,7 @@ async function skillRootsOfDirectory(
   const result: SkillRoot[] = []
   for (const [marker, source, rank] of PROJECT_SKILL_MARKERS) {
     if (!markers.includes(marker)) continue
-    const path = joinUnc(distro, posix.join(linuxDir, marker, 'skills'))
+    const path = readablePath(distro, posix.join(linuxDir, marker, 'skills'))
     try {
       const info = await io.stat(path)
       if (info.isDirectory()) result.push({ path, source, rank })
@@ -648,8 +691,9 @@ export class WslSkillsProvider {
   async list(options: WslSkillLookupOptions): Promise<WslSkillCandidate[]> {
     this.control.signal.throwIfAborted()
     options.signal?.throwIfAborted()
-    const unc = options.cwd === undefined ? null : parseWslUnc(options.cwd)
-    if (unc === null) return []
+    const workspace = workspaceOf(options.cwd)
+    if (workspace === null) return []
+    const unc = { distro: workspace.distro, linuxPath: workspace.linuxPath }
     // Host parity: the session's project root is the nearest `.git` ancestor
     // of the cwd, so lookups from inside a project subtree still see that
     // project's skills; nested projects below it join via the bounded BFS.
