@@ -40,7 +40,9 @@
     "test:realm-probe": "node --experimental-strip-types tests/support/w54-isolate-probe.mjs",
     "test:confine-probe": "node --experimental-strip-types tests/support/w78-confine-probe.mjs",
     "test:rc2-consumers": "node --experimental-strip-types tests/support/w92-rc2-consumers.mjs",
-    "test:command-census": "node tests/support/w51-command-census.mjs"
+    "test:command-census": "node tests/support/w51-command-census.mjs",
+    "test:world": "node --experimental-strip-types --test tests/world-consistency.test.mjs",
+    "test:client": "node --test tests/client-dom.test.mjs"
   },
   "exports": {
     ".": "./lib/index.js",
@@ -84,6 +86,9 @@
   },
   "devDependencies": {
     "@types/node": "^22.15.21",
+    "jsdom": "^26.1.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
     "tsdown": "^0.13.5",
     "typescript": "^5.8.3"
   },

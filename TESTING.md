@@ -3,8 +3,9 @@
 This document describes how to verify `dsh-wsl-workspace` after a change or before a release. The suite covers unit tests, the two preset-channel integration tests (the retired directory generation and the declaration generation), a real-WSL smoke test, and a post-build lib verification gate.
 
 > **Fast path (same commands CI runs):** after `npm ci && node ci/install-pinned.mjs`,
-> run `npm run test:unit`, `npm run test:node`, `npm run test:profile`, `npm run test:wsl`
-> (Windows + a real distribution), `npm run typecheck:gate` and `npm run verify:artifact`.
+> run `npm run test:unit`, `npm run test:client`, `npm run test:node`, `npm run test:world`,
+> `npm run test:profile`, `npm run test:wsl` (Windows + a real distribution),
+> `npm run typecheck:gate` and `npm run verify:artifact`.
 > The full inventory of every check — command, prerequisites, CI home, and what is
 > still human — is [docs/CHECK-CATALOG.md](docs/CHECK-CATALOG.md). This document keeps
 > the background and the release checklist.
@@ -32,6 +33,32 @@ Coverage:
 | `tests/shell.test.ts` | The login-shell `cd` prefix preserves the resolved workdir (including single-quote escaping); non-login shells leave the command unchanged. |
 | `tests/paths.test.ts` | UNC ↔ Linux path translation, `/mnt/<drive>` mapping, canonical Windows path keys, WSL username validation. |
 | `tests/wsl-skills.test.ts` | The WSL skill provider (issue #10): non-WSL lookups return nothing, nested `.dsh/skills` / `.agents/skills` discovery with host ranks/sources, `get()` body loading, pruning of `node_modules` / dot-directories, frontmatter validation **including block scalars**, depth and skill-root budgets, the nearest-`.git`-ancestor rule (a cwd deeper than the project root still sees the project's skills, and skills above that ancestor do not leak), the skill-root cap, the **10-second per-scan-root lookup cache** (copy semantics, TTL expiry, `get()` staying live), **directory-symlink following** (linked projects discovered, aliasing deduplicated, dangling symlinks pruned, hops bounded by depth). |
+
+## The client's interaction states (issue #101)
+
+```powershell
+npm run test:client
+```
+
+`tests/client-dom.test.mjs` mounts the **committed** `lib/client.js` — the bytes a user loads — with
+real React in jsdom, and asserts what is rendered for every state a user can reach: a healthy open
+(with no error row at all), a failed generation, a refused distribution list, a failed directory
+read, the help panel round-trip, Escape while idle and while busy, and Retry. The presence of a node
+is never the assertion; the text in it is. jsdom/react/react-dom are devDependencies — they are not
+shipped, and the bundle still takes React from the host's loader.
+
+## The world-consistency table (issue #101)
+
+```powershell
+npm run test:world
+```
+
+Every provider decides for itself "which distribution and which Linux directory is this session in?".
+`tests/world-consistency.test.mjs` feeds one cwd table to every such seam (`resolveTarget`,
+`buildSessionSpec`, `backendCwd`, the skill provider, and the client's reference translation) and
+requires agreement, an out-loud refusal, or a registered gap with its ticket. The provider list is
+derived from `src/`, so a new provider cannot be added without a row. It needs the pinned host tree
+(`node ci/install-pinned.mjs`).
 
 ## Provider parity and compatibility checks
 
