@@ -50,8 +50,8 @@ const MUTATIONS = [
     id: 'paths-drive-case',
     file: 'src/shared/paths.ts',
     note: 'a drive letter stops being case-folded, so every /mnt/<drive> key drifts on a lowercase path',
-    find: "(match[1] ?? '').toLowerCase()",
-    replace: "(match[1] ?? '')",
+    find: "return `/mnt/${(match[1] ?? '').toLowerCase()}",
+    replace: "return `/mnt/${(match[1] ?? '')}",
   },
   {
     id: 'decode-utf8-always',
@@ -162,6 +162,19 @@ const only = (() => {
 })()
 
 assertCleanTree()
+
+// Every gate must be green on the clean tree before a single defect is planted. Without this, a gate that
+// is red for an environment reason (jsdom not installed in this checkout, a stale host tree) answers
+// "caught" for every mutation, and the sweep reports a detection rate it never measured.
+for (const gate of [...GATES, ...NODE_GATES]) {
+  const baseline = spawnSync('npm', ['run', gate.script], { cwd: repoRoot, encoding: 'utf8', shell: true })
+  if (baseline.status !== 0) {
+    console.error(`mutation-sweep: \`${gate.script}\` is red on a clean tree — this is an environment, not a measurement.`)
+    console.error((baseline.stderr ?? '').trim().split('\n').slice(-6).join('\n'))
+    process.exit(2)
+  }
+}
+
 const selected = MUTATIONS.filter(mutation => only === undefined || only.has(mutation.id))
 if (selected.length === 0) {
   console.error(`mutation-sweep: --only named nothing in the table (${MUTATIONS.map(m => m.id).join(', ')})`)
