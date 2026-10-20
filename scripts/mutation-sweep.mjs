@@ -169,9 +169,23 @@ function buildLib() {
   return { ok: true, detail: '' }
 }
 
-/** Run the gates in order and stop at the first red; returns the id that caught it, or null. */
-function firstRed(gates) {
+/**
+ * Run the gates in order and stop at the first red; returns the id that caught it, or null.
+ *
+ * The build happens **lazily, only if the client gate is reached**: that gate is the one reading `lib/`,
+ * and every other gate loads `src/` directly. Building up front would make the sweep's verdict depend on
+ * the build pipeline for mutations an earlier gate already catches — measured the hard way, twice.
+ * @param gates - the gates to run, in order.
+ * @param needsBuild - whether the mutation lives in a module the client bundle is built from.
+ * @returns the id of the first red gate, or null when all are green.
+ */
+function firstRed(gates, needsBuild) {
+  let built = null
   for (const gate of gates) {
+    if (gate.id === 'client' && needsBuild && built === null) {
+      built = buildLib()
+      if (!built.ok) return `client-build: ${built.detail}`
+    }
     const run = spawnSync('npm', ['run', gate.script], { cwd: repoRoot, encoding: 'utf8', shell: true })
     if (run.status !== 0) return gate.id
   }
@@ -217,13 +231,7 @@ for (const mutation of selected) {
     // The client gate reads the **committed** `lib/`, so a `src/` edit is invisible until it is built —
     // which is the product's own order (lint-build rebuilds, then the client gate reads the bundle). A
     // sweep that skipped the build would report "missed" for defects the suite does catch.
-    // Only the client gate reads `lib/`; every other gate loads `src/` directly. Rebuilding for all nine
-    // mutations would make the sweep's result depend on the build pipeline as much as on the gates.
-    if (mutation.file.startsWith('src/client/')) {
-      const build = buildLib()
-      if (!build.ok) throw new Error(`the mutated tree does not build: ${build.detail}`)
-    }
-    caught = firstRed(gatesFor(mutation))
+    caught = firstRed(gatesFor(mutation), mutation.file.startsWith('src/client/'))
   } catch (error) {
     detail = String(error?.message ?? error)
   } finally {
