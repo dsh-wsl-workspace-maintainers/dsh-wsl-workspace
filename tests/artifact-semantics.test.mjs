@@ -130,9 +130,15 @@ test('a variant introduces no prompt variable the source did not carry', () => {
   }
 })
 
-/** Every absolute path the variant mounts, as the transform wrote it (quoted, forward slashes). */
+/**
+ * Every absolute path the variant mounts, as the transform wrote it (quoted, forward slashes).
+ *
+ * Both spellings: `D:/…` on the maintainer machine and `/home/runner/…` in CI. The first version keyed
+ * on a drive letter and read zero paths on the ubuntu runner — a gate whose scan finds nothing must
+ * fail, which is why the assertions below also demand a floor (`length >= 5`).
+ */
 const mountedPaths = generated => [...new Set(
-  [...generated.matchAll(new RegExp("'([A-Za-z]:/[^']+)'", 'g'))].map(match => match[1]),
+  [...generated.matchAll(new RegExp("'((?:/|[A-Za-z]:/)[^']+)'", 'g'))].map(match => match[1]),
 )]
 
 test('every file a variant mounts exists in this package', () => {
