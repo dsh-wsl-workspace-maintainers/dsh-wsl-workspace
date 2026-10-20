@@ -91,10 +91,19 @@ export function isolatedServices () {
   return [...names].sort()
 }
 
-/** Every host package directory in the pinned closure, sorted. */
+/**
+ * Every host package directory in the pinned closure, sorted.
+ *
+ * Dot-prefixed entries are excluded on purpose: npm stages a package under `.dsh-<name>-<hash>` in the
+ * scope directory while it installs, and a run interrupted on Windows leaves them behind (measured
+ * 2026-10-20: 263 of them, and the ledger read each as a package and reported 45 "new consumers" that
+ * do not exist). A package name never starts with a dot, so the filter is the naming rule rather than a
+ * special case for this machine.
+ * @returns package directory names, without the scope.
+ */
 function hostPackages () {
   if (!existsSync(HOST_ROOT)) return []
-  return readdirSync(HOST_ROOT).filter(entry => entry !== '.bin')
+  return readdirSync(HOST_ROOT).filter(entry => entry !== '.bin' && !entry.startsWith('.'))
 }
 
 /** The `lib/*.js` files of one host package, skipping vendored megabyte bundles. */

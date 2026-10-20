@@ -81,8 +81,14 @@ function probeUnderFake(script: unknown): Record<string, unknown> {
     const probePath = join(work, 'probe.mjs')
     writeFileSync(scriptPath, JSON.stringify(script), 'utf8')
     writeFileSync(probePath, `
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { listDistros } from ${JSON.stringify(pathToFileURL(join(repo, 'src', 'shared', 'wsl.ts')).href)}
-const report = { distros: null, error: null }
+// The fixture's premise, reported rather than assumed: the fake replaces \`execFile\` with a plain
+// function, which is exactly the shape DSH Desktop's windowsHide wrapper has (issue #35). If a future
+// refactor of the fake restores \`util.promisify.custom\`, the assertion below notices instead of the
+// suite quietly stopping covering that shape.
+const report = { promisifyMetadata: typeof execFile[promisify.custom], distros: null, error: null }
 try {
   report.distros = await listDistros()
 } catch (error) {
@@ -117,6 +123,26 @@ test('listDistros() parses a UTF-16LE listing without spawning wsl.exe', () => {
   // Blank lines dropped, order preserved, and no filtering here: dropping docker-desktop is
   // the caller's job (tests/smoke.ts does it), so this must not pin that policy.
   assert.deepEqual(report.distros, ['Ubuntu', 'docker-desktop', 'Ubuntu-24.04'])
+})
+
+test('issue #35: discovery survives a host wrapper that drops util.promisify metadata', () => {
+  // The defect: Desktop replaces `child_process.execFile` with a plain wrapper for `windowsHide: true`,
+  // the wrapper inherits no `util.promisify.custom`, `promisify(execFile)` then resolves to *stdout
+  // itself*, and `listDistros()` died on `result.stdout === undefined` (Cannot read properties of
+  // undefined (reading 'includes')). The product stopped depending on that metadata — it uses the
+  // callback form, which every such wrapper preserves — and this case is what keeps it that way: the
+  // fake is the wrapper shape, the premise is asserted, and the listing must still parse.
+  const report = probeUnderFake({
+    calls: [{
+      match: { file: 'wsl.exe', argsContains: ['-l', '-q'] },
+      code: 0,
+      stdout: { utf16le: 'Ubuntu\r\n' },
+    }],
+  })
+  assert.equal(report.promisifyMetadata, 'undefined',
+    'the fixture no longer reproduces the Desktop wrapper — its replacement has promisify metadata again')
+  assert.equal(report.error, null, `listDistros must not depend on promisify metadata: ${String(report.error)}`)
+  assert.deepEqual(report.distros, ['Ubuntu'])
 })
 
 test('a UTF-8 listing decodes through the same call site', () => {
