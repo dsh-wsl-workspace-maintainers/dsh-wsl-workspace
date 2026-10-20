@@ -2,6 +2,34 @@
 
 All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](README.md); the Chinese record is [CHANGELOG.zh.md](CHANGELOG.zh.md).
 
+## 0.7.9 — 2026-10-20
+
+**A drive-path workspace can finally read its own skills, and the door answers a Linux `cwd` there.**
+Both were silent failures: a `/mnt/<drive>` workspace registered under its Windows drive path (9P cannot
+serve drvfs) got an empty skill catalog with no error, and `wsl_terminal` refused a Linux `cwd` with
+"the distribution is unknown" although the dialog had stored it. The skill provider now resolves that
+workspace the way the other providers do and reads `/mnt` paths through their **drive spelling**; the
+door reads the same registration. Reported by the world-consistency table, not by a user — the first
+defect this repository's gates found before a report did.
+
+- **A failed browse no longer leaves its message behind.** Switching back to a working distribution used
+  to keep "could not browse this directory" over a listing that had just loaded: one `error` string could
+  not say which failure it held, so the browse failure is now retired by the browse that replaces it —
+  and only that one, since a preset or distro-list failure is a different fact.
+- **`/mnt/<drive>` has one spelling.** `C://项目//src` (a pasted path, or a tool that doubles a separator)
+  used to produce `/mnt/c//项目/src`, so the same directory had two cache keys and the skill scan and the
+  workspace store could disagree about which path this is.
+- **Tests that answer "would we catch the next one?"** Five gates landed earlier today (world
+  consistency, client interaction states, artifact semantics, install shapes, one real session); this
+  release adds a `scripts/mutation-sweep.mjs` that plants defects the suite was never designed for and
+  reports which gate noticed. Its first run found a real gap — the glob inline cap was never asserted at
+  its boundary — and the lock for it is in `tests/wsl-search.test.ts`. `@deepseek-ai/dsh-jobs` is pinned
+  so the background-job tools exist in the session probe; the byte assertion still needs a live agent and
+  is reported as a declared not-measured cell rather than a pass.
+- **Not claimed here**: [#78](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/78)
+  (`run_code` on a `\\wsl.localhost\…` root with `workspace-write`) is unchanged: the guard refuses that
+  shape in words, and giving the WSL world a real sandbox is a product decision, not a test.
+
 ## 0.7.8 — 2026-10-20
 
 **This release ships what 0.7.7's own record already described.** The 0.7.7 tarball on the registry was built

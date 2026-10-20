@@ -230,6 +230,9 @@ this section describes.
 
 ## F. Still human (TESTING.md "End-to-end verification in the running harness")
 
+| `node scripts/mutation-sweep.mjs` (`--only <id>`, requires a clean tree) | the only check that answers **"would we catch a defect we were not built for"**: nine plausible regressions are planted one at a time — a dropped case-fold, a lost UTF-16LE sniff, a duplicated world group, an exclusive off-by-one on the glob cap, a producer that stops feeding the job ring, a `/mnt` read through the share, a dead Escape handler, a dependency range drifting to 5.x, a renamed locale key — and the per-commit gates run against each. Every gate must be green on the clean tree first (`a red gate is an environment, not a measurement`), a mutation whose find-string does not match exactly once is INVALID/ERR and counted apart from a miss, and the client gate gets a fresh `lib/` only when it is actually reached. Measured 2026-10-20: first run 6/9 (one real gap — the glob cap boundary, locked; one harness artefact — `src/client` edits are invisible to a gate reading the committed bundle; one bad mutant), after the fixes **9/9**. Not in CI: it rewrites the working tree by design, and a tree with a planted defect is what a CI job must never be | a clean tree, `npm ci`, a built `lib/`, node ≥ 24 | maintainer, before a release |
+
+
 - W button visible beside Settings in the sidebar foot.
 - Distribution picker non-empty by eye (the #35/#36 failure shape was an
   empty picker with a caught type error; client-lifecycle now covers the

@@ -98,6 +98,26 @@ test('isAbsoluteLinuxPath requires a leading slash', () => {
   assert.equal(isAbsoluteLinuxPath('/bad\u0000'), false)
 })
 
+test('a path with repeated separators or a non-ASCII name maps to one canonical /mnt form', () => {
+  // Users paste paths, and a tool that doubles a separator should not produce a second spelling of the
+  // same directory: `/mnt/c//项目` and `/mnt/c/项目` became two cache keys, so the skill scan root and the
+  // workspace store disagreed about which path this is (measured 2026-10-20 while looking for the next
+  // unguarded surface).
+  //
+  // The backslash is spelled `String.fromCharCode(92)` on purpose: this file has been edited through
+  // tooling that mangles a literal escape, and a test whose input is not what it reads is worse than none.
+  const BS = String.fromCharCode(92)
+  const win = (...parts: string[]): string => parts.join(BS)
+  assert.equal(windowsToMntPath(`C://项目//src`), '/mnt/c/项目/src')
+  assert.equal(windowsToMntPath(`C:/${BS}/项目`), '/mnt/c/项目')
+  assert.equal(windowsToMntPath(win('C:', '', '用户', '', '项目')), '/mnt/c/用户/项目')
+  assert.equal(windowsToMntPath(win('C:', 'Program Files', 'x')), '/mnt/c/Program Files/x')
+  // The drive root has no segment to append, and must not gain a trailing slash.
+  assert.equal(windowsToMntPath(`F:${BS}`), '/mnt/f')
+  // …and the inverse round-trips a non-ASCII path.
+  assert.equal(mntToWindowsPath('/mnt/c/用户/项目'), win('C:', '用户', '项目'))
+})
+
 test('windowsToMntPath maps drive letters under /mnt', () => {
   assert.equal(windowsToMntPath('C:\\work\\src'), '/mnt/c/work/src')
   assert.equal(windowsToMntPath('D:/other'), '/mnt/d/other')

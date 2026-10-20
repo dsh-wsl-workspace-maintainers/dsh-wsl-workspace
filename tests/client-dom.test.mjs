@@ -70,11 +70,15 @@ const flush = () => new Promise(resolve => setTimeout(resolve, 0))
  */
 function mount(scenario) {
   const calls = []
+  /** The params of one host call, for an answer that depends on them. */
+  const paramsOf = init => (JSON.parse(init.body).params ?? {})
   globalThis.fetch = async (_url, init) => {
     const { method } = JSON.parse(init.body)
     calls.push(method)
-    const answer = scenario[method]
-    if (typeof answer === 'function') return answer()
+    // A function answer receives the call's params, so a state can make one distribution's listing fail
+    // while another's succeeds — the shape a distro switch needs.
+    const raw = scenario[method]
+    const answer = typeof raw === 'function' ? raw(paramsOf(init)) : raw
     if (answer === 'refuse') {
       return { ok: true, status: 200, json: async () => ({ ok: false, error: `${method} refused by the host` }) }
     }
@@ -162,6 +166,17 @@ function mount(scenario) {
       await act(flush)
       return element
     },
+    /** Choose a value in a `<select>` the way a user does: set it, then let React see the change. */
+    async select(selector, value) {
+      const element = container.querySelector(selector)
+      assert.ok(element !== null, `nothing matches ${selector} — rendered: ${container.innerHTML.slice(0, 300)}`)
+      await act(async () => {
+        element.value = value
+        element.dispatchEvent(new dom.window.Event('change', { bubbles: true }))
+      })
+      await act(flush)
+      return element
+    },
     async escape() {
       await act(async () => {
         dom.window.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape' }))
@@ -216,6 +231,35 @@ test('a blank message from any path draws nothing', { timeout: 10_000 }, async (
     await open(client)
     assert.ok(client.container.querySelector('.dww-error') === null,
       'an empty message must not draw a row: the condition is about text, not about null')
+  } finally { client.unmount() }
+})
+
+test('a failed browse on one distribution is retired by a successful one on another', async () => {
+  // The stale-message shape, one layer below #52/#99: `refreshBrowse` set `error.loadDir` on a failure and
+  // never cleared it on success, so switching back to a working distribution left "could not browse this
+  // directory" over a listing that had just loaded. One `error` string cannot say which failure it holds,
+  // so the component tracks the provenance and retires only the browse one.
+  const scenario = healthy({
+    listDistros: ['Ubuntu-22.04', 'Ubuntu-24.04'],
+    listDir: params => (params.distro === 'Ubuntu-24.04'
+      ? 'refuse'
+      : { path: params.path, parent: null, entries: [{ name: 'home', kind: 'directory' }] }),
+  })
+  const client = mount(scenario)
+  try {
+    await open(client)
+    assert.ok(client.container.querySelector('.dww-error') === null, 'the healthy open draws no row')
+
+    await client.select('.dww-select', 'Ubuntu-24.04')
+    const strip = client.container.querySelector('.dww-error')
+    assert.ok(strip !== null, 'the refused listing must draw a row')
+    assert.match(strip.textContent ?? '', new RegExp(client.zh()['error.loadDir'].slice(0, 6)),
+      `the row must name the browse failure, got: ${strip.textContent}`)
+
+    await client.select('.dww-select', 'Ubuntu-22.04')
+    assert.ok(client.container.querySelector('.dww-error') === null,
+      'a successful browse must retire the browse failure it replaces')
+    assert.ok(client.container.querySelectorAll('.dww-dir-row').length >= 1, 'and the listing is what loaded')
   } finally { client.unmount() }
 })
 

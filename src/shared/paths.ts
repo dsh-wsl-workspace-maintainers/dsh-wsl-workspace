@@ -129,7 +129,10 @@ export function joinUnc(distro: string, linuxPath: string): string {
 export function windowsToMntPath(path: string): string | null {
   const match = /^([A-Za-z]):[\\/](.*)$/.exec(path)
   if (match === null) return null
-  const rest = (match[2] ?? '').replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/$/, '')
+  // Leading separators are stripped before the join: `C://项目` (a pasted path, or the output of a tool
+  // that doubles the separator) used to produce `/mnt/c//项目`, and two spellings of one directory make
+  // two cache keys — the skill scan and the workspace store then disagree about which path this is.
+  const rest = (match[2] ?? '').replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\/+|\/+$/g, '')
   return `/mnt/${(match[1] ?? '').toLowerCase()}${rest === '' ? '' : `/${rest}`}`
 }
 

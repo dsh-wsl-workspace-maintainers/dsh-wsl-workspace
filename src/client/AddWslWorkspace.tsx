@@ -101,6 +101,12 @@ export function AddWslWorkspace({ wide, t, describe, checkPreset, listDistros, l
   const [selfDescription, setSelfDescription] = useState<WslSelfDescription | null>(null)
   // Monotone browse-request sequence: stale responses for a superseded browse are dropped.
   const browseSeq = useRef(0)
+  // Whether the strip currently carries a *browse* failure. Without this, a failed browse left its
+  // message behind after the next successful one: switching back to a working distribution showed the
+  // old "could not browse this directory" strip over a listing that had just loaded (found by the
+  // mutation sweep's sibling read, 2026-10-20). A single `error` string cannot tell which failure it
+  // holds, so the provenance is tracked beside it.
+  const browseFailed = useRef(false)
 
   const refreshBrowse = async (root: string, targetDistro: string): Promise<void> => {
     const seq = ++browseSeq.current
@@ -108,11 +114,20 @@ export function AddWslWorkspace({ wide, t, describe, checkPreset, listDistros, l
     setBrowsePath(root)
     try {
       const value = await listDir(targetDistro, root)
-      if (seq === browseSeq.current) setListing(value)
+      if (seq === browseSeq.current) {
+        setListing(value)
+        // A successful browse retires the browse failure it replaces, and only that one: a preset or
+        // distro-list failure is a different fact and must survive.
+        if (browseFailed.current) {
+          browseFailed.current = false
+          setError((previous) => previous === t('error.loadDir') ? null : previous)
+        }
+      }
     } catch {
       // A failed browse (permission, missing dir) is non-fatal: keep old listing.
       if (seq === browseSeq.current) {
         setListing(null)
+        browseFailed.current = true
         setError((previous) => previous ?? t('error.loadDir'))
       }
     } finally {
