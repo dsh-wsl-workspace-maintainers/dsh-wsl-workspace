@@ -217,8 +217,12 @@ for (const mutation of selected) {
     // The client gate reads the **committed** `lib/`, so a `src/` edit is invisible until it is built —
     // which is the product's own order (lint-build rebuilds, then the client gate reads the bundle). A
     // sweep that skipped the build would report "missed" for defects the suite does catch.
-    const build = buildLib()
-    if (!build.ok) throw new Error(`the mutated tree does not build: ${build.detail}`)
+    // Only the client gate reads `lib/`; every other gate loads `src/` directly. Rebuilding for all nine
+    // mutations would make the sweep's result depend on the build pipeline as much as on the gates.
+    if (mutation.file.startsWith('src/client/')) {
+      const build = buildLib()
+      if (!build.ok) throw new Error(`the mutated tree does not build: ${build.detail}`)
+    }
     caught = firstRed(gatesFor(mutation))
   } catch (error) {
     detail = String(error?.message ?? error)
