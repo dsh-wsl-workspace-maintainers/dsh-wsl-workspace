@@ -4,8 +4,9 @@ This document describes how to verify `dsh-wsl-workspace` after a change or befo
 
 > **Fast path (same commands CI runs):** after `npm ci && node ci/install-pinned.mjs`,
 > run `npm run test:unit`, `npm run test:client`, `npm run test:node`, `npm run test:world`,
-> `npm run test:profile`, `npm run test:wsl` (Windows + a real distribution),
-> `npm run typecheck:gate` and `npm run verify:artifact`.
+> `npm run test:artifacts`, `npm run test:install`, `npm run test:profile`, `npm run test:wsl`
+> (Windows + a real distribution), `npm run typecheck:gate` and `npm run verify:artifact`.
+> Before a release, also `npm run test:session` (needs Windows + a distribution).
 > The full inventory of every check — command, prerequisites, CI home, and what is
 > still human — is [docs/CHECK-CATALOG.md](docs/CHECK-CATALOG.md). This document keeps
 > the background and the release checklist.
@@ -59,6 +60,45 @@ Every provider decides for itself "which distribution and which Linux directory 
 requires agreement, an out-loud refusal, or a registered gap with its ticket. The provider list is
 derived from `src/`, so a new provider cannot be added without a row. It needs the pinned host tree
 (`node ci/install-pinned.mjs`).
+
+## The artifact we hand the host (issue #101)
+
+```powershell
+npm run test:artifacts
+```
+
+`tests/artifact-semantics.test.mjs` reads the **shipped presets** (`dsh-web-app/presets/*.patch.yml`)
+and transforms them, then checks the invariants a host enforces at load time: the WSL note is appended
+exactly once (and not at all where the preset declares `complete: true`), the `{{…}}` multiset equals
+the source's, every mounted path exists inside `lib/`, every bare import of every mounted file is in
+the host closure (#89), no duplicate row id, and the world's `isolate:` keys are the ones the consumer
+ledger enumerates.
+
+## The install shapes it is loaded from (issue #101)
+
+```powershell
+npm run test:install
+```
+
+`tests/install-shapes.test.mjs` checks the manifest surface (every bare specifier `src/` imports is
+declared; `js-yaml` is a `dependencies` entry on 4.x, never a peer; no call-time `import()` of a host
+package) and then loads the published entry from a **profile-shaped** tree — a copy of `package.json`
+and `lib/` under `node_modules/dsh-wsl-workspace`, host closure beside it — asserting it exports
+`apply`, and that removing the closure names the missing package instead of producing a silent
+zero-variant boot.
+
+## One real host, one session, six tools (issue #101) — release gate
+
+```powershell
+npm run test:session
+```
+
+`tests/support/g5-session-probe.mjs` boots a real profile with the product's **own generated world**
+inserted verbatim, then calls `bash`, `read`, `grep`, `glob`, `read_image` and (where a jobs registry
+is mounted) `bash` + `job_output` inside one `\\wsl.localhost\<distro>\…` session. It needs Windows, a
+WSL distribution (`WSL_COMPAT_DISTRO`, default `Ubuntu`), the pinned closure and a built `lib/`; it is
+**not** in the per-commit CI, and it is the reading a `compatible` declaration should rest on — the
+compat script answers install/start/uninstall, this answers "and the six tools work".
 
 ## Provider parity and compatibility checks
 
