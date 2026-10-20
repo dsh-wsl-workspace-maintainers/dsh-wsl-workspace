@@ -69,6 +69,8 @@
  */
 
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { hostRoots as sharedHostRoots, canonicalUrl, inactiveDetail } from './host-closure.mjs'
+import { finish } from './report.mjs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -105,7 +107,7 @@ const within = (promise, ms, label) => {
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms))
 
 /** The two trees `ci/install-pinned.mjs` links: repo root first, then the pinned closure. */
-const hostRoots = [join(repoRoot, 'node_modules'), join(repoRoot, 'ci', 'deps', 'node_modules')]
+const hostRoots = sharedHostRoots()
 
 /** Every module the probe loads, by the exact path it loaded it from — the report prints these. */
 const loadedFrom = new Map()
@@ -128,7 +130,7 @@ async function hostModule (name, overrides = []) {
   const errors = []
   for (const file of candidates) {
     try {
-      const namespace = await import(pathToFileURL(file).href)
+      const namespace = await import(canonicalUrl(file))
       loadedFrom.set(name, file)
       return { plugin: namespace.default ?? namespace, namespace, file }
     } catch (error) {
@@ -273,17 +275,13 @@ async function boot (options) {
   return await within(runProfile({ environment, profile, patchFiles: [overlay], args: [] }), 120_000, `boot ${profile}`)
 }
 
-const report = (rows, verdict) => {
-  for (const entry of rows) console.log(JSON.stringify(entry))
-  console.log(JSON.stringify({ verdict }))
-  const failed = rows.filter(entry => entry.ok === false)
-  // The seam runner reads prose, not JSON: without a `PASSED` / `FAILED (N failing)` line a probe that
-  // reported nothing looks the same as one that reported success.
-  console.log(failed.length === 0
-    ? `W54-ISOLATE-PROBE PASSED (${rows.length} rows — #54's two arms, the token mutation, and the world's own image read)`
-    : `W54-ISOLATE-PROBE FAILED (${failed.length} failing)`)
-  process.exit(failed.length === 0 ? 0 : 1)
-}
+const report = (rows, verdict) => finish(rows, {
+  label: 'W54-ISOLATE-PROBE',
+  summary: " — #54's two arms, the token mutation, and the world's own image read",
+  // The second argument is a conclusion on success and the whole verdict on a tagged death.
+  verdictOverride: verdict?.startsWith('NOT-MEASURED') === true ? verdict : '',
+  conclusion: verdict !== undefined && !verdict.startsWith('NOT-MEASURED') ? verdict : '',
+})
 
 const outOf = (error) => String(error?.message ?? error ?? 'unknown')
 
@@ -429,10 +427,8 @@ try {
     }
   })()
 
-  /** Which loader entries never reached state 2 — the host only says HOW MANY, so the probe names them. */
-  const unactivated = (ctx) => [...(ctx.get('loader')?.entries?.() ?? [])]
-    .filter(entry => entry.fiber?.state !== 2)
-    .map(entry => `${entry.options?.id}=${entry.fiber?.state ?? '(no fiber)'}`).join(', ') || '(all entries report state 2)'
+  /** Which loader entries never reached state 2, and which services each is still waiting for. */
+  const unactivated = (ctx) => inactiveDetail(ctx, ctx.get('loader'))
 
   /** Register the image-capable route the tool's gate requires, through the host's own adapter API. */
   const declareRoute = (ctx) => {
@@ -540,7 +536,7 @@ try {
     const tool = ctx.get('tools').get('read_image')
     const first = tool === undefined ? null : await callReadImage(tool, png)
     add('0-control-nonwsl-world', first !== null && first.isError === false, first === null
-      ? `read_image is not registered at all in a root-realm world — the fs tool suite did not mount; entries not in state 2: ${unactivated(ctx)}`
+      ? `read_image is not registered at all in a root-realm world — the fs tool suite did not mount; entries not in state 2: ${await unactivated(ctx)}`
       : `${first.ms}ms ${first.isError ? 'isError=true' : 'ok'}: ${first.message}`
         + ` (route ${JSON.stringify(info?.inputModalities)}, tool read from ${providers['tool-fs'].file})`)
 
@@ -586,7 +582,7 @@ try {
     realmAnswer = tool === undefined ? null : await callReadImage(tool, png)
     add('2-isolate-world-read-image', realmAnswer !== null && realmAnswer.message === REALM_ERROR,
       realmAnswer === null
-        ? `read_image is not registered inside the isolate world — the world did not mount the fs tool suite, so this arm measures the harness; entries not in state 2: ${unactivated(ctx)}`
+        ? `read_image is not registered inside the isolate world — the world did not mount the fs tool suite, so this arm measures the harness; entries not in state 2: ${await unactivated(ctx)}`
         : `${realmAnswer.ms}ms ${realmAnswer.isError ? 'isError=true' : 'ok'}: ${JSON.stringify(realmAnswer.message)}`
           + ` (expected verbatim: ${JSON.stringify(REALM_ERROR)}; thrown at ${realmAnswer.frame})`)
 

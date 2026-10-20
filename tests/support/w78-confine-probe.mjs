@@ -43,39 +43,24 @@
  * @module tests/support/w78-confine-probe
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { hostFile, canonicalUrl, mountedPath } from './host-closure.mjs'
+import { finish } from './report.mjs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
-/**
- * Node's ESM cache keys on the URL, not on the file: the same module imported as `file:///D:/…` and
- * `file:///d:/…` yields **two** class objects, and `x instanceof OtherCopy` is false for an instance of the
- * other one (measured 2026-10-19 in `D:/Temp/rc2-round/module-identity-case.mjs`). That is what reddened
- * rows 0 and 4 here after the host bump — the release's own `LocalSandboxProvider` in the slot, judged by a
- * second copy of the same class. Canonicalise the path so this probe and the loader agree on one instance.
- */
-const at = (p) => pathToFileURL(realpathSync(p).replace(/^([a-z]):/, (_, letter) => `${letter.toUpperCase()}:`)).href
+// `at` is host-closure's canonicalUrl: Node's ESM cache keys on the URL, so the same file imported as
+// `file:///D:/…` and `file:///d:/…` would yield two class objects and `instanceof` would be false across
+// them (measured 2026-10-19; that was one of the two reds this probe carried).
 
-/**
- * Resolve a host package by path, never by bare specifier.
- *
- * A bare import of a host package resolves against the *importing* module's real path, which on this
- * repository is a junction into `ci/deps` — it passes on a maintainer machine and fails on a CI runner
- * whose tree was installed differently. That is how #78's own predecessor got bitten (see the note at
- * the top of `tests/support/w51-probe.mjs`), so every host read below goes through this function.
- * @param name - the package name, or `package/subpath`.
- * @param file - the file inside it; the host packages all publish `lib/index.js`.
- * @returns the absolute path, or null when neither root carries it.
- */
-const host = (name, file = 'lib/index.js') => {
-  for (const root of [join(repoRoot, 'node_modules'), join(repoRoot, 'ci', 'deps', 'node_modules')]) {
-    const candidate = join(root, ...name.split('/'), file)
-    if (existsSync(candidate)) return candidate
-  }
-  return null
-}
+// Resolution, the version assertion and the canonical module URL live in host-closure.mjs. A bare import of
+// a host package resolves against the importing module's real path, which on this repository is a junction
+// into `ci/deps`; path resolution is what this probe needs (it mounts its rows by the same path it imports
+// the class from — see the overlay below).
+const host = (name, file = 'lib/index.js') => hostFile(name, file === 'lib/index.js' ? {} : { subpath: file.split('/') })
+const at = canonicalUrl
 const hostModule = (m) => m.default ?? m
 
 /** A promise that is not allowed to hang the gate (the `tests/support/w51-probe.mjs` pattern). */
@@ -88,17 +73,14 @@ const within = (promise, ms, label) => {
   return Promise.race([promise, budget]).finally(() => clearTimeout(timer))
 }
 
-const report = (rows, verdict) => {
-  console.log(JSON.stringify({ verdict, rows }, null, 2))
-  // The verdict in prose the seam runner can actually read. `run-seams` builds its line out of
-  // `PASSED` / `FAILED (N failing)` / TAP counts; a probe whose answer nobody can parse looks exactly
-  // like a probe that passed, so the string is emitted in that vocabulary and not only as JSON.
-  const failing = rows.filter(row => row.ok === false).length
-  console.log(failing === 0
-    ? `W78-CONFINE-PROBE PASSED (${rows.length} rows — #78's ownership reading)`
-    : `W78-CONFINE-PROBE FAILED (${failing} failing)`)
-  process.exit(failing === 0 ? 0 : 1)
-}
+// The verdict in prose the seam runner can actually read: `run-seams` builds its line out of
+// `PASSED` / `FAILED (N failing)`, and a probe whose answer nobody can parse looks exactly like a probe
+// that passed. finish() prints the rows, that line, and exits without waiting on the event loop.
+const report = (rows, verdict) => finish(rows, {
+  label: 'W78-CONFINE-PROBE',
+  summary: " — #78's ownership reading",
+  conclusion: verdict === undefined || verdict === 'PASSED' ? '' : verdict,
+})
 
 if (process.platform !== 'win32') {
   // Every row below reads a win32-only seam (the ACL runner chain, the UNC form). Anywhere else the
@@ -212,11 +194,6 @@ try {
   // here 2026-10-19: rows 0 and 4 reddened while every realm and constructor-name reading stayed put, and
   // canonicalising the drive letter in `at()` did not change it. One file has to mean one class, or the
   // strongest claim in this probe measures the harness.
-  const mountedPath = (name) => {
-    const found = host(name)
-    if (found === null) throw new Error(missing(name))
-    return realpathSync(found).replace(/^([a-z]):/, (_, letter) => letter.toUpperCase()).replace(/\\/g, '/')
-  }
   const pathRow = (id, name, configLines = []) => [`    - id: ${id}`, `      name: '${mountedPath(name)}'`, ...configLines]
   writeFileSync(overlay, [
     '- insert:',

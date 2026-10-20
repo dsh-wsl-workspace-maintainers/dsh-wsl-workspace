@@ -17,53 +17,21 @@
 // they already hold, and what that makes them blind to**. The experimental pair is measured at both mount
 // levels, because "beside the isolate" is what ships and "inside it" is what the ledger's `sandbox` row asks.
 //
-// The mechanical traps this file exists partly to record are on `hostRow` (a stale copy is dropped in
+// The mechanical traps this file exists partly to record are on `mountedRow` (a stale copy is dropped in
 // silence) and in the arm bodies (one boot per arm; a real `Session`; the realm positive control).
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { join } from 'node:path'
+import { repoRoot, hostFile, mountedRow, mountedPath, canonicalUrl, inactiveDetail } from './host-closure.mjs'
+import { finish } from './report.mjs'
 
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const at = file => pathToFileURL(file).href
-
-/** Both node_modules roots: the linked tree and the pinned one (#57's lesson — search both). */
-function host (name, ...rest) {
-  const isFile = file => existsSync(file) && statSync(file).isFile()
-  for (const root of [join(repoRoot, 'node_modules'), join(repoRoot, 'ci', 'deps', 'node_modules')]) {
-    const candidate = join(root, ...name.split('/'), ...rest)
-    if (isFile(candidate)) return candidate
-    const lib = join(root, ...name.split('/'), 'lib', 'index.js')
-    if (rest.length === 0 && isFile(lib)) return lib
-  }
-  return null
-}
-/**
- * A host package's own lib file, slash-separated, for use as a loader row's `name`.
- *
- * The row must carry the version this probe is measuring. A loader takes `name` as a file OR a package name
- * and resolves a package name against whatever tree the booting profile can see, so a copy of the family that
- * lags the runtime makes the host print `disabling profile plugin row "tool-fs": Plugin
- * @deepseek-ai/dsh-tool-fs@0.2.0-rc.2 is incompatible with dsh 0.2.1-rc.2` — measured verbatim in
- * `D:/Temp/rc2-round/w54-restored.log`, for four rows at once — and the arm then measures nothing while still
- * exiting 0. Path-mounting alone does not fix that (those four were path-mounted; the path simply pointed at
- * the stale copy), so the version is asserted here instead of trusted: a probe cannot report a realm it never
- * mounted.
- */
-function hostRow (name) {
-  const file = host(name)
-  if (file === null) throw new Error(`${name}: absent from both node_modules roots — run \`node ci/install-pinned.mjs\` against the pinned tree`)
-  const version = JSON.parse(readFileSync(join(dirname(file), '..', 'package.json'), 'utf8')).version
-  if (releaseUnderTest !== undefined && version !== releaseUnderTest) {
-    throw new Error(`${name} resolves to ${version} at ${file} but the host under test is @deepseek-ai/dsh ${releaseUnderTest} — this arm would measure a release nobody shipped`)
-  }
-  return file.replaceAll('\\', '/')
-}
-const hostModule = namespace => namespace.default ?? namespace
+// Resolution, version assertion and the loader-row builder live in host-closure.mjs; this file keeps only
+// what is specific to it. `mountedRow` refuses a copy from a release other than the one under test, which is
+// the failure mode that made four rows disappear in silence during the 0.2.1-rc.2 bump.
+const row = mountedRow
+const unwrap = namespace => namespace.default ?? namespace
 const libPath = file => join(repoRoot, 'lib', file).replaceAll('\\', '/')
-/** Two `- insert:` lines mounting one host package by path rather than by name. */
-const row = (id, name) => [`    - id: ${id}`, `      name: '${hostRow(name)}'`]
 
 const SCRATCH = mkdtempSync(join(tmpdir(), 'dsh-w92-consumers-'))
 const DISTRO = process.env.WSL_COMPAT_DISTRO ?? 'Ubuntu'
@@ -92,20 +60,17 @@ const within = (promise, ms, label) => Promise.race([
 ])
 
 function report () {
-  for (const entry of rows) console.log(JSON.stringify(entry))
-  const failed = rows.filter(entry => entry.ok === false)
   // A filtered run is a diagnosis, not a verdict: `PASSED (3 rows)` while four arms sat out would let a
   // partial run read like the gate.
-  const partial = armsFiltered > 0 ? ` PARTIAL — W92_ONLY=${process.env.W92_ONLY} ran ${armsRun} of ${armsRun + armsFiltered} arms, not the gate's verdict` : ''
-  console.log(JSON.stringify({ verdict: failed.length === 0 ? 'PASSED' : `FAILED (${failed.length} failing)`, armsRun, armsFiltered }))
-  console.log(failed.length === 0
-    ? `W92-RC2-CONSUMERS PASSED (${rows.length} rows${partial} — the rc.2 consumers, called, and the realm each holds)`
-    : `W92-RC2-CONSUMERS FAILED (${failed.length} failing): ${failed.map(entry => entry.id).join(', ')}${partial}`)
-  // Exit here rather than set `exitCode` and let the loop drain. The verdict is this probe's last word; a
-  // process that keeps running after printing it reads as a dead suite to a runner that waits on the pipe
-  // (measured 2026-10-19 under `scripts/run-seams.mjs`: 18 rows PASSED printed, then `ETIMEDOUT` at the
-  // suite budget and a `harness-exit` red for a suite that had already answered).
-  process.exit(failed.length === 0 ? 0 : 1)
+  const partial = armsFiltered > 0
+    ? `PARTIAL — W92_ONLY=${process.env.W92_ONLY} ran ${armsRun} of ${armsRun + armsFiltered} arms, not the gate's verdict`
+    : ''
+  finish(rows, {
+    label: 'W92-RC2-CONSUMERS',
+    summary: ' — the rc.2 consumers, called, and the realm each holds',
+    metrics: { armsRun, armsFiltered },
+    partial,
+  })
 }
 
 if (process.platform !== 'win32') {
@@ -114,28 +79,25 @@ if (process.platform !== 'win32') {
   process.exit(0)
 }
 
-const profileBoot = host('@deepseek-ai/dsh', 'lib', 'profile-boot.js')
-const presetFile = host('@deepseek-ai/dsh-web-app', 'presets', 'standard.patch.yml')
-/** The release the arms must measure: whatever `@deepseek-ai/dsh` this tree actually carries. */
-const releaseUnderTest = profileBoot === null ? undefined
-  : JSON.parse(readFileSync(join(dirname(profileBoot), '..', 'package.json'), 'utf8')).version
+const profileBoot = hostFile('@deepseek-ai/dsh', { subpath: ['lib', 'profile-boot.js'] })
+const presetFile = hostFile('@deepseek-ai/dsh-web-app', { subpath: ['presets', 'standard.patch.yml'] })
 if (profileBoot === null || presetFile === null) {
   add('closure', false, 'the @deepseek-ai/dsh profile-boot entry or the shipped standard preset is absent — run `node ci/install-pinned.mjs`')
   report()
   process.exit(0)
 }
 
-const { runProfile } = await import(at(profileBoot))
-const { createLaunchEnvironmentSnapshot } = await import(at(host('@deepseek-ai/dsh-launch-environment')))
-// `Session` is a NAMED export here and the package's default export is `SessionStore`, so this import must
-// not go through `hostModule` — that helper takes `namespace.default ?? namespace`, and for this package it
-// would hand back the store class and `Session.create` would be undefined.
-const { Session, SESSION_FORMAT_VERSION } = await import(at(host('@deepseek-ai/dsh-session')))
-const { Context } = hostModule(await import(at(host('@deepseek-ai/cordis'))))
+const { runProfile } = await import(canonicalUrl(profileBoot))
+const { createLaunchEnvironmentSnapshot } = await import(canonicalUrl(hostFile('@deepseek-ai/dsh-launch-environment')))
+// `Session` is a NAMED export here and the package's default export is `SessionStore`, so this import reads
+// the namespace directly: the local `unwrap` helper would hand back the store class and `Session.create`
+// would be undefined.
+const { Session, SESSION_FORMAT_VERSION } = await import(canonicalUrl(hostFile('@deepseek-ai/dsh-session')))
+const { Context } = unwrap(await import(canonicalUrl(hostFile('@deepseek-ai/cordis'))))
 const ISOLATE = Context.isolate ?? Symbol.for('cordis.isolate')
 
 // The world text, generated by this repository from the release's own shipped preset — never typed here.
-const { transformPresetForWsl } = await import(at(join(repoRoot, 'src', 'host', 'variants.ts')))
+const { transformPresetForWsl } = await import(canonicalUrl(join(repoRoot, 'src', 'host', 'variants.ts')))
 const preset = readFileSync(presetFile, 'utf8').split('\n')
 const pluginsAt = preset.findIndex(line => /^ +plugins:\s*$/.test(line))
 if (pluginsAt < 0) throw new Error('the shipped standard preset carries no plugins: block')
@@ -162,7 +124,7 @@ const PROFILE_ROWS = [
   ...row('fs-local', '@deepseek-ai/dsh-fs-local'),
   ...row('session-projection', '@deepseek-ai/dsh-session-projection'),
   `    - id: sandbox-policy`,
-  `      name: '${hostRow('@deepseek-ai/dsh-sandbox-policy')}'`,
+  `      name: '${mountedPath('@deepseek-ai/dsh-sandbox-policy')}'`,
   '      config:',
   '        mode: danger-full-access',
   `        workspaceRoot: "${UNC_CWD.replaceAll('\\', '\\\\')}"`,
@@ -170,7 +132,7 @@ const PROFILE_ROWS = [
   // Our plugin registers an HTTP route, so the boot needs a real web server; port 0 is the OS's choice,
   // so a probe never claims a port a person is using (w54's device).
   '    - id: webserver',
-  `      name: '${hostRow('@deepseek-ai/dsh-host-webserver')}'`,
+  `      name: '${mountedPath('@deepseek-ai/dsh-host-webserver')}'`,
   '      config:',
   '        host: 127.0.0.1',
   '        port: 0',
@@ -341,13 +303,14 @@ await arm('changes', [
     // pinned as of 2026-10-20 (after the type mismatch it unmasked at `src/host/wsl-image-tool.ts` was
     // fixed), so this branch is what a tree WITHOUT the peer reports: a named skip, never a red — the row's
     // cell then says what was read on a tree that carried it.
-    if (host('@deepseek-ai/dsh-attachment') === null) {
+    if (hostFile('@deepseek-ai/dsh-attachment') === null) {
       console.error('SKIP: w92 arm changes (fs x dsh-workspace-changes) — `dsh-tool-fs`, the emitter of fs/write-intent,'
         + ' needs its peer @deepseek-ai/dsh-attachment, which npm does not install under ci/deps/.npmrc legacy-peer-deps;'
         + ' the crossing was measured on a tree that carried it (2026-10-19) and is not measurable in this closure')
       emitterSkipped += 1
     } else {
-      add('changes-write', false, 'no `write` tool in the booted world although its package is in the closure')
+      add('changes-write', false, 'no `write` tool in the booted world although its package is in the closure'
+        + ` · entries not activated: ${await inactiveDetail(ctx, loader) || '(all entries report state 2)'}`)
     }
   } else {
     const target = PROBE_FILE
@@ -537,6 +500,6 @@ await arm('worktree-in-world', [
       ? `create() failed on the launch, as this shape predicts: ${threw.slice(0, 200)} · our confine() returned the argv unchanged (src/host/wsl-sandbox.ts:37), so the answer to "refuse or pass" is PASS — the command died one step later, on the path our fs handed back, not on confinement`
       : `create() failed for a reason that is not a launch: ${threw.slice(0, 220)} — this arm cannot answer the confinement question`)
   }
-}, [['worktree', hostRow('@deepseek-ai/dsh-experimental-worktree')]])
+}, [['worktree', mountedPath('@deepseek-ai/dsh-experimental-worktree')]])
 
 report()
