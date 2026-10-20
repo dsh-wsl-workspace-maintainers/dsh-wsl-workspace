@@ -147,6 +147,28 @@ function plant(mutation) {
   return mutation.patch !== undefined ? 1 : before.split(mutation.find).length - 1
 }
 
+/**
+ * Rebuild `lib/` from the mutated `src/`, the way the product does before its client gate runs.
+ *
+ * `npm run build` assumes `node_modules/.bin/tsdown`, which a checkout whose tree is not reified does not
+ * have (this maintainer machine). The manual chain is the same three steps by absolute path, so the
+ * sweep builds on both kinds of checkout instead of reading a missing binary as a failed mutation.
+ */
+function buildLib() {
+  const steps = [
+    [process.execPath, ['scripts/clean-lib.mjs']],
+    [process.execPath, ['node_modules/tsdown/dist/run.mjs']],
+    [process.execPath, ['scripts/verify-lib.mjs']],
+  ]
+  for (const [file, args] of steps) {
+    const run = spawnSync(file, args, { cwd: repoRoot, encoding: 'utf8' })
+    if (run.status !== 0) {
+      return { ok: false, detail: `${file} ${args.join(' ')} exited ${run.status}: ${(run.stderr ?? '').slice(-300)}` }
+    }
+  }
+  return { ok: true, detail: '' }
+}
+
 /** Run the gates in order and stop at the first red; returns the id that caught it, or null. */
 function firstRed(gates) {
   for (const gate of gates) {
@@ -195,8 +217,8 @@ for (const mutation of selected) {
     // The client gate reads the **committed** `lib/`, so a `src/` edit is invisible until it is built —
     // which is the product's own order (lint-build rebuilds, then the client gate reads the bundle). A
     // sweep that skipped the build would report "missed" for defects the suite does catch.
-    const build = spawnSync('npm', ['run', 'build'], { cwd: repoRoot, encoding: 'utf8', shell: true })
-    if (build.status !== 0) throw new Error(`the mutation does not compile: ${(build.stderr ?? '').slice(-400)}`)
+    const build = buildLib()
+    if (!build.ok) throw new Error(`the mutated tree does not build: ${build.detail}`)
     caught = firstRed(gatesFor(mutation))
   } catch (error) {
     detail = String(error?.message ?? error)
@@ -205,14 +227,15 @@ for (const mutation of selected) {
   }
   rows.push({
     id: mutation.id,
-    verdict: caught === null ? 'NOT CAUGHT' : 'caught',
-    detail: caught === null ? `${mutation.note} — no per-commit gate reddened` : `${caught}: ${mutation.note}`,
+    verdict: detail !== '' ? 'ERROR' : caught === null ? 'NOT CAUGHT' : 'caught',
+    detail: detail !== '' ? `the sweep could not measure this one: ${detail}` : caught === null ? `${mutation.note} — no per-commit gate reddened` : `${caught}: ${mutation.note}`,
   })
-  console.log(`${caught === null ? 'MISS' : 'ok  '} ${mutation.id.padEnd(22)} ${rows.at(-1).detail}`)
+  const label = rows.at(-1).verdict === 'ERROR' ? 'ERR ' : caught === null ? 'MISS' : 'ok  '
+  console.log(`${label} ${mutation.id.padEnd(22)} ${rows.at(-1).detail}`)
 }
 
 const missed = rows.filter(row => row.verdict === 'NOT CAUGHT')
-const invalid = rows.filter(row => row.verdict === 'INVALID')
+const invalid = rows.filter(row => row.verdict === 'INVALID' || row.verdict === 'ERROR')
 console.log('')
 console.log(JSON.stringify({
   verdict: missed.length === 0 && invalid.length === 0 ? 'PASSED' : 'FAILED',
