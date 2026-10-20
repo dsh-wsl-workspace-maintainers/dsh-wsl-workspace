@@ -19,11 +19,32 @@
 // with `git checkout --` before the next mutation. It never writes to `lib/`, so a stale-bundle accident
 // cannot hide behind it.
 import { execFileSync, spawnSync } from 'node:child_process'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+
+/**
+ * npm's own entry script, run on the interpreter already in hand.
+ *
+ * `spawnSync('npm', args, { shell: true })` is the shape `tests/tech-debt-exposure.test.ts` forbids — argv
+ * through a shell is re-tokenised, and a path with a space arrives as something else. That gate caught this
+ * sweep on its first CI run; the fix is the one its repair note prescribes: resolve `npm-cli.js` and hand it
+ * to `process.execPath`, no interpreter in between.
+ * @returns the absolute path of `npm-cli.js`.
+ */
+function npmCli() {
+  const candidates = [
+    process.env.npm_execpath,
+    join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    join(dirname(process.execPath), 'npm', 'bin', 'npm-cli.js'),
+  ].filter(candidate => typeof candidate === 'string' && candidate.endsWith('.js'))
+  for (const candidate of candidates) {
+    try { if (statSync(candidate).isFile()) return candidate } catch { /* next candidate */ }
+  }
+  throw new Error('mutation-sweep: cannot find npm-cli.js — run this through `npm run` or beside a node with npm')
+}
 
 /** The per-commit gates, cheapest first; the first red one ends the row. */
 const GATES = [
@@ -186,7 +207,7 @@ function firstRed(gates, needsBuild) {
       built = buildLib()
       if (!built.ok) return `client-build: ${built.detail}`
     }
-    const run = spawnSync('npm', ['run', gate.script], { cwd: repoRoot, encoding: 'utf8', shell: true })
+    const run = spawnSync(process.execPath, [npmCli(), 'run', gate.script], { cwd: repoRoot, encoding: 'utf8' })
     if (run.status !== 0) return gate.id
   }
   return null
@@ -203,7 +224,7 @@ assertCleanTree()
 // is red for an environment reason (jsdom not installed in this checkout, a stale host tree) answers
 // "caught" for every mutation, and the sweep reports a detection rate it never measured.
 for (const gate of [...GATES, ...NODE_GATES]) {
-  const baseline = spawnSync('npm', ['run', gate.script], { cwd: repoRoot, encoding: 'utf8', shell: true })
+  const baseline = spawnSync(process.execPath, [npmCli(), 'run', gate.script], { cwd: repoRoot, encoding: 'utf8' })
   if (baseline.status !== 0) {
     console.error(`mutation-sweep: \`${gate.script}\` is red on a clean tree — this is an environment, not a measurement.`)
     console.error((baseline.stderr ?? '').trim().split('\n').slice(-6).join('\n'))
