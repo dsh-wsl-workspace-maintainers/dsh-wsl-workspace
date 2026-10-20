@@ -60,7 +60,7 @@ export default defineConfig([
     dts: false,
     clean: false,
     sourcemap: true,
-    deps: { neverBundle: NODE_EXTERNALS },
+    external: NODE_EXTERNALS,
   },
   {
     name: 'dsh-wsl-workspace/client',
@@ -72,7 +72,7 @@ export default defineConfig([
     dts: false,
     clean: false,
     sourcemap: true,
-    deps: { neverBundle: CLIENT_EXTERNALS, alwaysBundle: true },
+    external: CLIENT_EXTERNALS,
     define: {
       'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV ?? 'production'),
       'import.meta.env.MODE': JSON.stringify(process.env.NODE_ENV ?? 'production'),
