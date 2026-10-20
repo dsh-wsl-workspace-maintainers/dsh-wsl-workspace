@@ -224,6 +224,9 @@ for (const mutation of selected) {
     detail = String(error?.message ?? error)
   } finally {
     execFileSync('git', ['checkout', '--', mutation.file, 'lib'], { cwd: repoRoot })
+    // A build from a mutated source emits differently-hashed chunks; `checkout` does not remove files git
+    // never tracked, and those leftovers fail the next run's clean-tree check.
+    execFileSync('git', ['clean', '-fdq', 'lib'], { cwd: repoRoot })
   }
   rows.push({
     id: mutation.id,
