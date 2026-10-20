@@ -248,6 +248,20 @@ describe('model-facing renderers', () => {
     assert.equal(renderGrepText([], { maxMatches: 250, maxLineBytes: 2000 }), 'No matches found')
   })
 
+  it('treats the inline cap as inclusive: exactly maxResults is not a capped page', () => {
+    // The boundary was never asserted: the uncapped case used 2 paths against a cap of 3, so flipping
+    // `<=` to `<` left every assertion green while a result of exactly the cap started rendering the
+    // "(Showing 3 of 3 paths … narrow your pattern)" footer. A mutation sweep planted that flip and the
+    // suite did not notice (scripts/mutation-sweep.mjs, 2026-10-20); this is the lock it earned.
+    const head = { maxResults: 3, sampleOverCapGlobResults: false }
+    assert.equal(renderGlobText(['a', 'b', 'c'], head, '.'), 'a\nb\nc',
+      'exactly maxResults is the inline page, with no capped footer')
+    assert.match(renderGlobText(['a', 'b', 'c', 'd'], head, '.') ?? '', new RegExp('\\(Showing 3 of 4 paths'),
+      'one over the cap is a capped page')
+    assert.deepEqual(globCardPage(['a', 'b', 'c'], head, '.'), { items: ['a', 'b', 'c'], truncated: false },
+      'and the card agrees with the text at the same boundary')
+  })
+
   it('renders glob exactly like the host suite in both cap modes', () => {
     const paths = ['a', 'b', 'c', 'd', 'e']
     const head = { maxResults: 3, sampleOverCapGlobResults: false }

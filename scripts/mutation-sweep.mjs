@@ -106,7 +106,7 @@ const MUTATIONS = [
     file: 'package.json',
     note: 'a real dependency disappears from the manifest — installs here, not from the tarball',
     find: '    "js-yaml": "^4.1.0"',
-    replace: '    "js-yaml": "^4.1.0-by-hand"',
+    replace: '    "js-yaml": "^5.0.0"',
   },
   {
     id: 'locales-drop-zh',
@@ -192,11 +192,16 @@ for (const mutation of selected) {
   let caught = null
   let detail = ''
   try {
+    // The client gate reads the **committed** `lib/`, so a `src/` edit is invisible until it is built —
+    // which is the product's own order (lint-build rebuilds, then the client gate reads the bundle). A
+    // sweep that skipped the build would report "missed" for defects the suite does catch.
+    const build = spawnSync('npm', ['run', 'build'], { cwd: repoRoot, encoding: 'utf8', shell: true })
+    if (build.status !== 0) throw new Error(`the mutation does not compile: ${(build.stderr ?? '').slice(-400)}`)
     caught = firstRed(gatesFor(mutation))
   } catch (error) {
     detail = String(error?.message ?? error)
   } finally {
-    execFileSync('git', ['checkout', '--', mutation.file], { cwd: repoRoot })
+    execFileSync('git', ['checkout', '--', mutation.file, 'lib'], { cwd: repoRoot })
   }
   rows.push({
     id: mutation.id,
