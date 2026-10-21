@@ -97,10 +97,21 @@ jobs:
           set -eu
           VERSION="$(node -p "require('./package.json').version")"
           TAG="v$VERSION"
-          node scripts/unwrap-prose.mjs --stdout CHANGELOG.zh.md --section "$VERSION" > /tmp/release-notes.md
+          # This job checks out the *tag*, which for a repair dispatch may predate the unwrapping tool (that is
+          # exactly how the first attempt failed: MODULE_NOT_FOUND for scripts/unwrap-prose.mjs on v0.7.9).
+          # The notes are a transformation of the tag's own CHANGELOG, so the transformer can come from the
+          # default branch while the text stays the tagged one.
+          if [ -f scripts/unwrap-prose.mjs ]; then
+            UNWRAP="node scripts/unwrap-prose.mjs"
+          else
+            git fetch --depth=1 origin "refs/heads/${GITHUB_DEFAULT_BRANCH:-main}:refs/remotes/origin/${GITHUB_DEFAULT_BRANCH:-main}"
+            git show "origin/${GITHUB_DEFAULT_BRANCH:-main}:scripts/unwrap-prose.mjs" > /tmp/unwrap-prose.mjs
+            UNWRAP="node /tmp/unwrap-prose.mjs"
+          fi
+          $UNWRAP --stdout CHANGELOG.zh.md --section "$VERSION" > /tmp/release-notes.md
           if [ ! -s /tmp/release-notes.md ]; then
             echo "::warning::no Chinese section for ${VERSION}; falling back to CHANGELOG.md"
-            node scripts/unwrap-prose.mjs --stdout CHANGELOG.md --section "$VERSION" > /tmp/release-notes.md
+            $UNWRAP --stdout CHANGELOG.md --section "$VERSION" > /tmp/release-notes.md
           fi
           if [ -s /tmp/release-notes.md ]; then
             gh release create "$TAG" --title "$TAG" --notes-file /tmp/release-notes.md --verify-tag \
