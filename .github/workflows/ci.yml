@@ -90,6 +90,10 @@ jobs:
       # name two rows claim is invisible to it, and four of the 20 replayed defects are that shape.
       - name: host-interface contract
         run: npm run test:contract
+      # The two standing readings, re-measured against this tree: a version cannot publish with a
+      # number that was taken against a different ruler or a different host.
+      - name: release readings are recorded and still hold
+        run: npm run test:readings
       # The artifact we hand the host, against the host's own rules (#101, G3), and the install
       # shapes it is loaded from (#101, G4). Both read the pinned closure; neither boots anything.
       - name: artifact semantics of the generated variants

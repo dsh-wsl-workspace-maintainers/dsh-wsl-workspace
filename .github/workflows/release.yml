@@ -76,6 +76,7 @@ jobs:
         run: |
           node ci/install-pinned.mjs
           npm run test:contract
+          npm run test:readings
       - name: publish through Trusted Publishing
         # No NODE_AUTH_TOKEN: npm exchanges the workflow's OIDC identity for a short-lived publish grant,
         # and `--provenance` records which commit and workflow produced these bytes.
