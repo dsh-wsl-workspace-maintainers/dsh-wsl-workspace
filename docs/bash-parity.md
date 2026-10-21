@@ -1,18 +1,11 @@
 # How this `bash` differs from the one DSH mounts by default
 
-Every row here is a difference between the session `bash` this plugin mounts
-(`src/host/wsl-bash-tool.ts`) and the host's own `bash` tool, **and each row is read by code**:
+Every row here is a difference between the session `bash` this plugin mounts (`src/host/wsl-bash-tool.ts`) and the host's own `bash` tool, **and each row is read by code**:
 
-- `tests/wsl-bash-parity.test.ts` compares the two tools' declared surfaces (parameter keys, the
-  output arms, the foreground field names) against the installed host package, and requires every
-  difference it finds to be a row here whose kind is `api`. Delete a row and it goes red; add a
-  parameter without a row and it goes red.
-- `scripts/compatibility/bash-parity-real.mjs` runs one probe script against both tools on a real
-  distribution and compares the answers field by field, requiring every behavioural difference to be
-  a row here whose kind is `behaviour`.
+- `tests/wsl-bash-parity.test.ts` compares the two tools' declared surfaces (parameter keys, the output arms, the foreground field names) against the installed host package, and requires every difference it finds to be a row here whose kind is `api`. Delete a row and it goes red; add a parameter without a row and it goes red.
+- `scripts/compatibility/bash-parity-real.mjs` runs one probe script against both tools on a real distribution and compares the answers field by field, requiring every behavioural difference to be a row here whose kind is `behaviour`.
 
-A row that stops being true is a failure, not a cleanup: that is the point of keeping this in a table
-the gates parse instead of in prose someone might read.
+A row that stops being true is a failure, not a cleanup: that is the point of keeping this in a table the gates parse instead of in prose someone might read.
 
 | id | kind | difference | whose behaviour | what the user sees | verdict |
 | --- | --- | --- | --- | --- | --- |
@@ -50,23 +43,8 @@ the gates parse instead of in prose someone might read.
 
 ## What is *not* a difference
 
-`cd`, exported variables, aliases, shell options and functions survive between calls here and do not
-survive between the host's one-shot calls — that is the feature, and the host's PTY-backed persistent
-tool was the only other way to get it. It is the tool issue #51 was filed against: it decides a
-command has finished by matching a sentinel line in terminal text and requiring the exit code to be
-followed immediately by a newline, and an interactive Linux shell repaints that line. The session
-tier replaces it with a record on a byte channel; `DSH_WSL_PTY_SHELL=1` still mounts the old tier for
-comparison, and `scripts/compatibility/bash-session-real.mjs` keeps it as a control cell so the
-replaced behaviour cannot quietly come back.
+`cd`, exported variables, aliases, shell options and functions survive between calls here and do not survive between the host's one-shot calls — that is the feature, and the host's PTY-backed persistent tool was the only other way to get it. It is the tool issue #51 was filed against: it decides a command has finished by matching a sentinel line in terminal text and requiring the exit code to be followed immediately by a newline, and an interactive Linux shell repaints that line. The session tier replaces it with a record on a byte channel; `DSH_WSL_PTY_SHELL=1` still mounts the old tier for comparison, and `scripts/compatibility/bash-session-real.mjs` keeps it as a control cell so the replaced behaviour cannot quietly come back.
 
 ## The other tool in this world
 
-`wsl_terminal` is mounted beside `bash` and is deliberately *not* a row above: it is not a difference
-from the host's `bash` tool, it is a capability the host world does not have at all — the agent typing
-into a terminal of its own (a password prompt, a first-connection fingerprint, a REPL, a TUI). It has
-its own two devices, because this table's two gates only read `bash`'s surface:
-`tests/wsl-terminal-tool.test.ts` offline and nine live cells inside `bash-session-real.mjs`, both
-listed in [tty-triage.md](tty-triage.md#where-the-same-facts-live-in-machine-readable-form). The
-`bash` tool's own notes name it where a keyboard answer is what is missing — the sudo note and the
-"no keyboard check ran" note both point at it — so the model learns about the door from the failure
-that needs it, not from a tool list it never reads.
+`wsl_terminal` is mounted beside `bash` and is deliberately *not* a row above: it is not a difference from the host's `bash` tool, it is a capability the host world does not have at all — the agent typing into a terminal of its own (a password prompt, a first-connection fingerprint, a REPL, a TUI). It has its own two devices, because this table's two gates only read `bash`'s surface: `tests/wsl-terminal-tool.test.ts` offline and nine live cells inside `bash-session-real.mjs`, both listed in [tty-triage.md](tty-triage.md#where-the-same-facts-live-in-machine-readable-form). The `bash` tool's own notes name it where a keyboard answer is what is missing — the sudo note and the "no keyboard check ran" note both point at it — so the model learns about the door from the failure that needs it, not from a tool list it never reads.

@@ -31,7 +31,7 @@
     "test:rank": "node scripts/check-rank-parity.mjs",
     "test:profile": "node tests/host-profile-isolation.mjs",
     "test:compat": "bash scripts/verify-dsh-compat.sh",
-    "test:docs": "node scripts/check-docs-parity.mjs",
+    "test:docs": "node scripts/check-docs-parity.mjs && node scripts/unwrap-prose.mjs --check --tree",
     "test:matrix": "node scripts/check-release-matrix.mjs",
     "prepack": "npm run build",
     "prepublishOnly": "node scripts/verify-install.mjs && node scripts/verify-lib-sync.mjs",

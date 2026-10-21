@@ -1,8 +1,6 @@
 # Is it the pseudo-terminal? A triage sheet for `bash` calls
 
-Every `bash` call in a WSL workspace goes through one of three layers, and each fails in its own
-words. This sheet exists so a failure can be pinned to a layer **from the transcript alone**, in one
-re-run, without reopening the session wondering where to look.
+Every `bash` call in a WSL workspace goes through one of three layers, and each fails in its own words. This sheet exists so a failure can be pinned to a layer **from the transcript alone**, in one re-run, without reopening the session wondering where to look.
 
 | the layer | how to recognise it in a body | who owns it |
 | --- | --- | --- |
@@ -38,8 +36,7 @@ re-run, without reopening the session wondering where to look.
 
 ## Failures that belong to none of the three layers
 
-A WSL workspace inherits whatever the distribution and the machine are. These read like "the plugin's
-shell is broken" and are not; each has a one-line confirmation that answers as the session user.
+A WSL workspace inherits whatever the distribution and the machine are. These read like "the plugin's shell is broken" and are not; each has a one-line confirmation that answers as the session user.
 
 | symptom | what it actually is | confirm with | who can fix it |
 | --- | --- | --- | --- |
@@ -49,29 +46,11 @@ shell is broken" and are not; each has a one-line confirmation that answers as t
 | `man`, `info` answer with `command not found` | the distribution ships without them (common in slim images) | `command -v man` | the user installs it; nothing in this tier is involved |
 | a `tty: true` call returns `script: command not found` | the distribution has no `util-linux` `script` — the pseudo-terminal tier cannot exist there | `command -v script` | the user installs `util-linux`; the pipe tier is unaffected and stays the default |
 
-**Not measured, named so.** A distribution without `script`, `Defaults requiretty` in sudoers, nested
-wrappers (`bash -c "bash -c 'sudo x'"`), and how `script` propagates exit codes across util-linux
-versions are all untested here — the first two would change what the rows above promise.
+**Not measured, named so.** A distribution without `script`, `Defaults requiretty` in sudoers, nested wrappers (`bash -c "bash -c 'sudo x'"`), and how `script` propagates exit codes across util-linux versions are all untested here — the first two would change what the rows above promise.
 
 ## Where the same facts live in machine-readable form
 
-- [`bash-parity.md`](bash-parity.md) — every difference from the host's own `bash`, each row read by
-  two gates. The notes above are `field-notes`, `behaviour-keyboard-wait`, `behaviour-two-executions`,
-  `behaviour-escalated-streams`, `behaviour-overstrike` and `behaviour-no-tty`.
-- The keyboard door is not a `bash` difference and has no row there; it has its own two devices:
-  `tests/wsl-terminal-tool.test.ts` (offline, against a stand-in registry — what the tool asks the
-  host for and what it tells the model) and the nine `wsl_terminal` cells inside
-  `scripts/compatibility/bash-session-real.mjs` (live: a real `wsl.exe … bash -i` under a real
-  ConPTY, including a keystroke reaching a program blocked on `/dev/tty`, the shell running as the
-  workspace's user, and `close` leaving no process behind).
-- `scripts/compatibility/bash-session-real.mjs` — the live cells that assert each line appears when it
-  should and does not when it should not (66 cells, run on two planes on every `checks` frame). Each
-  reactive cell first reads whether *this* distribution gives the session a controlling terminal, and
-  says which branch it took: the premise is local, and asserting it as universal is how this file has
-  been caught out twice.
-- The host log: a stopped wait emits `wsl-bash: stopped a command waiting for input (kind at Nms) and
-  re-running it on a pseudo-terminal` at debug level. Where that lands depends on the launch tier —
-  `dsh web` and `headless` write it to the process stdout a driver holds in a file, and the installed
-  desktop keeps its child's stdout in memory only, so on a desktop window this line is readable from a
-  crash file or through whatever log-reading plugin is mounted, not from a steady-state log (the host
-  publishes none). The transcript-side lines above are the ones that are always available.
+- [`bash-parity.md`](bash-parity.md) — every difference from the host's own `bash`, each row read by two gates. The notes above are `field-notes`, `behaviour-keyboard-wait`, `behaviour-two-executions`, `behaviour-escalated-streams`, `behaviour-overstrike` and `behaviour-no-tty`.
+- The keyboard door is not a `bash` difference and has no row there; it has its own two devices: `tests/wsl-terminal-tool.test.ts` (offline, against a stand-in registry — what the tool asks the host for and what it tells the model) and the nine `wsl_terminal` cells inside `scripts/compatibility/bash-session-real.mjs` (live: a real `wsl.exe … bash -i` under a real ConPTY, including a keystroke reaching a program blocked on `/dev/tty`, the shell running as the workspace's user, and `close` leaving no process behind).
+- `scripts/compatibility/bash-session-real.mjs` — the live cells that assert each line appears when it should and does not when it should not (66 cells, run on two planes on every `checks` frame). Each reactive cell first reads whether *this* distribution gives the session a controlling terminal, and says which branch it took: the premise is local, and asserting it as universal is how this file has been caught out twice.
+- The host log: a stopped wait emits `wsl-bash: stopped a command waiting for input (kind at Nms) and re-running it on a pseudo-terminal` at debug level. Where that lands depends on the launch tier — `dsh web` and `headless` write it to the process stdout a driver holds in a file, and the installed desktop keeps its child's stdout in memory only, so on a desktop window this line is readable from a crash file or through whatever log-reading plugin is mounted, not from a steady-state log (the host publishes none). The transcript-side lines above are the ones that are always available.

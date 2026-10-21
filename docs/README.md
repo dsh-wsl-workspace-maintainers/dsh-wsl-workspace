@@ -1,10 +1,6 @@
 # Documentation index
 
-Where each document lives, what language it is in, and whether it still describes
-the current build. Naming rule: `kebab-case`, with a `.zh` suffix when the text is
-Chinese (English carries no suffix). Superseded documents move to
-[`archive/`](./archive/) unchanged — the banner at the top of each one names what
-replaced it.
+Where each document lives, what language it is in, and whether it still describes the current build. Naming rule: `kebab-case`, with a `.zh` suffix when the text is Chinese (English carries no suffix). Superseded documents move to [`archive/`](./archive/) unchanged — the banner at the top of each one names what replaced it.
 
 | Path | Language | What it is | Status |
 |---|---|---|---|
@@ -41,23 +37,9 @@ replaced it.
 
 Two checks read the prose, and neither is optional:
 
-- `node --test tests/readme-compat.test.mjs` — upstream of this index: both full READMEs must
-  list exactly the releases `package.json` declares, and the READMEs plus the help panel must
-  name the same repository the manifest does.
-- `node scripts/check-docs-parity.mjs` (`npm run test:docs`) — this index's own gate. It
-  declares every README's section **names** (not positions: v0.7.5 inserted
-  `## Compatibility` and shifted everything a position-based checker relied on), the eight
-  behaviour bullets each must carry, the language-neutral tool tokens (`wsl-search`,
-  `wsl-relay`, `bash_background`, `readlink`, `FS_SANDBOX_DENIED`), that no README keeps a
-  claim the English authority dropped, that no README hard-codes a version range in its
-  changelog pointer, that all nine offer the repository `package.json` names, that every
-  relative link resolves, and that the CHANGELOG pair agrees on the release list with the
-  newest entry equal to `package.json`'s version.
+- `node --test tests/readme-compat.test.mjs` — upstream of this index: both full READMEs must list exactly the releases `package.json` declares, and the READMEs plus the help panel must name the same repository the manifest does.
+- `node scripts/check-docs-parity.mjs` (`npm run test:docs`) — this index's own gate. It declares every README's section **names** (not positions: v0.7.5 inserted `## Compatibility` and shifted everything a position-based checker relied on), the eight behaviour bullets each must carry, the language-neutral tool tokens (`wsl-search`, `wsl-relay`, `bash_background`, `readlink`, `FS_SANDBOX_DENIED`), that no README keeps a claim the English authority dropped, that no README hard-codes a version range in its changelog pointer, that all nine offer the repository `package.json` names, that every relative link resolves, and that the CHANGELOG pair agrees on the release list with the newest entry equal to `package.json`'s version.
 
-The gate is docs-only, so it needs node ≥ 24 and nothing else — no host packages, no WSL, no
-network. Its mutation control: pointed at a tree before this split (`npm run test:docs --
---root <dir>`) it reports every stale translation by name and still exits 1.
+The gate is docs-only, so it needs node ≥ 24 and nothing else — no host packages, no WSL, no network. Its mutation control: pointed at a tree before this split (`npm run test:docs -- --root <dir>`) it reports every stale translation by name and still exits 1.
 
-Since #41 is merged, the gate runs in CI too: `npm run test:docs` is a step of the `checks`
-workflow's `lint-build` job, and it is registered in bucket A of
-[CHECK-CATALOG.md](./CHECK-CATALOG.md).
+Since #41 is merged, the gate runs in CI too: `npm run test:docs` is a step of the `checks` workflow's `lint-build` job, and it is registered in bucket A of [CHECK-CATALOG.md](./CHECK-CATALOG.md).

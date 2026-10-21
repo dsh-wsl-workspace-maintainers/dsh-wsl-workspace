@@ -6,71 +6,26 @@
 
 ## 0.7.9 — 2026-10-20
 
-**盘符路径的工作区终于能读到自己的技能，键盘门也能翻译那里的 Linux `cwd`。** 两处都是静默失败：注册在
-Windows 盘符路径下的 `/mnt/<drive>` 工作区（9P 服务不了 drvfs）技能目录恒空且无报错；`wsl_terminal` 则
-以“发行版未知”拒绝 Linux `cwd`，尽管对话框早已把它存了下来。技能 provider 现在按其余 provider 的方式
-解析这个工作区，并把 `/mnt` 路径按**盘符拼写**读取；键盘门读同一份登记。这两条是**世界一致性表先发现、
-而不是用户先报**的——本仓第一次由闸领先于报告。
+**盘符路径的工作区终于能读到自己的技能，键盘门也能翻译那里的 Linux `cwd`。** 两处都是静默失败：注册在 Windows 盘符路径下的 `/mnt/<drive>` 工作区（9P 服务不了 drvfs）技能目录恒空且无报错；`wsl_terminal` 则以“发行版未知”拒绝 Linux `cwd`，尽管对话框早已把它存了下来。技能 provider 现在按其余 provider 的方式解析这个工作区，并把 `/mnt` 路径按**盘符拼写**读取；键盘门读同一份登记。这两条是**世界一致性表先发现、而不是用户先报**的——本仓第一次由闸领先于报告。
 
-- **浏览失败不再留下残留消息。** 切回一个可用发行版时，之前那句“无法浏览该目录”会盖在刚刚加载好的列表上：
-  一个 `error` 字符串说不出自己装的是哪种失败，于是浏览失败由“取代它的那次成功浏览”退休——只退休这一种，
-  预设失败、发行版列表失败是另一件事。
-- **`/mnt/<drive>` 只有一种拼写。** `C://项目//src`（粘贴来的路径，或某个工具把分隔符写重了）过去会产出
-  `/mnt/c//项目/src`，同一个目录得到两个缓存键，技能扫描与工作区存储可能对“这是哪条路径”各执一词。
-- **回答“下一个问题能不能抓到”的测试。** 今天早先落地的五道闸之外，本版加入 `scripts/mutation-sweep.mjs`：
-  把套件从未针对过的缺陷种进去，看哪道闸注意到。它第一次运行就找到一处真缺口——glob 内联上限的边界从未被
-  断言过——锁已补进 `tests/wsl-search.test.ts`。`@deepseek-ai/dsh-jobs` 已钉进闭包，让后台作业工具在会话探针
-  里存在；字节断言仍需要活着的 agent，因此报告为**声明式未测量**，而不是通过。
-- **本版不声称修复**：[#78](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/78)
-  （`run_code` 在 `\\wsl.localhost\…` 根 + `workspace-write` 下）保持原状：护栏会点名拒绝这个形状，
-  给 WSL 世界一个真沙箱是产品决策，不是测试问题。
+- **浏览失败不再留下残留消息。** 切回一个可用发行版时，之前那句“无法浏览该目录”会盖在刚刚加载好的列表上：一个 `error` 字符串说不出自己装的是哪种失败，于是浏览失败由“取代它的那次成功浏览”退休——只退休这一种，预设失败、发行版列表失败是另一件事。
+- **`/mnt/<drive>` 只有一种拼写。** `C://项目//src`（粘贴来的路径，或某个工具把分隔符写重了）过去会产出 `/mnt/c//项目/src`，同一个目录得到两个缓存键，技能扫描与工作区存储可能对“这是哪条路径”各执一词。
+- **回答“下一个问题能不能抓到”的测试。** 今天早先落地的五道闸之外，本版加入 `scripts/mutation-sweep.mjs`：把套件从未针对过的缺陷种进去，看哪道闸注意到。它第一次运行就找到一处真缺口——glob 内联上限的边界从未被断言过——锁已补进 `tests/wsl-search.test.ts`。`@deepseek-ai/dsh-jobs` 已钉进闭包，让后台作业工具在会话探针里存在；字节断言仍需要活着的 agent，因此报告为**声明式未测量**，而不是通过。
+- **本版不声称修复**：[#78](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/78) （`run_code` 在 `\\wsl.localhost\…` 根 + `workspace-write` 下）保持原状：护栏会点名拒绝这个形状，给 WSL 世界一个真沙箱是产品决策，不是测试问题。
 
 ## 0.7.8 — 2026-10-20
 
-**这一版把 0.7.7 自己那份记录里已经写下的修复真正发出去。** registry 上的 0.7.7 tarball 是在那些修复落地之前
-构建的；[#85](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/85) 把它们补进了**已经
-发布**的那条记录——改的是文字，不是字节。其中两条今天从 tarball 本身就能证：`dsh-wsl-workspace@0.7.7` **没有
-`lib/wsl-image-tool.js`**（在 WSL 世界里应答 `read_image` 的那一行，
-[#83](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/83)），而它的 `lib/index.js` 里
-`PERSONA_APPEND` 仍以 `Your working directory {{cwd}} is inside a WSL …` 结尾——正是让严格渲染器报
-`unknown prompt variable "{{cwd}}"`
-（[#95](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/95)）的那句。本版携带的各条
-修复，说明就写在下面 0.7.7 那一段（#79、#81、#83、#84、#86、#87），原文不改；加这一行只是让记录与字节一致。
+**这一版把 0.7.7 自己那份记录里已经写下的修复真正发出去。** registry 上的 0.7.7 tarball 是在那些修复落地之前构建的；[#85](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/85) 把它们补进了**已经发布**的那条记录——改的是文字，不是字节。其中两条今天从 tarball 本身就能证：`dsh-wsl-workspace@0.7.7` **没有 `lib/wsl-image-tool.js`**（在 WSL 世界里应答 `read_image` 的那一行，[#83](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/83)），而它的 `lib/index.js` 里 `PERSONA_APPEND` 仍以 `Your working directory {{cwd}} is inside a WSL …` 结尾——正是让严格渲染器报 `unknown prompt variable "{{cwd}}"`（[#95](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/95)）的那句。本版携带的各条修复，说明就写在下面 0.7.7 那一段（#79、#81、#83、#84、#86、#87），原文不改；加这一行只是让记录与字节一致。
 
-- **`wsl-*` 会话现在声明并实测针对 DSH 0.2.1-rc.2。** 兼容窗口的头、`dshReleases` 与两份 README 一起前进，
-  测试树所依据的宿主族钉在 `0.2.1-rc.2`
-  （[#92](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/92)）。那个版本在这插件底下
-  改了什么写在那条 PR 里，而不是留给运行时去发现——前台 `bash` 与 fs 工具套件各多了一只 `workingDirectory`
-  手——而消费方台账新增的五对，现在每一对背后都有一次真调用
-  （[#94](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/94)）。
+- **`wsl-*` 会话现在声明并实测针对 DSH 0.2.1-rc.2。** 兼容窗口的头、`dshReleases` 与两份 README 一起前进，测试树所依据的宿主族钉在 `0.2.1-rc.2`（[#92](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/92)）。那个版本在这插件底下改了什么写在那条 PR 里，而不是留给运行时去发现——前台 `bash` 与 fs 工具套件各多了一只 `workingDirectory` 手——而消费方台账新增的五对，现在每一对背后都有一次真调用（[#94](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/94)）。
 
-- **不作声明**：[#89](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/89)
-  （0.2.1-rc.2 上「五个 `file:` 行 never started」）在本包、web profile、Desktop 自带宿主三面都不复现，全部绿；
-  在报告者答复前保持打开。
+- **不作声明**：[#89](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/89) （0.2.1-rc.2 上「五个 `file:` 行 never started」）在本包、web profile、Desktop 自带宿主三面都不复现，全部绿；在报告者答复前保持打开。
 
 ## 0.7.7 — 2026-10-07
-- **stderr 那一侧的溢出文件，现在和 stdout 那一侧守同样的承诺。** 四条都在真实发行版上量过（2026-10-11，
-  Ubuntu，`seq 1 200000 >&2`），四条都已修。
-  （1）*文件是短的*：流共 1 288 895 字节，文件只装了 1 011 753 字节，末尾断在数字中间——因为 stderr 的落盘
-  发生在 `settleStderr()` **之前**，而 stdout 的那次早已挪到之后；于是还在管道里的字节经 `takeStderr` 进了
-  答案，却从没进过文件。现在两次落盘都在等待之后，文件就是整条流。
-  （2）*截断是看不见的*：settled 的 run 把 `stderrTruncated` 写死成 `false`（标志位在建 run 之前就被清零），
-  而渲染器那句 `[output truncated; full output: …]` 只有 stdout 有——于是一条往 fd 2 写了 1.29 MB 的命令，
-  模型读到其中约 400 kB，既没有任何字说还有别的，也拿不到路径。现在 run 带上它真正置过的标志，正文里会出现
-  `[stderr truncated; full output: …]`。
-  （3）*我们自己的回显进了文件*：shell 的行编辑器会把它刚读到的那一行写到 stderr，所以文件第一行是
-  `… } | base64 -w0 )" # __DSH_WSL_BASH_REC`；现在第一个窗口会先过一遍答案用的那个 `dropProtocolEcho`。
-  （4）*命令写的 NUL 被吃掉*：读取端过去会滤掉 chunk 里**每一个** NUL，于是 `printf 'a\0b\n' >&2` 回来是
-  `ab`，而同样的字节走 stdout 却保留着。现在按标记的真实形状识别——它是携带它的那个 chunk 的最后一个字节，
-  因为这一帧不会再往 fd 2 写别的东西。
-- **用户装到的现在就是插件本身，而不是整个仓库的一份拷贝。** 旧 `package.json#files` 把 `src/` 和两张 README
-  配图一起打包：对改动前的树做一次全新的 `npm pack`，得 **2,757,545 B / 79 个成员**，其中 2,265,091 B（82.1%）
-  是 30 个源码文件和那 2 张图——运行期没有任何一方读它们（插件加载 `lib/`；读源码的那些门禁读的是仓库）。
-  同一条命令现在得 **492,454 B / 47 个成员**，两份成员清单的差别恰好就是被移除的 32 项。九份 README 的配图在
-  同一枚提交里改成绝对地址 `raw.githubusercontent.com/…/HEAD/…`，所以 npm 页面不靠仓库去改写相对路径也能显示图。
+- **stderr 那一侧的溢出文件，现在和 stdout 那一侧守同样的承诺。** 四条都在真实发行版上量过（2026-10-11，Ubuntu，`seq 1 200000 >&2`），四条都已修。（1）*文件是短的*：流共 1 288 895 字节，文件只装了 1 011 753 字节，末尾断在数字中间——因为 stderr 的落盘发生在 `settleStderr()` **之前**，而 stdout 的那次早已挪到之后；于是还在管道里的字节经 `takeStderr` 进了答案，却从没进过文件。现在两次落盘都在等待之后，文件就是整条流。（2）*截断是看不见的*：settled 的 run 把 `stderrTruncated` 写死成 `false`（标志位在建 run 之前就被清零），而渲染器那句 `[output truncated; full output: …]` 只有 stdout 有——于是一条往 fd 2 写了 1.29 MB 的命令，模型读到其中约 400 kB，既没有任何字说还有别的，也拿不到路径。现在 run 带上它真正置过的标志，正文里会出现 `[stderr truncated; full output: …]`。（3）*我们自己的回显进了文件*：shell 的行编辑器会把它刚读到的那一行写到 stderr，所以文件第一行是 `… } | base64 -w0 )" # __DSH_WSL_BASH_REC`；现在第一个窗口会先过一遍答案用的那个 `dropProtocolEcho`。（4）*命令写的 NUL 被吃掉*：读取端过去会滤掉 chunk 里**每一个** NUL，于是 `printf 'a\0b\n' >&2` 回来是 `ab`，而同样的字节走 stdout 却保留着。现在按标记的真实形状识别——它是携带它的那个 chunk 的最后一个字节，因为这一帧不会再往 fd 2 写别的东西。
+- **用户装到的现在就是插件本身，而不是整个仓库的一份拷贝。** 旧 `package.json#files` 把 `src/` 和两张 README 配图一起打包：对改动前的树做一次全新的 `npm pack`，得 **2,757,545 B / 79 个成员**，其中 2,265,091 B（82.1%）是 30 个源码文件和那 2 张图——运行期没有任何一方读它们（插件加载 `lib/`；读源码的那些门禁读的是仓库）。同一条命令现在得 **492,454 B / 47 个成员**，两份成员清单的差别恰好就是被移除的 32 项。九份 README 的配图在同一枚提交里改成绝对地址 `raw.githubusercontent.com/…/HEAD/…`，所以 npm 页面不靠仓库去改写相对路径也能显示图。
 
-- **"故意红"账本已清空，它记的十条债全部还清。** 每一条都是带修法的复现；十条现已全部修好，而机制留了下来——
-  任何**未声明**的新红仍然让门禁失败。
+- **"故意红"账本已清空，它记的十条债全部还清。** 每一条都是带修法的复现；十条现已全部修好，而机制留了下来—— 任何**未声明**的新红仍然让门禁失败。
 
   - **`check` 把每一次 `stat` 失败都折成 `{exists:false}`**（issue #44 §6）。没人能读的目录、或 9P 上的
     `EIO`，都被报成"不存在"——这是调用方唯一无法与真相区分的情形。现在只有 `ENOENT` 答`exists:false`，
@@ -94,10 +49,7 @@ Windows 盘符路径下的 `/mnt/<drive>` 工作区（9P 服务不了 drvfs）�
   - **`install-pinned.mjs` 通过 shell 建junction 且丢弃了它的输出**，丢掉了链接器自己的话，只留下一个裸
     退出码。`fs.symlinkSync` 是同一个 junction，错误自带 `EEXIST`/`EPERM`。
 
-  隐患 A、B、E 测的是 **Node 与操作系统**，不是本仓库：每个测试都复现某个形状、看着信息消失，所以修完产品
-  它们仍然是红的。它们现在改为对本仓库自己的调用点断言，一旦站点回来就失败；上方保留着原始测量，作为规则
-  为何如此书写的理由。`tests/deliberate-reds.test.mjs` 现在用自带的合成条目验证账本机制——因为读真实数组的
-  控制用例，会在最后一条债还清的那一刻同时失去覆盖。
+  隐患 A、B、E 测的是 **Node 与操作系统**，不是本仓库：每个测试都复现某个形状、看着信息消失，所以修完产品它们仍然是红的。它们现在改为对本仓库自己的调用点断言，一旦站点回来就失败；上方保留着原始测量，作为规则为何如此书写的理由。`tests/deliberate-reds.test.mjs` 现在用自带的合成条目验证账本机制——因为读真实数组的控制用例，会在最后一条债还清的那一刻同时失去覆盖。
 
 - **DSH 0.2.x 下 `bash_background` 的 `job_output` 始终为空（issue #56）。** `bash_background`（以及复用同一生产者的 `bash` 的 `run_in_background: true`）能正常起任务、`job_list` 也能追踪，但 `job_output` 每次读取都返回 `(no new output)`——运行中、结束后如此，完成通告也不带正文。命令**确实**执行了、stdout 也落了盘，所以死的是读取通道，不是任务本身。
 
@@ -106,94 +58,17 @@ Windows 盘符路径下的 `/mnt/<drive>` 工作区（9P 服务不了 drvfs）�
   生产者现在**双通道齐发**，各自版本线读取自己理解的那一个：`spec.output` 内两个 pull-source——`stdout` 与一个带 `stderr` 标签的 source——各自从 shell 进程自身的逐流 `observed` reader 读取（与 `readOutput` 所 drain 的是同一组独立游标，互不抢字节），同时保留 `run()` 返回的 `readOutput` 给 0.1.x 注册表使用。`spillPath` 原样透传，因此溢出流仍会报告其 spill 文件，`stderr` 也借由 channel 标签留在自己的通道上。
 
   新增一条单元门禁，复刻 0.2.x 的 drain 循环去拉取生产者产出的 `output` source，在旧生产者（无 source，或 source 不吐字节）上必定失败，故此类回归无法再静默复现。
-- **一条答案里出现两个文件时，现在会说明哪个装着全部内容。** 被截断的 `bash` 结果可能同时带着我们的
-  `[output truncated; full output: …]` 路径和宿主追加的 `Full formatted result stored at:` 路径，原先没说
-  哪个算哪个。现在 stdout 与 stderr 两臂都在那句之后跟一句：`[the path above holds the whole stream;
-  if this answer also names a "formatted result" path, that one is the host's excerpt and can hold fewer
-  lines]`。在客户端自带构建的真实会话里量过（2026-10-13，`seq 1 250000`）：我们点名的那条装着
-  **1 638 895 字节／250 000 行**，与裸命令同尺；宿主的格式化切片是 524 511 字节／74 892 行；stderr 臂是
-  1 638 895 对 357 165／50 985。客户端识别的那两句原文一字未动，原先能解析的现在照样解析。
-- **`read_image` 在 WSL 世界里重新能答了（issue #54）。** 宿主注册这个工具时所在上下文的 realm 链到不了我们切出的
-  世界，所以 WSL 会话里每次读图都在约 12 ms 内回 `cannot get property "fs" without inject`——连路径都还没解析
-  （不存在的路径回的是同一句）。现在世界在自己的行旁边挂上本插件的读取，按 realm 键解析 `fs`，用真实字节回答：
-  真实会话里量到 **296 ms、`image/png` 446x568／61992 字节**（文件在发行版内）。这件事付了两笔离线门禁看不见的学费，
-  在此记明：返回值必须过**宿主自己的输出校验**（第一版真的读到了图，却死在 `"value.image.name" is not a declared
-  property`——附件服务回七个字段，我们的 schema 只声明了五个），而真实会话是按 agent 解析工具的
-  （`dsh-tools` 的 `get(name, agent)`），所以同一进程里的非 WSL 会话仍拿宿主那条，复测 22 ms 正常。接受的图像格式与
-  宿主同为四种，也同样拦下未声明图像输入的模型档位，换成这条读取不丢任何检查。
-- **`run_code` 在"根本起不来"的那一格现在会明说，并给出出路（issue #78）。** Windows 上的文件沙箱靠读取工作区根的
-  安全描述符来授予写权限，而 `\\wsl.localhost\…` 是 9P 共享、没有这个东西，所以 PTC 会话在 `workspace-write` 下
-  一律死在 worker 启动阶段，报 `GetNamedSecurityInfoW failed (Win32 1)`——一个裸 Win32 码，没有成因、没有出路、
-  重试必然相同。现在 `tools.guard()` 只拒那一格（这个工具名、这个档位、根在 `\\wsl.localhost\` 或 `\\wsl$\`），
-  并点名三条真能跑的设置：把会话切到「仅可查看」、切到「完全访问」，或用世界自己的工具。同一份已安装产物在本机实测：
-  被拒那一发 **2 ms** 给出我方那句（内含被拒的根）；同一程序在「仅可查看」829 ms、在「完全访问」478 ms 仍回 `1`；
-  被拒档位下的 `bash` 仍打到发行版（448 ms，内核 `6.18.40.1-microsoft-standard-WSL2`）。这**没有给 WSL 世界一个真沙箱**
-  ——要站得住的强制必须搬进发行版内部；在那之前，一句可读的拒绝才是诚实的状态，而成因本身在宿主的 Windows ACL runner。
-- **给维护者的：一张消费方台账、两枚探针，以及一枚"套件死了还报绿"的门禁。** `docs/CONSUMER-COVERAGE.md` 每次运行都从
-  树上重新派生"哪些 `(服务, 宿主包)` 在向我们要被隔离的服务"，`tests/consumer-coverage.test.mjs` 把没跑过的数量钉住
-  （45 对里 43 对从未被执行）——这正是让 #54 和 #78 溜过去的缝：仓里所有装置都从"我们自己注册的工具"进去。
-  `npm run test:realm-probe` 与 `npm run test:confine-probe` 在真启动的宿主上打两枚 issue 的两臂；`run-seams` 现在把
-  "非零退出却没吐任何可登记的红"也算一枚观察到的红——此前两枚探针在 ubuntu runner 上就这么在绿帧里死掉过。两枚探针
-  都在 ubuntu runner 上 **SKIP**（钉住的闭包里没有 `@deepseek-ai/dsh-attachment`），只在维护者机器上真测：把检查放进
-  一个跑不动它的 job 不叫覆盖。
+- **一条答案里出现两个文件时，现在会说明哪个装着全部内容。** 被截断的 `bash` 结果可能同时带着我们的 `[output truncated; full output: …]` 路径和宿主追加的 `Full formatted result stored at:` 路径，原先没说哪个算哪个。现在 stdout 与 stderr 两臂都在那句之后跟一句：`[the path above holds the whole stream; if this answer also names a "formatted result" path, that one is the host's excerpt and can hold fewer lines]`。在客户端自带构建的真实会话里量过（2026-10-13，`seq 1 250000`）：我们点名的那条装着 **1 638 895 字节／250 000 行**，与裸命令同尺；宿主的格式化切片是 524 511 字节／74 892 行；stderr 臂是 1 638 895 对 357 165／50 985。客户端识别的那两句原文一字未动，原先能解析的现在照样解析。
+- **`read_image` 在 WSL 世界里重新能答了（issue #54）。** 宿主注册这个工具时所在上下文的 realm 链到不了我们切出的世界，所以 WSL 会话里每次读图都在约 12 ms 内回 `cannot get property "fs" without inject`——连路径都还没解析（不存在的路径回的是同一句）。现在世界在自己的行旁边挂上本插件的读取，按 realm 键解析 `fs`，用真实字节回答：真实会话里量到 **296 ms、`image/png` 446x568／61992 字节**（文件在发行版内）。这件事付了两笔离线门禁看不见的学费，在此记明：返回值必须过**宿主自己的输出校验**（第一版真的读到了图，却死在 `"value.image.name" is not a declared property`——附件服务回七个字段，我们的 schema 只声明了五个），而真实会话是按 agent 解析工具的（`dsh-tools` 的 `get(name, agent)`），所以同一进程里的非 WSL 会话仍拿宿主那条，复测 22 ms 正常。接受的图像格式与宿主同为四种，也同样拦下未声明图像输入的模型档位，换成这条读取不丢任何检查。
+- **`run_code` 在"根本起不来"的那一格现在会明说，并给出出路（issue #78）。** Windows 上的文件沙箱靠读取工作区根的安全描述符来授予写权限，而 `\\wsl.localhost\…` 是 9P 共享、没有这个东西，所以 PTC 会话在 `workspace-write` 下一律死在 worker 启动阶段，报 `GetNamedSecurityInfoW failed (Win32 1)`——一个裸 Win32 码，没有成因、没有出路、重试必然相同。现在 `tools.guard()` 只拒那一格（这个工具名、这个档位、根在 `\\wsl.localhost\` 或 `\\wsl$\`），并点名三条真能跑的设置：把会话切到「仅可查看」、切到「完全访问」，或用世界自己的工具。同一份已安装产物在本机实测：被拒那一发 **2 ms** 给出我方那句（内含被拒的根）；同一程序在「仅可查看」829 ms、在「完全访问」478 ms 仍回 `1`；被拒档位下的 `bash` 仍打到发行版（448 ms，内核 `6.18.40.1-microsoft-standard-WSL2`）。这**没有给 WSL 世界一个真沙箱** ——要站得住的强制必须搬进发行版内部；在那之前，一句可读的拒绝才是诚实的状态，而成因本身在宿主的 Windows ACL runner。
+- **给维护者的：一张消费方台账、两枚探针，以及一枚"套件死了还报绿"的门禁。** `docs/CONSUMER-COVERAGE.md` 每次运行都从树上重新派生"哪些 `(服务, 宿主包)` 在向我们要被隔离的服务"，`tests/consumer-coverage.test.mjs` 把没跑过的数量钉住（45 对里 43 对从未被执行）——这正是让 #54 和 #78 溜过去的缝：仓里所有装置都从"我们自己注册的工具"进去。`npm run test:realm-probe` 与 `npm run test:confine-probe` 在真启动的宿主上打两枚 issue 的两臂；`run-seams` 现在把 "非零退出却没吐任何可登记的红"也算一枚观察到的红——此前两枚探针在 ubuntu runner 上就这么在绿帧里死掉过。两枚探针都在 ubuntu runner 上 **SKIP**（钉住的闭包里没有 `@deepseek-ai/dsh-attachment`），只在维护者机器上真测：把检查放进一个跑不动它的 job 不叫覆盖。
 
-- **WSL 那句说明不再带提示词变量，于是 `wsl-*` 会话不会再死在发出第一次模型请求之前**（[#87](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/87)）。
-  `PERSONA_APPEND` 原文是 `Your working directory {{cwd}} is inside a WSL …`，而 `appendPersona()` 会把这句话写进
-  persona 面向模型的那个标量。persona 是一份模板：`@deepseek-ai/dsh-system-prompt` 会拿本次组装注册的变量去解析每一个
-  `{{…}}` 组，缺一个就抛 `unknown prompt variable "{{cwd}}" in section "deployment:persona-prefix"`；而 persona 段位于
-  order 0，所以整个变体在 turn 1 step 1 就倒下。DSH 是在两个 release 之间撤掉 `cwd` 的，这一点按已发布的包量出来、不是推断：
-  `dsh-agent-loop@0.2.0-rc.2` 注册 `provider`、`model` **和 `cwd`**（`lib/index.js:1566`），而 `0.2.1-rc.2` 只注册
-  `provider` 与 `model`（`lib/index.js:1591-1592`）。这句话现在写作 `Your working directory is inside a WSL …`：
-  对模型是同一个断言，却不再有任何一组的含义依赖别人家的注册表。**中招的是四个变体里的三个，不是四个**——`wsl-minimal`
-  的 persona 带 `complete: true`，从不被追加；issue 原文那句「4 个变体均如此」因此也要改正。报告里有一处是报障者对上游文档的
-  转述、不是这些包能给我们看的：0.2.x 改由某个服务把目录交给模型。本机量到的只是另一支的代价——一个连 token 都没花出去的死会话。
-  真机验证（Desktop `0.2.1-rc.1`，其内置 loop 只注册 `provider`/`model`、不含 `cwd`）：同一句提示词，在
-  `\\wsl.localhost\Ubuntu\home\ruler` 工作区、`wsl-standard` 档位下，装旧产物时回的是 处理失败 +
-  `unknown prompt variable "{{cwd}}"`、`1 轮 1 步`、零 token；换上这份产物后同一发 **6 秒／16.3K tok** 完成，
-  而该会话自己的转录里带着修好的那句、68,810 字节解压文本中**字面 `{{cwd}}` 为 0**。`PERSONA_APPEND` 是 `src/` 里唯一的
-  `{{`，所以整个注入面已被 [PR #90](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/90) 锁住：
-  四种自带文本里没有 `{{` 的 persona 形状要求产物也没有，变体的引用多重集必须等于源的，生成的那句还要过宿主自己的
-  `renderPrompt` 且注册表为空——并把修复前那句留在同一格作正对照，证明这把尺真的会咬。
-- **`grep` 与 `glob` 在 `/mnt/<drive>` 型 WSL 工作区里开始回答，而不是把它当成门外**（[#86](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/86)）。
-  按 Windows 盘符路径登记的工作区（`F:\TechEnergy\Code\Scanner`——因为 9P 无法导出 drvfs），模型**每一次**
-  调用都会拿到 `grep is only available in a WSL workspace session`，而同一会话里 `bash`、`read`、`write`、
-  `edit` 全部正常：会话是好的，只有搜索以为自己不在 WSL 里。`resolveTarget()` 只认两种 cwd——WSL UNC 与
-  Linux 绝对路径，盘符 cwd 两者都不是，于是返回 `undefined`，两个工具一起抛。现在它接住插件其余部分早就
-  在服务的那第三种形态：Linux 工作目录走 `windowsToMntPath`，发行版取自对话框写下的登记项，顺序与常驻
-  shell 走的那条一致（`src/host/wsl-relay.ts`：配置 → 登记项 → 注册表默认），因此 `grep` 搜的就是会话
-  `bash` 所在的那个发行版，而不是注册表恰好叫"默认"的那一个。相对路径与空 cwd 仍然不指名任何世界，仍然被拒。
-  **在把它当成一行补丁之前要知道的一件事**：`tests/wsl-search.test.ts` 里有一格名为
-  "refuses a cwd that is not in a WSL world"，断言 `resolveTarget('C:\\Users\\mille\\ws') === undefined`
-  ——缺陷被写成了契约。所以这一格是**拆开**而不是改掉：真正不指名世界的仍然拒，盘符形态各拿自己的用例。
-  两半都量过：退回未修源码时，三枚新的盘符格全红，第四枚（去调已登记的 `grep`/`glob` 工具、断言回来的
-  不是那句拒绝）报 `grep refused a WSL drive workspace`；修后该文件 36/36、`test:unit` 226 枚、
-  `test:node` 宿主桶 111 枚且两档 materializer 均 PASSED、`typecheck-gate` 209＝基线、`test:docs` 11/11。同一发也打在**打好的** `lib/wsl-search.js` 上、不是源码：
-  main 那份逐字复现两句报错，本产物 `grep` 回 `Found 1 match … ISSUE86-NEEDLE-…`、`glob` 回 `needle.txt`
-  ——真 `wsl.exe`、真发行版、真盘符 cwd，且登记项**只**给发行版，正是生成的 `search-wsl` 行在真实会话里的形状。
+- **WSL 那句说明不再带提示词变量，于是 `wsl-*` 会话不会再死在发出第一次模型请求之前**（[#87](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/87)）。`PERSONA_APPEND` 原文是 `Your working directory {{cwd}} is inside a WSL …`，而 `appendPersona()` 会把这句话写进 persona 面向模型的那个标量。persona 是一份模板：`@deepseek-ai/dsh-system-prompt` 会拿本次组装注册的变量去解析每一个 `{{…}}` 组，缺一个就抛 `unknown prompt variable "{{cwd}}" in section "deployment:persona-prefix"`；而 persona 段位于 order 0，所以整个变体在 turn 1 step 1 就倒下。DSH 是在两个 release 之间撤掉 `cwd` 的，这一点按已发布的包量出来、不是推断：`dsh-agent-loop@0.2.0-rc.2` 注册 `provider`、`model` **和 `cwd`**（`lib/index.js:1566`），而 `0.2.1-rc.2` 只注册 `provider` 与 `model`（`lib/index.js:1591-1592`）。这句话现在写作 `Your working directory is inside a WSL …`：对模型是同一个断言，却不再有任何一组的含义依赖别人家的注册表。**中招的是四个变体里的三个，不是四个**——`wsl-minimal` 的 persona 带 `complete: true`，从不被追加；issue 原文那句「4 个变体均如此」因此也要改正。报告里有一处是报障者对上游文档的转述、不是这些包能给我们看的：0.2.x 改由某个服务把目录交给模型。本机量到的只是另一支的代价——一个连 token 都没花出去的死会话。真机验证（Desktop `0.2.1-rc.1`，其内置 loop 只注册 `provider`/`model`、不含 `cwd`）：同一句提示词，在 `\\wsl.localhost\Ubuntu\home\ruler` 工作区、`wsl-standard` 档位下，装旧产物时回的是 处理失败 + `unknown prompt variable "{{cwd}}"`、`1 轮 1 步`、零 token；换上这份产物后同一发 **6 秒／16.3K tok** 完成，而该会话自己的转录里带着修好的那句、68,810 字节解压文本中**字面 `{{cwd}}` 为 0**。`PERSONA_APPEND` 是 `src/` 里唯一的 `{{`，所以整个注入面已被 [PR #90](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/90) 锁住：四种自带文本里没有 `{{` 的 persona 形状要求产物也没有，变体的引用多重集必须等于源的，生成的那句还要过宿主自己的 `renderPrompt` 且注册表为空——并把修复前那句留在同一格作正对照，证明这把尺真的会咬。
+- **`grep` 与 `glob` 在 `/mnt/<drive>` 型 WSL 工作区里开始回答，而不是把它当成门外**（[#86](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/86)）。按 Windows 盘符路径登记的工作区（`F:\TechEnergy\Code\Scanner`——因为 9P 无法导出 drvfs），模型**每一次** 调用都会拿到 `grep is only available in a WSL workspace session`，而同一会话里 `bash`、`read`、`write`、`edit` 全部正常：会话是好的，只有搜索以为自己不在 WSL 里。`resolveTarget()` 只认两种 cwd——WSL UNC 与 Linux 绝对路径，盘符 cwd 两者都不是，于是返回 `undefined`，两个工具一起抛。现在它接住插件其余部分早就在服务的那第三种形态：Linux 工作目录走 `windowsToMntPath`，发行版取自对话框写下的登记项，顺序与常驻 shell 走的那条一致（`src/host/wsl-relay.ts`：配置 → 登记项 → 注册表默认），因此 `grep` 搜的就是会话 `bash` 所在的那个发行版，而不是注册表恰好叫"默认"的那一个。相对路径与空 cwd 仍然不指名任何世界，仍然被拒。**在把它当成一行补丁之前要知道的一件事**：`tests/wsl-search.test.ts` 里有一格名为 "refuses a cwd that is not in a WSL world"，断言 `resolveTarget('C:\\Users\\mille\\ws') === undefined` ——缺陷被写成了契约。所以这一格是**拆开**而不是改掉：真正不指名世界的仍然拒，盘符形态各拿自己的用例。两半都量过：退回未修源码时，三枚新的盘符格全红，第四枚（去调已登记的 `grep`/`glob` 工具、断言回来的不是那句拒绝）报 `grep refused a WSL drive workspace`；修后该文件 36/36、`test:unit` 226 枚、`test:node` 宿主桶 111 枚且两档 materializer 均 PASSED、`typecheck-gate` 209＝基线、`test:docs` 11/11。同一发也打在**打好的** `lib/wsl-search.js` 上、不是源码：main 那份逐字复现两句报错，本产物 `grep` 回 `Found 1 match … ISSUE86-NEEDLE-…`、`glob` 回 `needle.txt` ——真 `wsl.exe`、真发行版、真盘符 cwd，且登记项**只**给发行版，正是生成的 `search-wsl` 行在真实会话里的形状。
 
 ## 0.7.6 — 2026-10-01
 
-- **DSH Desktop 0.2.x 上 WSL 工作区里每一次 `bash` 调用都失败（issue #51），修的是三件事。**
-  (1) *shell 接缝*：0.2.x 走 `ctx.shell.execute(spec)` 再 await `result()`，本插件实现的是 0.1.x 的
-  `resolve`/`run`/`start`——所以**常驻和回退两条路一起断**，不是一条。现在一份原语喂三个面，
-  `onExpiry` 与 `observed` 补齐；一直放着它没管的闸门是 typecheck 的**错误计数预算**（那行 `TS2515`
-  本来就在输出里），现在改成"禁用错误码出现即红"、自带哨兵，且基线只准下调（212 → 209）。
-  (2) *就绪契约*：宿主把 `PS1`/`PROMPT_COMMAND` 作为 Windows 变量注入，而 WSL 不在 `WSLENV` 里具名
-  就不会带进发行版，于是常驻 shell 用的是发行版默认提示符、宿主认不出来——中继里加一道桥即可，
-  真 ConPTY 上验过（改前：默认提示符；改后：`prompt=[dsh> ]` 且带 `133;D;` 标记）；契约值现在与装着的
-  宿主包做对照，不再手抄。(3) *持久 shell 本身*：宿主的 PTY 工具判定"跑完"的方式是在终端文本里找哨号行，
-  并要求退出码后面紧跟换行；而交互式 Linux shell 用 `ESC[<n>X` 重绘，会把哨号之后的格子填成空格——
-  在真实 Desktop 会话里量到**连续三次调用各挂 303.8 秒**，之后宿主把 shell 重置。现在这个世界挂的是本插件
-  自己的 `bash`：一只长命的 `bash --norc -i`，**经管道**驱动，完成信号是带着本次调用独有 nonce 的 NUL
-  分隔记录；登录环境静默 source、history expansion 关闭（顺带把 `!` 那一类失败在这条路上关掉）、被读到"正在等输入"的命令会拿到一只属于自己的伪终端（`script -qec`，由读进程决定而不是由命令名决定，
-  `tty: true` 可一上来就要）、命令卡住时重建会话并回放 `cd` 与 export 的变量，而**只是跑得久**的命令不会被第二次执行。
-  本机两档构建平面实测：
-  首发含启动约 0.5 秒，其后**中位 8 毫秒**（2026-10-06 实测：答案不再等那份状态记录；同样一条命令走"每条起一次 `wsl.exe`"是 222-236 毫秒，人在开着的终端里敲是 16 毫秒），`cd`/`export`/退出码/中文/`!`/`sed -i`/`tar`/`git commit`/`sudo` 全部验证通过，而同一条命令走 PTY 那一档
-  仍然超时——这个对照是新闸 `bash-session-real` 的最后一格，所以被换掉的行为不能悄悄回来。端到端是在**真宿主
-  工具派发**上验的（宿主的 `bash` 工具调我们的执行器，见 `tool-bash-real`）；`DSH_WSL_PTY_SHELL=1` 保留旧档可挂载。
-  **已把这个构建装进 DSH Desktop 点过**，点击查出两处离线闸门看不见的缺陷：宿主加载器会剥掉 `exports.default`，
-  于是模块级 `inject` 到不了 fiber，每次调用都报 `cannot get property "subprocess" without inject`；shell 对帧的
-  echo 只有**行尾**会到 stderr，于是每次调用的正文里都带着我们自己的协议字节。两处都已修，且都由"走产品真正用的那条通道"的新格子中住。
+- **DSH Desktop 0.2.x 上 WSL 工作区里每一次 `bash` 调用都失败（issue #51），修的是三件事。** (1) *shell 接缝*：0.2.x 走 `ctx.shell.execute(spec)` 再 await `result()`，本插件实现的是 0.1.x 的 `resolve`/`run`/`start`——所以**常驻和回退两条路一起断**，不是一条。现在一份原语喂三个面，`onExpiry` 与 `observed` 补齐；一直放着它没管的闸门是 typecheck 的**错误计数预算**（那行 `TS2515` 本来就在输出里），现在改成"禁用错误码出现即红"、自带哨兵，且基线只准下调（212 → 209）。(2) *就绪契约*：宿主把 `PS1`/`PROMPT_COMMAND` 作为 Windows 变量注入，而 WSL 不在 `WSLENV` 里具名就不会带进发行版，于是常驻 shell 用的是发行版默认提示符、宿主认不出来——中继里加一道桥即可，真 ConPTY 上验过（改前：默认提示符；改后：`prompt=[dsh> ]` 且带 `133;D;` 标记）；契约值现在与装着的宿主包做对照，不再手抄。(3) *持久 shell 本身*：宿主的 PTY 工具判定"跑完"的方式是在终端文本里找哨号行，并要求退出码后面紧跟换行；而交互式 Linux shell 用 `ESC[<n>X` 重绘，会把哨号之后的格子填成空格—— 在真实 Desktop 会话里量到**连续三次调用各挂 303.8 秒**，之后宿主把 shell 重置。现在这个世界挂的是本插件自己的 `bash`：一只长命的 `bash --norc -i`，**经管道**驱动，完成信号是带着本次调用独有 nonce 的 NUL 分隔记录；登录环境静默 source、history expansion 关闭（顺带把 `!` 那一类失败在这条路上关掉）、被读到"正在等输入"的命令会拿到一只属于自己的伪终端（`script -qec`，由读进程决定而不是由命令名决定，`tty: true` 可一上来就要）、命令卡住时重建会话并回放 `cd` 与 export 的变量，而**只是跑得久**的命令不会被第二次执行。本机两档构建平面实测：首发含启动约 0.5 秒，其后**中位 8 毫秒**（2026-10-06 实测：答案不再等那份状态记录；同样一条命令走"每条起一次 `wsl.exe`"是 222-236 毫秒，人在开着的终端里敲是 16 毫秒），`cd`/`export`/退出码/中文/`!`/`sed -i`/`tar`/`git commit`/`sudo` 全部验证通过，而同一条命令走 PTY 那一档仍然超时——这个对照是新闸 `bash-session-real` 的最后一格，所以被换掉的行为不能悄悄回来。端到端是在**真宿主工具派发**上验的（宿主的 `bash` 工具调我们的执行器，见 `tool-bash-real`）；`DSH_WSL_PTY_SHELL=1` 保留旧档可挂载。**已把这个构建装进 DSH Desktop 点过**，点击查出两处离线闸门看不见的缺陷：宿主加载器会剥掉 `exports.default`，于是模块级 `inject` 到不了 fiber，每次调用都报 `cannot get property "subprocess" without inject`；shell 对帧的 echo 只有**行尾**会到 stderr，于是每次调用的正文里都带着我们自己的协议字节。两处都已修，且都由"走产品真正用的那条通道"的新格子中住。
 
 - **第二轮把这只会话 `bash` 修到与宿主的 `bash` 逐字段同形。** 34 行常见命令矩阵抓到四件"不像日常 bash"的行为，全部改掉：`run_in_background: true` 原本是被静默忽略的参数（现在转交 `bash_background` 用的同一枚生产者）；相对 `workdir` 原本解析成空、就在上一次调用留下的目录里跑（现在按会话目录拼接，目录不存在时让 bash 自己的 `cd` 报错，与宿主 `resolveWorkdir` 同形）；超过上限的输出原本只留一个布尔、头部丢掉（现在整条流入库，并写 `[output truncated; full output: …]`，文案与目录和一次性路径一致，且**每条命令一个文件**）；重建时脱离父进程的子命令会留下（现在按会话令牌精确收尸，另配一枚"必须活下来"的对照进程）。journal 除 `cd` 与 export 外还回放 `set`/`shopt`/别名/函数——**分帧回放**，因为 `eval` 会先把整串解析完再执行，第 50 行的 `shopt` 救不了第 1623 行需要 extglob 才能解析的补全函数（症状：重建报告成功、91 个 rc 函数回来了、用户两轮前定义的函数没了）。差异现在是一张被两枚闸读的表：`tests/wsl-bash-parity.test.ts` 对着装着的宿主包比参数与输出字段，`scripts/compatibility/bash-parity-real.mjs` 用同一份探针脚本在真发行版上把两个工具各问一遍再逐字段对答案——没写进台账的差异、或写了却已消失的差异，都是构建红（见 `docs/bash-parity.md`）。占用实测：每只会话约 9.1 MB Windows 工作集（两枚 `wsl.exe`）加发行版内 3.4 MB，`vmmem` 不随会话数变化，运行期在输出溢出前不落任何文件。
 
@@ -201,60 +76,17 @@ Windows 盘符路径下的 `/mnt/<drive>` 工作区（9P 服务不了 drvfs）�
 
 - **伪终端这一档有三处接缝，是把它真开出来跑出来的，不是推出来的。** 不会上色的程序拿到终端时用"重打"表示强调，实测 `man` 一整页以 `N\bNA\bAM\bME\bE` 到达模型——人坐在真终端前读到的 `NAME` 在那里是乱码；折叠规则现在按终端自己的做法处理这台发行版**实测出现**的两种形状（`X\bX`、`_\bX`）。升级判定原先只读命令的第一个词，于是 `bash -c 'sudo true'`（模型非常爱写的形状）耗到期限、返回 `(no output)` 外加一次会话重建，而裸 `sudo true` 46 毫秒就答；现在会往里读一层 `bash`/`sh`/`zsh`/`dash` 的 `-c` 包装，读不动内容的包装就**不**升级，而不是猜一个。`tty: false` 原先什么都不做：只认 `true` 时，`man ls` 照样从伪终端回来，模型没有任何办法回到普通管道，现在 `false` 是否决。有两件事**没修**，因为它就是终端的样子：升级后的调用只有一条流，所以普通路径写的 `[stderr]` 段在那里不可能出现（宿主自己的 PTY 档同样——这条已进 `docs/bash-parity.md` 台账并配了探针）；而帧给伪终端的输入是 `/dev/null`，不能让程序去吃下一条命令的字节——这一点不但保留，还正是第二次尝试能让程序把自己的话讲完的原因。需要一块永远等不到的键盘的程序，现在由"读进程"那一档处理（见下面关于读数的那条），不再由程序的名字决定谁算等待。
 
-- **等键盘的命令现在靠读发行版来诊断，不再靠对名字——它拿到的是答案，不是期限。** 这一档在本版本里走过的路是：
-  一张首个词的白名单 → 三个"类别"（凭据 / 键盘 / 分页器）并给其中一类加 8 秒上限 → 全部删掉，换成在调用进行中
-  从会话外面看第二眼。每一步都留在账上，因为每一步都是被一次测量逼出来的：白名单在连字符处停住，于是
-  `ssh-copy-id`/`ssh-keygen`/`redis-cli` 永远匹配不上；只读第一个词在真会话里花掉 **121 703 毫秒**——模型发的就是
-  `{"command":"printf x; vim note.txt","timeoutMs":15000}`，两分钟默认期限烧完，交给模型一屏原始转义；尊重调用写的
-  期限在那种"永远等不到"的等待上一分钱也不省，因为 agent 不会把 16 889 毫秒的沉默读成"这个程序需要手指"，它读成
-  "这个环境很慢"，然后拿这个结论去规划后面每一次调用——而 `tar -cf /dev/null /usr` 确实要 15 秒、`vim -es` 处理
-  **100 万行** 只要 1 秒，所以任何"安静就是卡住"的规则都必须能把这两种分开。
-  现在每次采样（200–280 毫秒、约 2 Hz、且只在静默 1.2 秒之后）读的是：进程状态、这个作业是不是终端的前台进程组、
-  `/proc/<pid>/wchan`、它的描述符里有没有终端、以及它的 CPU 有没有在涨（`/proc/<pid>/schedstat`）。`sleep`、网络等待、
-  正在编译的程序各被其中一列排除掉；"睡在终端读上"的程序排除不掉。于是先把它停下——先发 `SIGCONT`，因为被停住的进程
-  会无视 `SIGTERM`——再在**同一次调用里**用属于它自己的伪终端重跑一遍；在那里那次键盘读会撞上文件尾，程序把自己的话讲完。
-  真会话实测（`D:\Temp\issue51-s0\v5-run.txt`）：`sh -c 'read x < /dev/tty'`——程序名是 `sh`，过去任何一份名单里都没有它——
-  628 毫秒被停下、1 760 毫秒答话；同样安静的 `sleep 4` 一步没被碰；要密码的 `sudo`（它清掉 dumpable 标志，因此把
-  `/proc` 条目藏起来）改由发行版 root 权限读同一枚探针（只读 `/proc`、每次调用最多跑一遍，root 不可用的发行版退回"无法确认"那一档并如实说明），2 412 毫秒带回 sudo 自己的话；一条为键盘等待写了
-  60 000 毫秒期限的调用 1 733 毫秒就返回了。两件事是说出来而不是悄悄做掉的：**这条命令已经跑了两次**（"它在提示之前
-  已经做过的事情，现在做了两遍"），因为不声明的第二次执行正是本票早前抓到过的那类缺陷；以及如果那趟 `/proc` 行走
-  一次都没回答，正文会写"这项检查没能运行"，而不是留下一段没有理由的期限——消失的前提不许伪装成一个结论。
-  而如果那趟行走回答了、但这台内核不报等待位置——WSL1 那档就是如此，每个进程的 `wchan` 与
-  `/proc/<pid>/syscall` 都是空的，也不点名哪个是前台作业——期限的正文会把它读到的那几行抄出来并标明
-  `w=not-reported`（与在 CPU 上的 `w=running`、读不得的别人的进程的 `w=0` 分列三档），而不是留下
-  "timed out" 让人读成"查过了，没什么异常"。
-  `tty: true` 一上来就要终端，`tty: false` 否决第二次尝试；分页器与实时画面那些类别名单原本要编码的行为，就是管道
-  自己的样子（`man` 吐出整页、`top: failed tty get` 687 毫秒拒画），哪句症状属于哪一层写在
-  [docs/tty-triage.md](docs/tty-triage.md)（该件为英文）。
+- **等键盘的命令现在靠读发行版来诊断，不再靠对名字——它拿到的是答案，不是期限。** 这一档在本版本里走过的路是：一张首个词的白名单 → 三个"类别"（凭据 / 键盘 / 分页器）并给其中一类加 8 秒上限 → 全部删掉，换成在调用进行中从会话外面看第二眼。每一步都留在账上，因为每一步都是被一次测量逼出来的：白名单在连字符处停住，于是 `ssh-copy-id`/`ssh-keygen`/`redis-cli` 永远匹配不上；只读第一个词在真会话里花掉 **121 703 毫秒**——模型发的就是 `{"command":"printf x; vim note.txt","timeoutMs":15000}`，两分钟默认期限烧完，交给模型一屏原始转义；尊重调用写的期限在那种"永远等不到"的等待上一分钱也不省，因为 agent 不会把 16 889 毫秒的沉默读成"这个程序需要手指"，它读成 "这个环境很慢"，然后拿这个结论去规划后面每一次调用——而 `tar -cf /dev/null /usr` 确实要 15 秒、`vim -es` 处理 **100 万行** 只要 1 秒，所以任何"安静就是卡住"的规则都必须能把这两种分开。现在每次采样（200–280 毫秒、约 2 Hz、且只在静默 1.2 秒之后）读的是：进程状态、这个作业是不是终端的前台进程组、`/proc/<pid>/wchan`、它的描述符里有没有终端、以及它的 CPU 有没有在涨（`/proc/<pid>/schedstat`）。`sleep`、网络等待、正在编译的程序各被其中一列排除掉；"睡在终端读上"的程序排除不掉。于是先把它停下——先发 `SIGCONT`，因为被停住的进程会无视 `SIGTERM`——再在**同一次调用里**用属于它自己的伪终端重跑一遍；在那里那次键盘读会撞上文件尾，程序把自己的话讲完。真会话实测（`D:\Temp\issue51-s0\v5-run.txt`）：`sh -c 'read x < /dev/tty'`——程序名是 `sh`，过去任何一份名单里都没有它—— 628 毫秒被停下、1 760 毫秒答话；同样安静的 `sleep 4` 一步没被碰；要密码的 `sudo`（它清掉 dumpable 标志，因此把 `/proc` 条目藏起来）改由发行版 root 权限读同一枚探针（只读 `/proc`、每次调用最多跑一遍，root 不可用的发行版退回"无法确认"那一档并如实说明），2 412 毫秒带回 sudo 自己的话；一条为键盘等待写了 60 000 毫秒期限的调用 1 733 毫秒就返回了。两件事是说出来而不是悄悄做掉的：**这条命令已经跑了两次**（"它在提示之前已经做过的事情，现在做了两遍"），因为不声明的第二次执行正是本票早前抓到过的那类缺陷；以及如果那趟 `/proc` 行走一次都没回答，正文会写"这项检查没能运行"，而不是留下一段没有理由的期限——消失的前提不许伪装成一个结论。而如果那趟行走回答了、但这台内核不报等待位置——WSL1 那档就是如此，每个进程的 `wchan` 与 `/proc/<pid>/syscall` 都是空的，也不点名哪个是前台作业——期限的正文会把它读到的那几行抄出来并标明 `w=not-reported`（与在 CPU 上的 `w=running`、读不得的别人的进程的 `w=0` 分列三档），而不是留下 "timed out" 让人读成"查过了，没什么异常"。`tty: true` 一上来就要终端，`tty: false` 否决第二次尝试；分页器与实时画面那些类别名单原本要编码的行为，就是管道自己的样子（`man` 吐出整页、`top: failed tty get` 687 毫秒拒画），哪句症状属于哪一层写在 [docs/tty-triage.md](docs/tty-triage.md)（该件为英文）。
 
-- **重复失败会被点名，但仍然照跑。** 同一串命令字节在同一只 shell 里第二次失败时，正文加
-  `[this exact command has failed 2 times in this shell with nothing succeeding in it since: …]`，
-  而**任何**一次成功都会清空全部计数——那句话讲的是"这之后什么都没成过"的 shell，所以两次 `npm test`
-  之间夹一次成功的 `npm install` 不能被说成死循环。**故意不做拒绝**：一个"不执行被告知的命令"的工具正是这张 ticket 要修的形态，而最常见的
-  第三种情形——装完依赖后 `npm test` 第三次通过——恰好是拒绝会打断的那个。
+- **重复失败会被点名，但仍然照跑。** 同一串命令字节在同一只 shell 里第二次失败时，正文加 `[this exact command has failed 2 times in this shell with nothing succeeding in it since: …]`，而**任何**一次成功都会清空全部计数——那句话讲的是"这之后什么都没成过"的 shell，所以两次 `npm test` 之间夹一次成功的 `npm install` 不能被说成死循环。**故意不做拒绝**：一个"不执行被告知的命令"的工具正是这张 ticket 要修的形态，而最常见的第三种情形——装完依赖后 `npm test` 第三次通过——恰好是拒绝会打断的那个。
 
-- **`sudo` 那句说明把"人"排在第一条出路。** 产品在右栏有面向人的交互终端标签
-  （`dsh-client-ui-sidebar-terminal`，走宿主自己的 PTY，本插件不碰），人在那里能正常输密码；
-  配 NOPASSWD / `DSH_WSL_USER=root` 退居第二条，含义是"让 agent 能自己跑"而不是"先救现场"。
+- **`sudo` 那句说明把"人"排在第一条出路。** 产品在右栏有面向人的交互终端标签（`dsh-client-ui-sidebar-terminal`，走宿主自己的 PTY，本插件不碰），人在那里能正常输密码；配 NOPASSWD / `DSH_WSL_USER=root` 退居第二条，含义是"让 agent 能自己跑"而不是"先救现场"。
 
-- **"这条命令在等一次没人敲的键盘"这句说明只看读数，不看"上限是不是我们施加的"。** 装机桌面端第一发真会话并没有发
-  `vim note.txt`，模型发的是 `{"command":"printf x; vim note.txt","timeoutMs":15000}` —— 它自己写了期限，而旧规则下
-  "调用自己写了期限"就换不到那句解法，只拿到一句通用说明。现在说明挂在"看见了什么"上：调用写多长的期限都不改变
-  它是不是一场等键盘的等待。第二格让超时文案自己互相对账：只有会话真的重建过时才允许声称"已重启"，而那一格的实测是——
-  `tty: true` 的 `sleep` 超时确实会重建会话。
+- **"这条命令在等一次没人敲的键盘"这句说明只看读数，不看"上限是不是我们施加的"。** 装机桌面端第一发真会话并没有发 `vim note.txt`，模型发的是 `{"command":"printf x; vim note.txt","timeoutMs":15000}` —— 它自己写了期限，而旧规则下 "调用自己写了期限"就换不到那句解法，只拿到一句通用说明。现在说明挂在"看见了什么"上：调用写多长的期限都不改变它是不是一场等键盘的等待。第二格让超时文案自己互相对账：只有会话真的重建过时才允许声称"已重启"，而那一格的实测是—— `tty: true` 的 `sleep` 超时确实会重建会话。
 
-- **常用命令清单是真跑进了一枚真 dsh 会话，121 703 毫秒就是这么抓到的。** 真 DSH 0.2.0-rc.2 实例（自己的
-  `DSH_HOME`、自己的端口、本地脚本化提供方，因此没有买任何一次推理）：27 行日常命令，读数取自这枚会话自己的落盘
-  日志，而不是需要谁转述的界面。多数行按设计答——要密码的 `sudo` 带回它自己的判断和那句说明、分页器 73 毫秒出内容、
-  `man`/`less` 吐出整份文档。两行没答对：上面那条"前面加个 `printf` 的编辑器"，以及一格把期望写在了错的介质上。
-  同一趟还抓到工具说明里一句假承诺：实时画面在管道上并不吐出文档，它是直接拒画（实测 `top: failed tty get`，退出码
-  1，687 毫秒），所以说明现在照实写，并让模型去要 `top -bn1`。
+- **常用命令清单是真跑进了一枚真 dsh 会话，121 703 毫秒就是这么抓到的。** 真 DSH 0.2.0-rc.2 实例（自己的 `DSH_HOME`、自己的端口、本地脚本化提供方，因此没有买任何一次推理）：27 行日常命令，读数取自这枚会话自己的落盘日志，而不是需要谁转述的界面。多数行按设计答——要密码的 `sudo` 带回它自己的判断和那句说明、分页器 73 毫秒出内容、`man`/`less` 吐出整份文档。两行没答对：上面那条"前面加个 `printf` 的编辑器"，以及一格把期望写在了错的介质上。同一趟还抓到工具说明里一句假承诺：实时画面在管道上并不吐出文档，它是直接拒画（实测 `top: failed tty get`，退出码 1，687 毫秒），所以说明现在照实写，并让模型去要 `top -bn1`。
 
-- **一个本工具没预料到的失败现在会自己报是哪一层。** 走了伪终端、又不落在已知形状（要密码、要按键）里就收尾失败的调用，会补一行
-  `[this call ran on a pseudo-terminal (script -qec, one stream): re-run the same command with "tty": false to rule this layer out before looking anywhere else]`，
-  同一个决策还以 debug 级写进宿主日志（`wsl-bash: pseudo-terminal for class=… deadline=…ms`），使 `dsh web`/`headless`
-  的日志也能回答"这发是不是 pty"（装机桌面端把子进程 stdout 只留在内存，所以那一档可读的一半仍是转录正文）。哪种症状属于哪一层的对照表（含宿主 PTY 档自己的哨号——issue #51 最初就是冲着它提的）在
-  [docs/tty-triage.md](docs/tty-triage.md)，那张表点名的每一行都由 `bash-session-real` 的一格钉住（现在 47 格，两档平面都跑）。
+- **一个本工具没预料到的失败现在会自己报是哪一层。** 走了伪终端、又不落在已知形状（要密码、要按键）里就收尾失败的调用，会补一行 `[this call ran on a pseudo-terminal (script -qec, one stream): re-run the same command with "tty": false to rule this layer out before looking anywhere else]`，同一个决策还以 debug 级写进宿主日志（`wsl-bash: pseudo-terminal for class=… deadline=…ms`），使 `dsh web`/`headless` 的日志也能回答"这发是不是 pty"（装机桌面端把子进程 stdout 只留在内存，所以那一档可读的一半仍是转录正文）。哪种症状属于哪一层的对照表（含宿主 PTY 档自己的哨号——issue #51 最初就是冲着它提的）在 [docs/tty-triage.md](docs/tty-triage.md)，那张表点名的每一行都由 `bash-session-real` 的一格钉住（现在 47 格，两档平面都跑）。
 
 - **一个真模型跑出了我们的格子没能覆盖的形状：读终端的 *builtin* 卡住的是 shell 自己。** 用真凭据被真模型端到端驱动时（四条命令全部由模型自己选），它写的是 `read -r line < /dev/tty`，而本仓所有格子写的都是 `sh -c …`：子进程阻塞能被"走后代"找到，*builtin* 没有子进程，于是一个都没分类到、那一发挂满 30 秒期限且没有说明（模型自己在总结里点出了这一点）。实测那一刻 shell 自己的行是 `Ss+ pgid==tpgid wchan=wait_woken fd0=/dev/tty` 且 CPU 不涨——同一枚签名，只高了一层——所以 shell 现在也在走路列表里，并带标记（命令之间的它在管道上等待，不能当成"在等键盘"）。解放它靠的是测量而不是想当然：`kill -INT` **不生效**（bash 接住信号后 read 系统调用被重启，实测信号已送达而调用仍跑到期限），所以它和任何卡死的进程一样被停掉、会话按 journal 重建、再由同一条重试路径把命令放到终端上重跑。同一句提示的第二趟：那一发 **3 104 毫秒**回来，正文 `read-exit=1 x=''` 加"第一次是靠重启 shell 结束的"那句说明，模型的收尾总结原文引用了它。落地过程中又被格子咬出三处缺陷：停机集合原本点名了样本里的每一行（样本现在永远包含 shell）、特权那一档的停机集合取自读不到的用户面行而不是 root 面见证的、以及被看门狗停掉的一发被报成了"调用方取消"——后者让真机闸把自己的这一轮中止了。
 

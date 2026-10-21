@@ -1,7 +1,6 @@
 # dsh-wsl-workspace
 
-[![dsh.so security](https://www.dsh.so/badge/dsh-wsl-workspace.svg)](https://www.dsh.so/artifact/dsh-wsl-workspace)
-[![dsh.so install](https://www.dsh.so/badge/install/dsh-wsl-workspace.svg)](https://www.dsh.so/artifact/dsh-wsl-workspace)
+[![dsh.so security](https://www.dsh.so/badge/dsh-wsl-workspace.svg)](https://www.dsh.so/artifact/dsh-wsl-workspace) [![dsh.so install](https://www.dsh.so/badge/install/dsh-wsl-workspace.svg)](https://www.dsh.so/artifact/dsh-wsl-workspace)
 
 [English](README.md) · [中文](README.zh.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Português](README.pt.md) · [Русский](README.ru.md)
 ![alt text](https://raw.githubusercontent.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/HEAD/image-3.png)
@@ -26,20 +25,11 @@ After restarting `dsh web`, a W button appears beside Settings at the sidebar fo
 
 ## Compatibility
 
-This build declares these DSH releases, each verified on an isolated instance (its own
-`DSH_HOME`, dependencies pinned to that release, the full check suite):
+This build declares these DSH releases, each verified on an isolated instance (its own `DSH_HOME`, dependencies pinned to that release, the full check suite):
 
-`0.1.0-rc.7` · `0.1.0-rc.8` · `0.1.1-rc.1` · `0.1.1-rc.2` · `0.1.2-rc.1` · `0.1.3-alpha.2` ·
-`0.1.5-rc.1` · `0.1.5-rc.2` · `0.1.7-rc.1` · `0.1.7-rc.2` · `0.2.0-rc.2` · `0.2.1-rc.2`
+`0.1.0-rc.7` · `0.1.0-rc.8` · `0.1.1-rc.1` · `0.1.1-rc.2` · `0.1.2-rc.1` · `0.1.3-alpha.2` · `0.1.5-rc.1` · `0.1.5-rc.2` · `0.1.7-rc.1` · `0.1.7-rc.2` · `0.2.0-rc.2` · `0.2.1-rc.2`
 
-The list mirrors `dsh.compatibility.dshReleases` in `package.json`, and a unit test fails if
-the two drift apart. `0.2.1-rc.2` is the DSH release DSH Desktop `0.2.1-rc.2` ships — verified
-against the host inside that application's own bundle, not only against the npm release — so the
-Desktop is covered by the same declaration; the app's help panel (the dialog's "?" button)
-shows the same chips next to the plugin version. The plugin detects the DSH generation at
-runtime and picks the matching API, and a release exposing neither fails loudly instead of
-leaving an empty workspace. A release outside the list usually still works, but is
-unverified.
+The list mirrors `dsh.compatibility.dshReleases` in `package.json`, and a unit test fails if the two drift apart. `0.2.1-rc.2` is the DSH release DSH Desktop `0.2.1-rc.2` ships — verified against the host inside that application's own bundle, not only against the npm release — so the Desktop is covered by the same declaration; the app's help panel (the dialog's "?" button) shows the same chips next to the plugin version. The plugin detects the DSH generation at runtime and picks the matching API, and a release exposing neither fails loudly instead of leaving an empty workspace. A release outside the list usually still works, but is unverified.
 
 ## Usage
 

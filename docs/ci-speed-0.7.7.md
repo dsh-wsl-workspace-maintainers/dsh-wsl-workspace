@@ -1,8 +1,6 @@
 # CI speed at v0.7.7 — where the 7.9 minutes actually go
 
-Measured on the first all-green frame of this lane, run **#169** at `976a0ba`, using the Actions API's
-own timestamps (queue and run per job; the artifact logs for the per-cell readings). Nothing here is a
-guess: the arithmetic is `completed_at - started_at` per job and `"ms":` readings per check.
+Measured on the first all-green frame of this lane, run **#169** at `976a0ba`, using the Actions API's own timestamps (queue and run per job; the artifact logs for the per-cell readings). Nothing here is a guess: the arithmetic is `completed_at - started_at` per job and `"ms":` readings per check.
 
 ## 1. The shape of a green frame
 
@@ -15,9 +13,7 @@ guess: the arithmetic is `completed_at - started_at` per job and `"ms":` reading
 | node buckets against the pinned host tree (ubuntu) | 53 | 3% |
 | gates on the committed artifact plane (ubuntu) | 18 | 1% |
 
-Run wall clock (created → last job finished) **474 s = 7.9 min**; billed **1,612 s = 26.9 min**; the
-four windows jobs are **96%** of the billed time; queue was 2–4 s, so right now nothing is waiting for
-a runner. `compat-window` is a separate weekly/demand workflow and is not in this path.
+Run wall clock (created → last job finished) **474 s = 7.9 min**; billed **1,612 s = 26.9 min**; the four windows jobs are **96%** of the billed time; queue was 2–4 s, so right now nothing is waiting for a runner. `compat-window` is a separate weekly/demand workflow and is not in this path.
 
 Inside one WSL1 job (448 s):
 
@@ -29,8 +25,7 @@ Inside one WSL1 job (448 s):
 | setup-node / npm ci / checkout | 28 |
 | everything else | 14 |
 
-Inside the gates step (276 s of measured group spans): `bash-session-real` **215 s**, `relay-real`
-**30 s**, every other gate ≤ 4 s. The same two drivers on WSL2: 48 s and 30 s.
+Inside the gates step (276 s of measured group spans): `bash-session-real` **215 s**, `relay-real` **30 s**, every other gate ≤ 4 s. The same two drivers on WSL2: 48 s and 30 s.
 
 ### 1b. The same four jobs after §2 and §3 (frame **#172**, `af71802`, success)
 
@@ -41,43 +36,24 @@ Inside the gates step (276 s of measured group spans): `bash-session-real` **215
 | #174 repeat (docs-only, `9c2bff0`) | 365 s | 372 s | 296 s | 465 s | 490 s | 1,566 s |
 | gates step | 286 → **224 s** | 275 → **216 s** | 122 → 122 s | 116 → 114 s | | |
 
-Two frames of the same code, so the two claims separate cleanly. **The WSL1 jobs are steady**: 377/369 s
-then 365/372 s, a 12 s spread, and that is the claim this branch makes — §2's per-cell numbers come from
-the step log, not from a job total. **The run wall is not**: 407 s then 490 s, because `wall = max(jobs)`
-and the WSL2 lib job drifted 347 → 465 s on the steps *around* the gates. So the sentence to carry forward
-is "−62 s on each WSL1 gate step", not "−67 s of wall"; the second is one frame's arithmetic and the third
-frame says it does not reproduce.
+Two frames of the same code, so the two claims separate cleanly. **The WSL1 jobs are steady**: 377/369 s then 365/372 s, a 12 s spread, and that is the claim this branch makes — §2's per-cell numbers come from the step log, not from a job total. **The run wall is not**: 407 s then 490 s, because `wall = max(jobs)` and the WSL2 lib job drifted 347 → 465 s on the steps *around* the gates. So the sentence to carry forward is "−62 s on each WSL1 gate step", not "−67 s of wall"; the second is one frame's arithmetic and the third frame says it does not reproduce.
 
-The WSL2 columns are the control this change did not need to ask for: where the kernel gives the tool
-something to act on, the gate step did **not** move (122 s → 122 s, 116 → 114 s), which is what
-"only the non-acting arm asked a shorter deadline" predicts. The WSL2 lib job's 318 → 347 s is not the
-gates — it is provisioning and the steps around them; §3's per-gate line is what makes that separation
-free instead of something a later reader has to reconstruct.
+The WSL2 columns are the control this change did not need to ask for: where the kernel gives the tool something to act on, the gate step did **not** move (122 s → 122 s, 116 → 114 s), which is what "only the non-acting arm asked a shorter deadline" predicts. The WSL2 lib job's 318 → 347 s is not the gates — it is provisioning and the steps around them; §3's per-gate line is what makes that separation free instead of something a later reader has to reconstruct.
 
 ### 1c. A frame on the other code line, which sizes the noise (PR #68's frame, `1d3e5ac`, success)
 
-PR #68 (the session-shell exit answer) is based on `main`, so it runs **without** §2's shorter asks and
-without §3's elapsed line. Against #169, which is the same asks:
+PR #68 (the session-shell exit answer) is based on `main`, so it runs **without** §2's shorter asks and without §3's elapsed line. Against #169, which is the same asks:
 
 | | WSL1 src | WSL1 lib | WSL2 src | WSL2 lib | run wall | billed |
 |---|---|---|---|---|---|---|
 | #169 (main-line, long asks) | 448 s | 444 s | 331 s | 318 s | 474 s | 1,612 s |
 | #68 (main + 3 census rows, long asks) | 555 s | 457 s | 430 s | 312 s | 578 s | 1,821 s |
 
-The three new census rows cost ~3 s measured locally (1 346 + 1 498 + 1 308 ms, replacing nothing), so
-they are not what moved. What moved is up to **+107 s on one job and −6 s on another, same code line**, which
-is runner-to-runner drift, not signal. That is the size of the noise any job-total claim has to clear — and
-it is why §1b's "12 s spread" is scoped to the two frames of *this* branch, and why the saving in this file
-is written as a step's elapsed (`286 → 224 s`) rather than as a wall number. §3's line is the only thing on
-this branch that can tell those two stories apart, and it is not on `main` yet.
+The three new census rows cost ~3 s measured locally (1 346 + 1 498 + 1 308 ms, replacing nothing), so they are not what moved. What moved is up to **+107 s on one job and −6 s on another, same code line**, which is runner-to-runner drift, not signal. That is the size of the noise any job-total claim has to clear — and it is why §1b's "12 s spread" is scoped to the two frames of *this* branch, and why the saving in this file is written as a step's elapsed (`286 → 224 s`) rather than as a wall number. §3's line is the only thing on this branch that can tell those two stories apart, and it is not on `main` yet.
 
 ## 2. The one finding worth acting on, and its size
 
-`bash-session-real` prints a millisecond reading for its keyboard-wait cells. On the WSL1 frame five
-readings are ≥ 8 s and sum to **103.5 s** of the driver's 215 s; on the WSL2 frame the same nine
-readings sum to **11.9 s**, maximum 4.0 s. The five are the cells whose assertion, on the branch where
-the kernel exposes nothing to act on (`w=not-reported`, no foreground job), is *"the call ended at the
-deadline it was handed, and named the reading it relied on"*:
+`bash-session-real` prints a millisecond reading for its keyboard-wait cells. On the WSL1 frame five readings are ≥ 8 s and sum to **103.5 s** of the driver's 215 s; on the WSL2 frame the same nine readings sum to **11.9 s**, maximum 4.0 s. The five are the cells whose assertion, on the branch where the kernel exposes nothing to act on (`w=not-reported`, no foreground job), is *"the call ended at the deadline it was handed, and named the reading it relied on"*:
 
 | cell | asked | WSL1 |
 |---|---|---|
@@ -87,35 +63,15 @@ deadline it was handed, and named the reading it relied on"*:
 | a builtin that reads the terminal | 20 s | 20.7 s |
 | a longer deadline does not buy a keyboard wait back | 8 s | 11.7 s |
 
-The deadline's **length** is not what those five prove. The file already knows this: the last row's ask
-is `canAct ? 60_000 : 8_000`, written that way on purpose. This branch extends the same shape to the
-three 20 s cells above that do not decide `canAct` — and to two more of the same shape further down the
-file (`a waiting command inside a wrapper`, `a rebuild triggered by a terminal wait`), which happened
-not to be over 8 s in this frame. The one 20 s cell that *does* decide `canAct` (`starved`) is left
-alone, because it is the call that discovers which arm the run is on.
+The deadline's **length** is not what those five prove. The file already knows this: the last row's ask is `canAct ? 60_000 : 8_000`, written that way on purpose. This branch extends the same shape to the three 20 s cells above that do not decide `canAct` — and to two more of the same shape further down the file (`a waiting command inside a wrapper`, `a rebuild triggered by a terminal wait`), which happened not to be over 8 s in this frame. The one 20 s cell that *does* decide `canAct` (`starved`) is left alone, because it is the call that discovers which arm the run is on.
 
-Predicted here before the frame: **−36 s per WSL1 job**, from the three tabled cells alone. Measured on
-#172 (§1b): **−62 s** on WSL1 src (286 → 224 s) and **−59 s** on WSL1 lib (275 → 216 s) — the two
-further-down cells did burn seconds after all, just not enough to clear 8 s individually in #169, which
-is why the arithmetic under-called it. Run wall 474 → **407 s**, billed 1,612 → 1,471 s — with the second
-frame of the same code (#174, §1b) showing that the wall number does not reproduce (407 → 490 s, on a
-WSL2 job that drifted), while the two WSL1 jobs and their gate steps do. The shape of the saving is
-unchanged: it is relief on the WSL1 arm, and 121 s of windows time per frame, not a cheaper unit of work.
+Predicted here before the frame: **−36 s per WSL1 job**, from the three tabled cells alone. Measured on #172 (§1b): **−62 s** on WSL1 src (286 → 224 s) and **−59 s** on WSL1 lib (275 → 216 s) — the two further-down cells did burn seconds after all, just not enough to clear 8 s individually in #169, which is why the arithmetic under-called it. Run wall 474 → **407 s**, billed 1,612 → 1,471 s — with the second frame of the same code (#174, §1b) showing that the wall number does not reproduce (407 → 490 s, on a WSL2 job that drifted), while the two WSL1 jobs and their gate steps do. The shape of the saving is unchanged: it is relief on the WSL1 arm, and 121 s of windows time per frame, not a cheaper unit of work.
 
-**How this is verified:** the non-acting arm cannot be exercised on a machine whose `/proc` answers —
-so the WSL1 job on this PR's own frame *is* the experiment, and #172 is green with the five cells'
-assertions intact. The acting arm was re-run locally (`bash-session-real`, both planes, Ubuntu/WSL2):
-**73/73 and 73/73**, unchanged — and the WSL2 gate step not moving (122 s → 122 s) is the same fact
-reported by a runner rather than by a laptop.
+**How this is verified:** the non-acting arm cannot be exercised on a machine whose `/proc` answers — so the WSL1 job on this PR's own frame *is* the experiment, and #172 is green with the five cells' assertions intact. The acting arm was re-run locally (`bash-session-real`, both planes, Ubuntu/WSL2): **73/73 and 73/73**, unchanged — and the WSL2 gate step not moving (122 s → 122 s) is the same fact reported by a runner rather than by a laptop.
 
 ## 3. The gate step now says who took the time
 
-`run_one` in `ci.yml` printed `rc=` and the gate's verdict lines but no elapsed, so §1's numbers cost
-downloading four log artifacts and parsing their JSON readings. Each gate now prints
-`elapsed=Ns` next to its rc — and it paid for itself on the very next frame: #172's WSL1 src step
-attributes itself to one line, `elapsed=153s` on `bash-session-real` and `elapsed=31s` on
-`relay-real`, with everything else ≤ 4 s. The next analysis of this lane reads one step log instead of
-four artifacts.
+`run_one` in `ci.yml` printed `rc=` and the gate's verdict lines but no elapsed, so §1's numbers cost downloading four log artifacts and parsing their JSON readings. Each gate now prints `elapsed=Ns` next to its rc — and it paid for itself on the very next frame: #172's WSL1 src step attributes itself to one line, `elapsed=153s` on `bash-session-real` and `elapsed=31s` on `relay-real`, with everything else ≤ 4 s. The next analysis of this lane reads one step log instead of four artifacts.
 
 ## 4. Options measured but not taken, with their price
 
@@ -130,11 +86,4 @@ four artifacts.
 
 ## 5. Standing claim this file keeps honest
 
-The four windows jobs exist because two kernel shapes answer the keyboard-wait question differently, and
-because `lib/` is what ships. §2 shortens the waiting **only** where the wait was not the claim; the
-cell that must still wait a long deadline to prove it (`a longer deadline does not buy a keyboard wait
-back`) keeps its 8 s ask on that branch and its 60 s ask where the tool can act. If a future frame shows
-one of the five changed cells red on WSL1 with `timedOut !== true`, that is the change being wrong, not
-the runner being flaky. **Frame #172 tested that sentence and did not trigger it**: green on both WSL1
-planes, with the same cells still reporting a timeout at the deadline they were handed and a witness
-clause in the body.
+The four windows jobs exist because two kernel shapes answer the keyboard-wait question differently, and because `lib/` is what ships. §2 shortens the waiting **only** where the wait was not the claim; the cell that must still wait a long deadline to prove it (`a longer deadline does not buy a keyboard wait back`) keeps its 8 s ask on that branch and its 60 s ask where the tool can act. If a future frame shows one of the five changed cells red on WSL1 with `timedOut !== true`, that is the change being wrong, not the runner being flaky. **Frame #172 tested that sentence and did not trigger it**: green on both WSL1 planes, with the same cells still reporting a timeout at the deadline they were handed and a witness clause in the body.

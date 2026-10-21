@@ -29,48 +29,24 @@
 
 三种形态，全部出现在本项目，全部是我自己写的：
 
-1. **恒真**：`tool?.name !== undefined || sessionName === 'bash'`，而 `sessionName` 就是
-   `TOOL_NAME ?? 'bash'` —— 两个 disjunct 恒为真。要抓"registry 答的是不是宿主的一次性 bash"，
-   判据得是**描述**而不是名字：会话工具的 `description` 以
-   `Run a bash command inside this WSL distribution. The shell is persistent:` 开头，一次性的不是。
-2. **截断**：`grep -n 'pathToFileURL' f | head -3` 之后据此判定"没有别的用处"，而被截掉的那行
-   正是唯一的使用点（`w51-probe.mjs:81` 加载 `lib/shell.js`）。
-3. **夹具代答**：注入式夹具把 `join` / `AbortSignal` 这类绑定补齐，于是测试通过，而真实文件里
-   那个绑定根本不存在（CI 上直接 `ReferenceError`）。
-4. **装置少跑一道关卡**：探针从工具的 `execute` 拿到返回值、自己调 `output.render` 渲染，于是
-   全程没经过宿主派发时的那道输出校验（`dsh-tools` 的 `validateJsonSchemaValue`）。#54 的复刻件在
-   探针里 7 行全绿，真机一发却死在这里——`Error: tool "read_image" returned invalid output:
-   "value.image.name" is not a declared property (additionalProperties: false)`（373 ms，图已经读到了）。
-   凡"重新实现宿主已有的工具"，声明的 schema 必须逐字段抄宿主的，并且装置要**用宿主那只校验函数**
-   过一遍返回值（`providers.tools.namespace.validateJsonSchemaValue`，`w54-isolate-probe` row 6 现在这么做）。
-5. **拿两份同一个类的实例做 `instanceof`**：2026-10-19 `w78-confine-probe` 两行红，报的是"槽位里的
-   provider 不是宿主的 `LocalSandboxProvider`"，而 realm、构造器名、`confine()` 的实际行为全都说它是。
-   真因在装置：探针按**绝对路径**导入那个类，overlay 的行却按**包名**挂载，Node 的 ESM 缓存按 URL 记模块，
-   于是同一个文件有了两个类对象，`instanceof` 永远为假。把行改成按同一条绝对路径挂载，六行全绿；
-   只把盘符大小写规范化（`file:///D:/…` vs `file:///d:/…` 确实是两个模块，实测）改不了它——两份副本的
-   realpath 本来就一致，不一致的是**谁去解析**。⇒ 断言"是不是这个类"之前，先确认装置和被告读的是同一份模块：
-   挂载行与探针导入必须共用同一个路径来源，或者干脆只比构造器名＋模块路径并把跨实例 `instanceof` 当诊断信息打出来。
-6. **按 `existsSync` 增量填充的临时目录，会替上一个 release 说话**：同一天 `w54-isolate-probe` 死了，
-   宿主先打四行 `disabling profile plugin row "…": Plugin …@0.2.0-rc.2 is incompatible with dsh 0.2.1-rc.2`。
-   它的 shadow 闭包（link 与 copy 都有 `existsSync` 守卫）里留着升树前的副本，boot 拿这些旧副本去配新的运行时，
-   于是四行被丢掉、探针读到一个空世界。⇒ 一次性目录要么每次重建，要么在挂载前验一次"这份副本的版本 ==
-   本次被测的那一版"（`w54` 现在有 `closure-versions` 那一格；`w92` 在 `hostRow` 里做同样的事）。
+1. **恒真**：`tool?.name !== undefined || sessionName === 'bash'`，而 `sessionName` 就是 `TOOL_NAME ?? 'bash'` —— 两个 disjunct 恒为真。要抓"registry 答的是不是宿主的一次性 bash"，判据得是**描述**而不是名字：会话工具的 `description` 以 `Run a bash command inside this WSL distribution. The shell is persistent:` 开头，一次性的不是。
+2. **截断**：`grep -n 'pathToFileURL' f | head -3` 之后据此判定"没有别的用处"，而被截掉的那行正是唯一的使用点（`w51-probe.mjs:81` 加载 `lib/shell.js`）。
+3. **夹具代答**：注入式夹具把 `join` / `AbortSignal` 这类绑定补齐，于是测试通过，而真实文件里那个绑定根本不存在（CI 上直接 `ReferenceError`）。
+4. **装置少跑一道关卡**：探针从工具的 `execute` 拿到返回值、自己调 `output.render` 渲染，于是全程没经过宿主派发时的那道输出校验（`dsh-tools` 的 `validateJsonSchemaValue`）。#54 的复刻件在探针里 7 行全绿，真机一发却死在这里——`Error: tool "read_image" returned invalid output: "value.image.name" is not a declared property (additionalProperties: false)`（373 ms，图已经读到了）。凡"重新实现宿主已有的工具"，声明的 schema 必须逐字段抄宿主的，并且装置要**用宿主那只校验函数** 过一遍返回值（`providers.tools.namespace.validateJsonSchemaValue`，`w54-isolate-probe` row 6 现在这么做）。
+5. **拿两份同一个类的实例做 `instanceof`**：2026-10-19 `w78-confine-probe` 两行红，报的是"槽位里的 provider 不是宿主的 `LocalSandboxProvider`"，而 realm、构造器名、`confine()` 的实际行为全都说它是。真因在装置：探针按**绝对路径**导入那个类，overlay 的行却按**包名**挂载，Node 的 ESM 缓存按 URL 记模块，于是同一个文件有了两个类对象，`instanceof` 永远为假。把行改成按同一条绝对路径挂载，六行全绿；只把盘符大小写规范化（`file:///D:/…` vs `file:///d:/…` 确实是两个模块，实测）改不了它——两份副本的 realpath 本来就一致，不一致的是**谁去解析**。⇒ 断言"是不是这个类"之前，先确认装置和被告读的是同一份模块：挂载行与探针导入必须共用同一个路径来源，或者干脆只比构造器名＋模块路径并把跨实例 `instanceof` 当诊断信息打出来。
+6. **按 `existsSync` 增量填充的临时目录，会替上一个 release 说话**：同一天 `w54-isolate-probe` 死了，宿主先打四行 `disabling profile plugin row "…": Plugin …@0.2.0-rc.2 is incompatible with dsh 0.2.1-rc.2`。它的 shadow 闭包（link 与 copy 都有 `existsSync` 守卫）里留着升树前的副本，boot 拿这些旧副本去配新的运行时，于是四行被丢掉、探针读到一个空世界。⇒ 一次性目录要么每次重建，要么在挂载前验一次"这份副本的版本 == 本次被测的那一版"（`w54` 现在有 `closure-versions` 那一格；`w92` 在 `hostRow` 里做同样的事）。
 
 ## `verify-runtime`
 
-`node --check` 只查语法。三次真实故障都是运行时引用：`AbortSignal is not defined`（改了 import 没同步）、
-`relayNode is not defined`（重构后旧标识符还在用）、`delimiter is not defined`（三个文件里只改了两个的 import）。
+`node --check` 只查语法。三次真实故障都是运行时引用：`AbortSignal is not defined`（改了 import 没同步）、`relayNode is not defined`（重构后旧标识符还在用）、`delimiter is not defined`（三个文件里只改了两个的 import）。
 
-**只跑旁路不算验过**：`node ci/install-pinned.mjs --verify-only` 完全不走 `runNpm`，
-所以"verify-only 是绿的"对 `runNpm` 毫无信息量。要验就 `node ci/install-pinned.mjs` 真跑一次。
+**只跑旁路不算验过**：`node ci/install-pinned.mjs --verify-only` 完全不走 `runNpm`，所以"verify-only 是绿的"对 `runNpm` 毫无信息量。要验就 `node ci/install-pinned.mjs` 真跑一次。
 
 ## `ledger-debt`
 
-账本是双向仲裁：未声明的新红 → `run-seams` 失败；**声明过的红转绿 → 也失败**（有人修了产品，欠文件一次编辑）。
-所以还债与改账本必须在同一个提交里。
+账本是双向仲裁：未声明的新红 → `run-seams` 失败；**声明过的红转绿 → 也失败**（有人修了产品，欠文件一次编辑）。所以还债与改账本必须在同一个提交里。
 
-控制用例**不能读真实数组**：它一旦读了，每还清一条债就同时少一条控制。本项目已改为自带合成账本
-（`tests/deliberate-reds.test.mjs` 的 `FIXTURE`）。
+控制用例**不能读真实数组**：它一旦读了，每还清一条债就同时少一条控制。本项目已改为自带合成账本（`tests/deliberate-reds.test.mjs` 的 `FIXTURE`）。
 
 ## `control-debt-assertion`
 
@@ -84,58 +60,37 @@
 
 ## `ci-red-loop`
 
-我把 CI 当调试器：推 → 红 → 读日志 → 改 → 再推。一个改动连红四轮，而其中至少两轮的成因是
-**本地就能发现的**（一个未暂存的修改被 `commit --amend` 丢在提交外；一个未使用的 import）。
-CI 一轮红只告诉你一件事，且代价是一整轮排队。
+我把 CI 当调试器：推 → 红 → 读日志 → 改 → 再推。一个改动连红四轮，而其中至少两轮的成因是 **本地就能发现的**（一个未暂存的修改被 `commit --amend` 丢在提交外；一个未使用的 import）。CI 一轮红只告诉你一件事，且代价是一整轮排队。
 
-**推之前的清单在 `standards.zh.md` S6。** 另外：`git commit --amend` 之前要 `git add -A`，
-并用 `git show HEAD:<file>` 复核内容真的进了提交。
+**推之前的清单在 `standards.zh.md` S6。** 另外：`git commit --amend` 之前要 `git add -A`，并用 `git show HEAD:<file>` 复核内容真的进了提交。
 
 ## `ci-latency`
 
-"CI 太慢"先分清是**慢**还是**卡**。实例：run #151 从 12:13Z 起 `in_progress` **8 小时**，
-其中 1 个 job 无输出，**它自己的 `timeout-minutes: 35` 都没触发** ⇒ runner 侧，日志 blob 已被清理，无法归因。
+"CI 太慢"先分清是**慢**还是**卡**。实例：run #151 从 12:13Z 起 `in_progress` **8 小时**，其中 1 个 job 无输出，**它自己的 `timeout-minutes: 35` 都没触发** ⇒ runner 侧，日志 blob 已被清理，无法归因。
 
-真正的"慢"来自另一处：`concurrency.group` 用 `github.ref`，而 push 是 `refs/heads/<分支>`、
-PR 是 `refs/pull/<n>/merge` ⇒ **两个不同组**，`cancel-in-progress` 拦不住 ⇒ **每次推送跑两遍完整 CI**，
-而且**卡住的总是那个重复 run**（#151 卡 1 个、#153 卡 4 个，孪生 run 都 7:48 全绿）。
-修法一行：`group: checks-${{ github.workflow }}-${{ github.head_ref || github.ref_name }}`，
-实测重复 run 在 3 秒内被取消。
+真正的"慢"来自另一处：`concurrency.group` 用 `github.ref`，而 push 是 `refs/heads/<分支>`、PR 是 `refs/pull/<n>/merge` ⇒ **两个不同组**，`cancel-in-progress` 拦不住 ⇒ **每次推送跑两遍完整 CI**，而且**卡住的总是那个重复 run**（#151 卡 1 个、#153 卡 4 个，孪生 run 都 7:48 全绿）。修法一行：`group: checks-${{ github.workflow }}-${{ github.head_ref || github.ref_name }}`，实测重复 run 在 3 秒内被取消。
 
 ## `ci-parallel`
 
-`wsl-gate` 的 matrix 从 `wslVersion` 扩到 `wslVersion × plane`，src/lib 跑在不同 runner 上：
-**12 min 47 s → 7 min 34 s**，覆盖率逐 gate 核对无缩水（src 13 个 + lib 7 个 = 20）。
+`wsl-gate` 的 matrix 从 `wslVersion` 扩到 `wslVersion × plane`，src/lib 跑在不同 runner 上：**12 min 47 s → 7 min 34 s**，覆盖率逐 gate 核对无缩水（src 13 个 + lib 7 个 = 20）。
 
-**没有采用"同 job 内并发"**：本地 WSL2 实测两条计时断言都没变差（pager cell `<3_000` 读到 412 ms，
-quiet sentinel `>3_500` 读到 4016 ms），但 WSL1 上那条 pager cell **曾在无并发时**实测 6187 ms。
-本地 WSL2 的余量对那台机器没有推论力，而 WSL1 在 runner 外无法复现 ⇒ 选"拆到不同 runner"这种
-**零争用**的并行。
+**没有采用"同 job 内并发"**：本地 WSL2 实测两条计时断言都没变差（pager cell `<3_000` 读到 412 ms，quiet sentinel `>3_500` 读到 4016 ms），但 WSL1 上那条 pager cell **曾在无并发时**实测 6187 ms。本地 WSL2 的余量对那台机器没有推论力，而 WSL1 在 runner 外无法复现 ⇒ 选"拆到不同 runner"这种 **零争用**的并行。
 
 ## `real-host-strength`
 
 "真机实测"有三种强度，说清是哪一种，别混用：
 
 1. **命令真跑，但接线是手工的** —— 用 `runProfile` 之外的方式自己拼命令
-2. **真启宿主 + 走宿主给模型的 registry** —— `runProfile` 起真 profile，工具从 `ctx.tools.get('bash')` 取
-   （`tests/support/w51-command-census.mjs` 是这一档）
+2. **真启宿主 + 走宿主给模型的 registry** —— `runProfile` 起真 profile，工具从 `ctx.tools.get('bash')` 取（`tests/support/w51-command-census.mjs` 是这一档）
 3. **再叠一层结果正确性** —— 不止"调用成功"，而是**与同发行版直接运行逐字节比对**
 
-第 3 档抓到过真东西：`wsl.exe … bash -c '<文本>'` 会多过一层 shell，`$?` 在到达 `bash` 前就被展开，
-于是"基准"给出 `code=0` 而会话给出正确的 `code=3`。修法是两边跑**同一个脚本文件**，输入按构造即相同。
+第 3 档抓到过真东西：`wsl.exe … bash -c '<文本>'` 会多过一层 shell，`$?` 在到达 `bash` 前就被展开，于是"基准"给出 `code=0` 而会话给出正确的 `code=3`。修法是两边跑**同一个脚本文件**，输入按构造即相同。
 
-上面三档都不 boot 真会话。还有第 4 档：**真模型在真宿主实例里点这个工具**（`dsh` 起 profile、`session/create`
-带 preset、`session/prompt` 让模型自己发调用）。它抓到的是**装置形状与派发形状不同**这件事：
-`tools.get(name)` 不带 scope 只看 context-global 层，而宿主的执行路径是 `this.get(name, agent)`
-（`dsh-tools/lib/index.js:3140`），会按该 agent 的层链覆盖 global。2026-10-13 那轮因此同时纠正了两件事——
-第 2 档的绿盖不住输出校验那道关（见 `verify-fake-green` 第 4 条），而第 2 档看到的"必须顶掉 global 名"
-在第 4 档下并不成立：同一实例里 wsl 会话拿到本插件的读取、standard 会话仍拿到宿主的，各按各的层链解析。
+上面三档都不 boot 真会话。还有第 4 档：**真模型在真宿主实例里点这个工具**（`dsh` 起 profile、`session/create` 带 preset、`session/prompt` 让模型自己发调用）。它抓到的是**装置形状与派发形状不同**这件事：`tools.get(name)` 不带 scope 只看 context-global 层，而宿主的执行路径是 `this.get(name, agent)`（`dsh-tools/lib/index.js:3140`），会按该 agent 的层链覆盖 global。2026-10-13 那轮因此同时纠正了两件事—— 第 2 档的绿盖不住输出校验那道关（见 `verify-fake-green` 第 4 条），而第 2 档看到的"必须顶掉 global 名" 在第 4 档下并不成立：同一实例里 wsl 会话拿到本插件的读取、standard 会话仍拿到宿主的，各按各的层链解析。
 
 ## `env-network`
 
-本机到 `github.com` 的 git 通道会整体不通：hosts 把 `github.com` / `api.github.com` 都改写到
-`127.0.0.1`（Watt Toolkit），而 `api.github.com` 还能用。症状是 `fatal: ... 500/502`、
-`Failed to connect to github.com:443 over proxy`、`CONNECT tunnel failed`，而 `gh api` 时好时坏。
+本机到 `github.com` 的 git 通道会整体不通：hosts 把 `github.com` / `api.github.com` 都改写到 `127.0.0.1`（Watt Toolkit），而 `api.github.com` 还能用。症状是 `fatal: ... 500/502`、`Failed to connect to github.com:443 over proxy`、`CONNECT tunnel failed`，而 `gh api` 时好时坏。
 
 **走 Git Data API（`gh api`）时的三个坑**：
 
@@ -143,23 +98,19 @@ quiet sentinel `>3_500` 读到 4016 ms），但 WSL1 上那条 pager cell **曾�
 2. `--input -`（body 来自 stdin）与 `-f/-F` 字段**不能混用**；`force` 要放进 JSON 载荷
 3. `parent` 用**远端 head**；要从 main 重建则需 `force: true`
 
-还有一条：`Everything up-to-date` 会和 `fatal:` **同时出现**（见 `standards.zh.md` S7）。
-一次 push 还可能触发**两个 run**（push 与 PR 是不同 concurrency group），于是"某个 job 失败"与
-"整轮绿"可以同时出现在检查列表里 —— 判断状态要看**每个 run**。
+还有一条：`Everything up-to-date` 会和 `fatal:` **同时出现**（见 `standards.zh.md` S7）。一次 push 还可能触发**两个 run**（push 与 PR 是不同 concurrency group），于是"某个 job 失败"与 "整轮绿"可以同时出现在检查列表里 —— 判断状态要看**每个 run**。
 
 ## `env-local`
 
 本机有三类东西跑不了，看到它们变红**先别当成改坏了**：
 
-- **`npm run test:unit` 有 9 条环境性失败**（`--import` 夹具与 probe 子进程起不来），CI 上它们是绿的
-  ⇒ 判据是"**没有新失败**"
+- **`npm run test:unit` 有 9 条环境性失败**（`--import` 夹具与 probe 子进程起不来），CI 上它们是绿的 ⇒ 判据是"**没有新失败**"
 - **`node` 启不了 `git`**（`spawnSync git EBUSY`）⇒ `verify-lib-sync`、`verify:artifact` 本机跑不了
 - **缺 `@deepseek-ai/dsh-scope`** ⇒ `bash-parity-real` 本机跑不了
 
 ## `change-surface`
 
-- `lib/` 是**提交进仓库**的构建产物，CI 有 byte-for-byte 的重建校验。改了 `src/` 必须重新构建并提交
-  （见 `standards.zh.md` S4）
+- `lib/` 是**提交进仓库**的构建产物，CI 有 byte-for-byte 的重建校验。改了 `src/` 必须重新构建并提交（见 `standards.zh.md` S4）
 - `ci/typecheck-baseline.json` 记录错误数（209）与被禁代码，`scripts/typecheck-gate.mjs` 要求不增长
 - 改动常常同时落在**两个必须一起改的地方**（`src/` 与 `lib/`、`ci.yml` 与 `docs/CHECK-CATALOG.md`）
 
@@ -172,32 +123,19 @@ quiet sentinel `>3_500` 读到 4016 ms），但 WSL1 上那条 pager cell **曾�
 
 ## `portable`
 
-- `portability-allow` 是这个仓库**既有的**豁免机制：在行尾写它，那一行就不算违规。用它标注合法例外，
-  比在扫描器里开白名单好
-- **扫描器会数自己的散文**：`check-portable-spelling.mjs` 目前会把"注释里解释为什么禁 `shell: true`"
-  计成命中（实测 116 → 112 的量级里混着我自己写的注释）。一个不跳过注释的扫描器没法当闸门
+- `portability-allow` 是这个仓库**既有的**豁免机制：在行尾写它，那一行就不算违规。用它标注合法例外，比在扫描器里开白名单好
+- **扫描器会数自己的散文**：`check-portable-spelling.mjs` 目前会把"注释里解释为什么禁 `shell: true`" 计成命中（实测 116 → 112 的量级里混着我自己写的注释）。一个不跳过注释的扫描器没法当闸门
 - 断言"这个形状不存在"时，**把注释涂空而不是删除**（保留行号，且规则不数自己的说明）
 
 
 ## `real-machine-round`
 
-真机轮次（他桌面的 Desktop + 真实订阅）里，读数被**装置**做假的五种形态；每一种今天都真踩过，
-且都不是产品行为：
+真机轮次（他桌面的 Desktop + 真实订阅）里，读数被**装置**做假的五种形态；每一种今天都真踩过，且都不是产品行为：
 
-1. **`wsl.exe … bash -c <文本>` 多一层解析**：复合命令会被按 `;` 拆开，于是 `false; echo STILL=$?`
-   读出 `STILL=0`、`set -o pipefail; (exit 3) | cat` 读出 `CODE=0`、`kill -9 $$` 那行连 `K=` 都读不到。
-   ⇒ 原生对照一律"把命令写成脚本文件，再 `bash <文件>`"（census 早就这么做，我绕开了它付了三次账）。
-2. **等"安静 N 毫秒"不能当判据**：写入者可以安静 1 秒以上再继续写（WSL1 上实测 1,039 ms），
-   150 ms→1 s 的两版窗口都被打败。⇒ 判据要等**不变量**：两侧跑同一命令，两份溢写文件必须字节相等，
-   等它相等；等不到就报"这次读不到"，不许把半截文件印成差异。
-3. **一个答案里两个"完整输出"指针**：宿主会追加 `(Omitted … bytes. Full formatted result stored at: …)`，
-   那个文件装的是**格式化摘要**（实测 74,890 行），我们的 `dsh-subprocess-*` 才是整条流（250,000 行）；
-   模型会先跟更醒目的那句。⇒ 我们的说明必须**点名性质**（"上面这条装整条流；另提的 formatted 摘要可能更少"），
-   且不许改客户端认的那句原文。
-4. **别名/函数格子不许用发行版预置名**：`alias ll=…; ll` 在这台机器上"通过"，是因为 `.bashrc:91`
-   早就定义了 `ll`（Ubuntu 骨架自带）——同一行展开根本没被测到。⇒ 用新名字（我们矩阵 8.2 的 `zzz` 就是）。
-5. **轮次提示词长了就没有输出**：二十条工序 + 一堆"不许总结"的叮嘱，会让模型把思考预算花在规划上，
-   撞思考上限、**零工具调用**（今天连撞三次）。⇒ 拆成 2–3 个短块、每块只给命令；要按停的格子自带
-   作废哨（如 `sleep 10; echo SLEPT_DONE`，看见 `SLEPT_DONE` 就作废重来）。
+1. **`wsl.exe … bash -c <文本>` 多一层解析**：复合命令会被按 `;` 拆开，于是 `false; echo STILL=$?` 读出 `STILL=0`、`set -o pipefail; (exit 3) | cat` 读出 `CODE=0`、`kill -9 $$` 那行连 `K=` 都读不到。⇒ 原生对照一律"把命令写成脚本文件，再 `bash <文件>`"（census 早就这么做，我绕开了它付了三次账）。
+2. **等"安静 N 毫秒"不能当判据**：写入者可以安静 1 秒以上再继续写（WSL1 上实测 1,039 ms），150 ms→1 s 的两版窗口都被打败。⇒ 判据要等**不变量**：两侧跑同一命令，两份溢写文件必须字节相等，等它相等；等不到就报"这次读不到"，不许把半截文件印成差异。
+3. **一个答案里两个"完整输出"指针**：宿主会追加 `(Omitted … bytes. Full formatted result stored at: …)`，那个文件装的是**格式化摘要**（实测 74,890 行），我们的 `dsh-subprocess-*` 才是整条流（250,000 行）；模型会先跟更醒目的那句。⇒ 我们的说明必须**点名性质**（"上面这条装整条流；另提的 formatted 摘要可能更少"），且不许改客户端认的那句原文。
+4. **别名/函数格子不许用发行版预置名**：`alias ll=…; ll` 在这台机器上"通过"，是因为 `.bashrc:91` 早就定义了 `ll`（Ubuntu 骨架自带）——同一行展开根本没被测到。⇒ 用新名字（我们矩阵 8.2 的 `zzz` 就是）。
+5. **轮次提示词长了就没有输出**：二十条工序 + 一堆"不许总结"的叮嘱，会让模型把思考预算花在规划上，撞思考上限、**零工具调用**（今天连撞三次）。⇒ 拆成 2–3 个短块、每块只给命令；要按停的格子自带作废哨（如 `sleep 10; echo SLEPT_DONE`，看见 `SLEPT_DONE` 就作废重来）。
 
 同族的既有条目：`#4`/`#5` 与 [standards.zh.md](./standards.zh.md) 的 S1（假绿三形态）。

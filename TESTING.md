@@ -41,12 +41,7 @@ Coverage:
 npm run test:client
 ```
 
-`tests/client-dom.test.mjs` mounts the **committed** `lib/client.js` — the bytes a user loads — with
-real React in jsdom, and asserts what is rendered for every state a user can reach: a healthy open
-(with no error row at all), a failed generation, a refused distribution list, a failed directory
-read, the help panel round-trip, Escape while idle and while busy, and Retry. The presence of a node
-is never the assertion; the text in it is. jsdom/react/react-dom are devDependencies — they are not
-shipped, and the bundle still takes React from the host's loader.
+`tests/client-dom.test.mjs` mounts the **committed** `lib/client.js` — the bytes a user loads — with real React in jsdom, and asserts what is rendered for every state a user can reach: a healthy open (with no error row at all), a failed generation, a refused distribution list, a failed directory read, the help panel round-trip, Escape while idle and while busy, and Retry. The presence of a node is never the assertion; the text in it is. jsdom/react/react-dom are devDependencies — they are not shipped, and the bundle still takes React from the host's loader.
 
 ## The world-consistency table (issue #101)
 
@@ -54,12 +49,7 @@ shipped, and the bundle still takes React from the host's loader.
 npm run test:world
 ```
 
-Every provider decides for itself "which distribution and which Linux directory is this session in?".
-`tests/world-consistency.test.mjs` feeds one cwd table to every such seam (`resolveTarget`,
-`buildSessionSpec`, `backendCwd`, the skill provider, and the client's reference translation) and
-requires agreement, an out-loud refusal, or a registered gap with its ticket. The provider list is
-derived from `src/`, so a new provider cannot be added without a row. It needs the pinned host tree
-(`node ci/install-pinned.mjs`).
+Every provider decides for itself "which distribution and which Linux directory is this session in?". `tests/world-consistency.test.mjs` feeds one cwd table to every such seam (`resolveTarget`, `buildSessionSpec`, `backendCwd`, the skill provider, and the client's reference translation) and requires agreement, an out-loud refusal, or a registered gap with its ticket. The provider list is derived from `src/`, so a new provider cannot be added without a row. It needs the pinned host tree (`node ci/install-pinned.mjs`).
 
 ## The artifact we hand the host (issue #101)
 
@@ -67,12 +57,7 @@ derived from `src/`, so a new provider cannot be added without a row. It needs t
 npm run test:artifacts
 ```
 
-`tests/artifact-semantics.test.mjs` reads the **shipped presets** (`dsh-web-app/presets/*.patch.yml`)
-and transforms them, then checks the invariants a host enforces at load time: the WSL note is appended
-exactly once (and not at all where the preset declares `complete: true`), the `{{…}}` multiset equals
-the source's, every mounted path exists inside `lib/`, every bare import of every mounted file is in
-the host closure (#89), no duplicate row id, and the world's `isolate:` keys are the ones the consumer
-ledger enumerates.
+`tests/artifact-semantics.test.mjs` reads the **shipped presets** (`dsh-web-app/presets/*.patch.yml`) and transforms them, then checks the invariants a host enforces at load time: the WSL note is appended exactly once (and not at all where the preset declares `complete: true`), the `{{…}}` multiset equals the source's, every mounted path exists inside `lib/`, every bare import of every mounted file is in the host closure (#89), no duplicate row id, and the world's `isolate:` keys are the ones the consumer ledger enumerates.
 
 ## The install shapes it is loaded from (issue #101)
 
@@ -80,12 +65,7 @@ ledger enumerates.
 npm run test:install
 ```
 
-`tests/install-shapes.test.mjs` checks the manifest surface (every bare specifier `src/` imports is
-declared; `js-yaml` is a `dependencies` entry on 4.x, never a peer; no call-time `import()` of a host
-package) and then loads the published entry from a **profile-shaped** tree — a copy of `package.json`
-and `lib/` under `node_modules/dsh-wsl-workspace`, host closure beside it — asserting it exports
-`apply`, and that removing the closure names the missing package instead of producing a silent
-zero-variant boot.
+`tests/install-shapes.test.mjs` checks the manifest surface (every bare specifier `src/` imports is declared; `js-yaml` is a `dependencies` entry on 4.x, never a peer; no call-time `import()` of a host package) and then loads the published entry from a **profile-shaped** tree — a copy of `package.json` and `lib/` under `node_modules/dsh-wsl-workspace`, host closure beside it — asserting it exports `apply`, and that removing the closure names the missing package instead of producing a silent zero-variant boot.
 
 ## One real host, one session, six tools (issue #101) — release gate
 
@@ -93,12 +73,7 @@ zero-variant boot.
 npm run test:session
 ```
 
-`tests/support/g5-session-probe.mjs` boots a real profile with the product's **own generated world**
-inserted verbatim, then calls `bash`, `read`, `grep`, `glob`, `read_image` and (where a jobs registry
-is mounted) `bash` + `job_output` inside one `\\wsl.localhost\<distro>\…` session. It needs Windows, a
-WSL distribution (`WSL_COMPAT_DISTRO`, default `Ubuntu`), the pinned closure and a built `lib/`. It runs
-in `wsl-gate` on the lib plane (WSL2), and it is the reading a `compatible` declaration should rest on
-— the compat script answers install/start/uninstall, this answers "and the six tools work".
+`tests/support/g5-session-probe.mjs` boots a real profile with the product's **own generated world** inserted verbatim, then calls `bash`, `read`, `grep`, `glob`, `read_image` and (where a jobs registry is mounted) `bash` + `job_output` inside one `\\wsl.localhost\<distro>\…` session. It needs Windows, a WSL distribution (`WSL_COMPAT_DISTRO`, default `Ubuntu`), the pinned closure and a built `lib/`. It runs in `wsl-gate` on the lib plane (WSL2), and it is the reading a `compatible` declaration should rest on — the compat script answers install/start/uninstall, this answers "and the six tools work".
 
 ## Provider parity and compatibility checks
 
@@ -152,10 +127,7 @@ The `build` script clears the committed `lib/` first and chains the gate after `
 pnpm build   # node scripts/clean-lib.mjs && tsdown && node scripts/verify-lib.mjs
 ```
 
-The clean step is not optional: `tsdown` runs with `clean: false` and the node and
-client configurations share `lib/` as their output directory, so without it every
-code-split chunk an earlier build emitted stays in the tree (and, once a file is
-renamed, ships in the tarball as dead weight).
+The clean step is not optional: `tsdown` runs with `clean: false` and the node and client configurations share `lib/` as their output directory, so without it every code-split chunk an earlier build emitted stays in the tree (and, once a file is renamed, ships in the tarball as dead weight).
 
 ## Nested skill-catalog regression (issue #10)
 
@@ -174,14 +146,7 @@ The WSL skill provider publishes `.dsh/skills` / `.agents/skills` from nested pr
    node scripts/repro-e2e.mjs
    ```
 
-   The target defaults to `\\wsl.localhost\<distro>\home\<user>\repro-ws-root`; override the distro/user with `WSL_COMPAT_DISTRO` / `WSL_COMPAT_USER` and the tree location with `WSL_REPRO_ROOT` (no path editing needed).
-   Two Git Bash traps, both hit on the maintainer machine while re-establishing this run: a bare
-   `wsl.exe -d <distro> -- bash /tmp/repro-setup.sh` has its `/tmp/…` argument rewritten to the
-   Windows temp directory (run it through `bash -c "…"` instead, as above), and
-   `WSL_REPRO_ROOT=/home/…` is rewritten the same way by MSYS, so prefix the run with
-   `MSYS_NO_PATHCONV=1`. The second one is silent and total: the UNC becomes
-   `…\C:\Users\…\.qoder-cn\bin\git\home\…`, the listing comes back empty, and — before this
-   change — the script still exited 0.
+   The target defaults to `\\wsl.localhost\<distro>\home\<user>\repro-ws-root`; override the distro/user with `WSL_COMPAT_DISTRO` / `WSL_COMPAT_USER` and the tree location with `WSL_REPRO_ROOT` (no path editing needed). Two Git Bash traps, both hit on the maintainer machine while re-establishing this run: a bare `wsl.exe -d <distro> -- bash /tmp/repro-setup.sh` has its `/tmp/…` argument rewritten to the Windows temp directory (run it through `bash -c "…"` instead, as above), and `WSL_REPRO_ROOT=/home/…` is rewritten the same way by MSYS, so prefix the run with `MSYS_NO_PATHCONV=1`. The second one is silent and total: the UNC becomes `…\C:\Users\…\.qoder-cn\bin\git\home\…`, the listing comes back empty, and — before this change — the script still exited 0.
 3. In the running harness, open a session on the repro workspace and ask the agent to load the nested skills (`brainstorming`, `systematic-debugging`, `writing-plans`) through its skill tool — each must load with the `wsl-workspace` provider attribution, and no duplicate entries may appear. In a non-WSL workspace session the same skills must be "unknown".
 4. Clean-install check (simulates another user): `npm pack`, `npm install <tarball>` in an empty temp project (peers must resolve), then `dsh plugin --profile web add <extracted tarball dir>`, restart `dsh web`, and repeat the end-to-end checks below plus the nested-skill probe above.
 
@@ -190,56 +155,26 @@ The WSL skill provider publishes `.dsh/skills` / `.agents/skills` from nested pr
 After installing the plugin into a profile and restarting `dsh web`:
 
 1. The **W** button appears beside Settings at the sidebar foot.
-2. Open "Add WSL workspace…" and check the **distribution picker really lists the
-   distributions of this machine**. An empty picker, or one stuck on "Loading…", is a
-   failure: the frontend swallows a rejected `listDistros` and renders the dialog anyway
-   (that is exactly how issues #35/#36 looked — the dialog opened, the picker was empty,
-   and `wsl.exe -l -q` worked fine in a terminal). Browse to a directory (e.g. `/home`)
-   and click "Create & open" — the workspace must be created without a "path does not
-   exist" error.
+2. Open "Add WSL workspace…" and check the **distribution picker really lists the distributions of this machine**. An empty picker, or one stuck on "Loading…", is a failure: the frontend swallows a rejected `listDistros` and renders the dialog anyway (that is exactly how issues #35/#36 looked — the dialog opened, the picker was empty, and `wsl.exe -l -q` worked fine in a terminal). Browse to a directory (e.g. `/home`) and click "Create & open" — the workspace must be created without a "path does not exist" error.
 3. In the new session, the mode picker shows the WSL variant (e.g. `WSL · Standard mode（标准模式）`); the bash tool runs inside the distribution (`pwd` returns a Linux path, `uname -s` returns `Linux`).
 4. `read`/`write`/`edit` operate on WSL files; Windows files stay reachable under `/mnt/<drive>`.
 5. Switch modes (Standard / PTC / Minimal / Creative) — each lands on its WSL variant and the tool catalog matches the mode.
 6. The plugin API responds correctly: `POST /wsl-workspace/api` with `{"method":"check","params":{"distro":"<distro>","path":"/home"}}` returns `{"ok":true,"value":{"exists":true,"isDirectory":true}}`.
-7. **Open the WSL workspace from the frontend** — the workspace must be visible in the
-   sidebar, clicking it must enter a session, and a **page reload (F5) must still open
-   it**. `POST /wsl-workspace/api` with `{"method":"listWorkspaces","params":{}}` must
-   report the `\\wsl.localhost\<distro>\…` path, and neither the console nor `web.err` may
-   contain a `wsl-workspace:` error. This is the only check that covers the client half
-   end to end; a script-level harness cannot see it.
+7. **Open the WSL workspace from the frontend** — the workspace must be visible in the sidebar, clicking it must enter a session, and a **page reload (F5) must still open it**. `POST /wsl-workspace/api` with `{"method":"listWorkspaces","params":{}}` must report the `\\wsl.localhost\<distro>\…` path, and neither the console nor `web.err` may contain a `wsl-workspace:` error. This is the only check that covers the client half end to end; a script-level harness cannot see it.
 
 ### The compatibility pass on every declared release
 
-Whenever compatibility testing is requested, each release under test must cover **all six
-items**, not just the harness checks: (1) the dialog lists the distributions and
-"Create & open" produces a session, (2) a file-tool write, (3) a file-tool read,
-(4) `bash` one-shot *and* its persistence across two separate calls (record which of the
-two it is — `0.1.0-rc.7` has no Windows process inspector and keeps a one-shot shell),
-(5) `skills` loading a fixture skill and reporting its token, and (6) the frontend
-open/reload check in step 7 above. Re-read the written file independently on the Linux
-side (`wsl.exe … cat`), and keep `web.err` at 0 bytes. The version *count* is conditional
-(spread it out before a release or when asked); the six items are not.
+Whenever compatibility testing is requested, each release under test must cover **all six items**, not just the harness checks: (1) the dialog lists the distributions and "Create & open" produces a session, (2) a file-tool write, (3) a file-tool read, (4) `bash` one-shot *and* its persistence across two separate calls (record which of the two it is — `0.1.0-rc.7` has no Windows process inspector and keeps a one-shot shell), (5) `skills` loading a fixture skill and reporting its token, and (6) the frontend open/reload check in step 7 above. Re-read the written file independently on the Linux side (`wsl.exe … cat`), and keep `web.err` at 0 bytes. The version *count* is conditional (spread it out before a release or when asked); the six items are not.
 
-Because issue #35/#36 only reproduce under the Desktop host, a release that touches the
-`wsl.exe` call path should also be exercised with the wrapper simulated: load
-`.test-runs/child-process-hide.mjs` (plain `exec`/`execFile` wrappers plus
-`syncBuiltinESMExports()`, the same shape as the Desktop hook) into a real `dsh web` via
-`NODE_OPTIONS="--import file:///…/child-process-hide.mjs"`, and compare the published
-release against the fixed build through `POST /wsl-workspace/api`.
+Because issue #35/#36 only reproduce under the Desktop host, a release that touches the `wsl.exe` call path should also be exercised with the wrapper simulated: load `.test-runs/child-process-hide.mjs` (plain `exec`/`execFile` wrappers plus `syncBuiltinESMExports()`, the same shape as the Desktop hook) into a real `dsh web` via `NODE_OPTIONS="--import file:///…/child-process-hide.mjs"`, and compare the published release against the fixed build through `POST /wsl-workspace/api`.
 
 ### The persistent shell on DSH Desktop (issue #40)
 
-A release that touches the relay's interpreter — or anything else the PTY backend is told
-to run — must be checked on the Desktop side too, because that is the only host where
-`process.execPath` is not a node. DSH Desktop's host process is the packaged Electron
-executable in node mode, and an Electron binary spawned under a ConPTY writes **no bytes at
-all**, so the relay exits 0 with nothing on the stream and every `bash` call reports
-`PTY shell exited during startup` while the file tools keep working.
+A release that touches the relay's interpreter — or anything else the PTY backend is told to run — must be checked on the Desktop side too, because that is the only host where `process.execPath` is not a node. DSH Desktop's host process is the packaged Electron executable in node mode, and an Electron binary spawned under a ConPTY writes **no bytes at all**, so the relay exits 0 with nothing on the stream and every `bash` call reports `PTY shell exited during startup` while the file tools keep working.
 
 Two levels, in order of cost:
 
-1. **Simulation, on the real binaries** (no Desktop install needed beyond the extracted
-   installer):
+1. **Simulation, on the real binaries** (no Desktop install needed beyond the extracted installer):
 
    ```powershell
    # 1. Download the official installer and extract it (7-Zip handles the NSIS payload):
@@ -249,19 +184,9 @@ Two levels, in order of cost:
    node .test-runs/desktop-pty-sim.mjs
    ```
 
-   It runs `resolveRelayNode()` *inside* the extracted `DeepSeek Harness.exe` (node mode,
-   the Desktop's own argv and environment) and asserts it picks
-   `resources/runtime/primary-runtime/dependencies/node/bin/node.exe` rather than the
-   Electron executable — from the argv payload and, without it, from the
-   executable-relative lookup — then runs the real `lib/wsl-relay.js` under a real ConPTY
-   on both interpreters and asserts the Electron one gives 0 bytes and an exit while the
-   resolved one gives a live bash prompt. The extracted installer is ~1 GB; nothing is
-   installed and nothing is launched beyond that binary in node mode.
+   It runs `resolveRelayNode()` *inside* the extracted `DeepSeek Harness.exe` (node mode, the Desktop's own argv and environment) and asserts it picks `resources/runtime/primary-runtime/dependencies/node/bin/node.exe` rather than the Electron executable — from the argv payload and, without it, from the executable-relative lookup — then runs the real `lib/wsl-relay.js` under a real ConPTY on both interpreters and asserts the Electron one gives 0 bytes and an exit while the resolved one gives a live bash prompt. The extracted installer is ~1 GB; nothing is installed and nothing is launched beyond that binary in node mode.
 
-2. **End to end inside the real Desktop.** This needs no installation: the unpacked installer
-   from step 1 *is* a runnable Electron application. Run it against a scratch `DSH_HOME` and
-   with remote debugging on, install the build through the Desktop's own plugin panel, and
-   drive the window over CDP:
+2. **End to end inside the real Desktop.** This needs no installation: the unpacked installer from step 1 *is* a runnable Electron application. Run it against a scratch `DSH_HOME` and with remote debugging on, install the build through the Desktop's own plugin panel, and drive the window over CDP:
 
    ```powershell
    $env:DSH_HOME = 'D:\scratch\dsh-desktop-home'   # never the real profile
@@ -274,47 +199,15 @@ Two levels, in order of cost:
    node .test-runs/desktop-cdp.mjs 9333 reload                    # the F5 check
    ```
 
-   In the window: 插件 → 添加插件 → a local directory path (the unpacked tarball) → 安装 →
-   the switch on the installed card. Then run the six-item pass above. `bash` must reach a
-   prompt; `pwd` in a second, separate call must still be where the first one left the shell
-   (`cd /tmp` → `/tmp`), which is the persistence the Desktop lost in #40; and
-   `bash_background` + `job_list` must produce a job id and a `running`/`completed` status
-   (that path failed separately — see below). The boot log must contain
-   `dsh-wsl-workspace: persistent shell: relay interpreter is …`, naming the interpreter it
-   chose. When no candidate answers as a real node the line instead reads
-   `persistent shell: not mounted, …` and lists every candidate it rejected and why — since
-   issue #51 that is a **demotion, not a warning**: the Electron executable is what such a
-   host falls back to, #40 measured that a PTY child started from it writes nothing, so the
-   world ships without the PTY rows and keeps the one-shot `bash` (no shell state across
-   calls, but every call works). Close the window and stop the process when done.
+   In the window: 插件 → 添加插件 → a local directory path (the unpacked tarball) → 安装 → the switch on the installed card. Then run the six-item pass above. `bash` must reach a prompt; `pwd` in a second, separate call must still be where the first one left the shell (`cd /tmp` → `/tmp`), which is the persistence the Desktop lost in #40; and `bash_background` + `job_list` must produce a job id and a `running`/`completed` status (that path failed separately — see below). The boot log must contain `dsh-wsl-workspace: persistent shell: relay interpreter is …`, naming the interpreter it chose. When no candidate answers as a real node the line instead reads `persistent shell: not mounted, …` and lists every candidate it rejected and why — since issue #51 that is a **demotion, not a warning**: the Electron executable is what such a host falls back to, #40 measured that a PTY child started from it writes nothing, so the world ships without the PTY rows and keeps the one-shot `bash` (no shell state across calls, but every call works). Close the window and stop the process when done.
 
-   **A local directory is added as a link, so where you point it decides whether the plugin can
-   load at all.** `dsh plugin add <dir>` writes a `link:` dependency, and Node resolves bare
-   specifiers by walking up from the *realpath* — the directory you named, not the profile. So an
-   unpacked clone sitting in a bare temp folder resolves neither this package's own dependency nor
-   any host package, and the plugin fails at module load, which looks worse than the defect it is
-   meant to test. Either point at a directory inside a tree that already carries those packages
-   (that is why `scripts/verify-dsh-compat.sh` stages the plugin under the case's `node_modules`
-   before adding it, and why the item-4 clean-install check installs the tarball into a temp
-   project first), or hand the profile a tarball/by-name entry so pnpm lays the package out
-   itself. `#47`'s reporter hit exactly this while testing PR #48 — his own repro is the reason
-   this paragraph exists.
+   **A local directory is added as a link, so where you point it decides whether the plugin can load at all.** `dsh plugin add <dir>` writes a `link:` dependency, and Node resolves bare specifiers by walking up from the *realpath* — the directory you named, not the profile. So an unpacked clone sitting in a bare temp folder resolves neither this package's own dependency nor any host package, and the plugin fails at module load, which looks worse than the defect it is meant to test. Either point at a directory inside a tree that already carries those packages (that is why `scripts/verify-dsh-compat.sh` stages the plugin under the case's `node_modules` before adding it, and why the item-4 clean-install check installs the tarball into a temp project first), or hand the profile a tarball/by-name entry so pnpm lays the package out itself. `#47`'s reporter hit exactly this while testing PR #48 — his own repro is the reason this paragraph exists.
 
-   `bash_background` deserves its own line here because the Desktop run is what caught it:
-   the jobs registry resolves a job's `owner` with `ctx.agents.get(owner)`, so the owner must
-   be the session **id** (`agent.id`, as the host's own producers pass). Passing the agent
-   object — which `tests/wsl-jobs.test.ts` used to assert — fails at runtime with
-   `session "[object Object]" has no live agent`, and no unit test with a fake registry can
-   see that. The real run is the gate.
+   `bash_background` deserves its own line here because the Desktop run is what caught it: the jobs registry resolves a job's `owner` with `ctx.agents.get(owner)`, so the owner must be the session **id** (`agent.id`, as the host's own producers pass). Passing the agent object — which `tests/wsl-jobs.test.ts` used to assert — fails at runtime with `session "[object Object]" has no live agent`, and no unit test with a fake registry can see that. The real run is the gate.
 
 ### The engineering inventory pass (driven inside the product, measured 2026-10-09)
 
-Eighteen lines a model really types, sent to a running agent in a WSL workspace and read back out of the
-session transcript it wrote (`~/.dsh/sessions/<workspace>/<id>/session.v4.jsonl.zstd`, multi-frame zstd;
-pair `tool/call` to `tool/result` by `callId`, and subtract the two entries' top-level `time` for the
-elapsed). This is a **human** pass on purpose: the point is what the model sees, in the product, not what
-a harness can assert. Group 1 is streams and quoting, group 2 is the shell's own lifetime, group 3 is
-interop and real tools:
+Eighteen lines a model really types, sent to a running agent in a WSL workspace and read back out of the session transcript it wrote (`~/.dsh/sessions/<workspace>/<id>/session.v4.jsonl.zstd`, multi-frame zstd; pair `tool/call` to `tool/result` by `callId`, and subtract the two entries' top-level `time` for the elapsed). This is a **human** pass on purpose: the point is what the model sees, in the product, not what a harness can assert. Group 1 is streams and quoting, group 2 is the shell's own lifetime, group 3 is interop and real tools:
 
 ```
 group 1  find . -name '*.txt' -print0 | xargs -0 grep -l alpha          # NUL-delimited UTF-8
@@ -337,9 +230,7 @@ group 3  wslpath -u 'C:\Program Files\node\node.exe'                    # spaces
          npm install --prefix /tmp/… ; npx tsc --version                # real tools, real output
 ```
 
-What it found, and what the finding was judged against. **The standard is native parity, not universal
-quality**: a shape is a defect when a person's own terminal handles it and ours does not, and is not a
-defect when the terminal behaves the same way. Measured both ways on this machine the same day:
+What it found, and what the finding was judged against. **The standard is native parity, not universal quality**: a shape is a defect when a person's own terminal handles it and ours does not, and is not a defect when the terminal behaves the same way. Measured both ways on this machine the same day:
 
 | line | ours | native, in the same distribution | verdict |
 | --- | --- | --- | --- |
@@ -348,11 +239,7 @@ defect when the terminal behaves the same way. Measured both ways on this machin
 | `alias …; zzz` on one line | `not found`, exit 127; the next call gets `ALIAS_OK` | `printf "alias zzz=…; zzz\n" \| bash -i` → the same `not found`, and the two-line form → `YYY_OK` | **native parity — not a bug**, and a census row now pins it |
 | `du -sh /mnt/c/Users` | hit the deadline the *model* asked for (600 000 ms, the tool's ceiling) with `ls`'s output kept and the reading printed (`du:D+ w=0`, not a keyboard wait) | in a plain `bash -lc` with no plugin layer in sight, still running at **9 min 23 s** and in process state `D` (uninterruptible) when the measurement was stopped; the harness's own `timeout 1500` would have bounded it at 25 min | **native parity — not ours to optimize** |
 
-What moved into the machine-run surface because of the pass: `scripts/compatibility/bash-session-real.mjs`
-gained five cells (the three shell-ending shapes, the call that follows them, and a deadline reached
-mid-command keeping the bytes it already printed), and `tests/support/w51-command-census.mjs` gained the
-rows above. Nothing in them asserts how long real work takes — only what the answer must contain when the
-deadline the caller chose arrives.
+What moved into the machine-run surface because of the pass: `scripts/compatibility/bash-session-real.mjs` gained five cells (the three shell-ending shapes, the call that follows them, and a deadline reached mid-command keeping the bytes it already printed), and `tests/support/w51-command-census.mjs` gained the rows above. Nothing in them asserts how long real work takes — only what the answer must contain when the deadline the caller chose arrives.
 
 ## Release checklist
 
@@ -375,11 +262,7 @@ deadline the caller chose arrives.
 
 ### The multi-release check harness
 
-`scripts/compatibility/` prepares one isolated case per declared release (its own
-`DSH_HOME`, its own dependency tree pinned to that release, the plugin installed
-into it) and runs a fixed check list inside it. The drivers require PowerShell 7.2
-and Windows-only features (junctions, `Get-NetTCPConnection`), so they are the
-maintainer-machine deep tool. Drive a case with:
+`scripts/compatibility/` prepares one isolated case per declared release (its own `DSH_HOME`, its own dependency tree pinned to that release, the plugin installed into it) and runs a fixed check list inside it. The drivers require PowerShell 7.2 and Windows-only features (junctions, `Get-NetTCPConnection`), so they are the maintainer-machine deep tool. Drive a case with:
 
 ```powershell
 scripts/compatibility/Prepare-Case.ps1 -Version 0.1.5-rc.2 ...   # build the case
@@ -387,56 +270,12 @@ scripts/compatibility/Start-Case.ps1 ... ; Run-Checks.ps1 ...    # boot + 15 che
 scripts/compatibility/Stop-Case.ps1 ; Check-Uninstall.ps1 ...    # stop + uninstall probe
 ```
 
-For the lighter rolling-window pass (what GitHub Actions `compat.yml` runs
-weekly), use the Git-Bash driver instead — no PowerShell needed:
+For the lighter rolling-window pass (what GitHub Actions `compat.yml` runs weekly), use the Git-Bash driver instead — no PowerShell needed:
 
 ```bash
 npm run test:compat -- 0.2.0-rc.2 0.1.7-rc.2   # PLUGIN_REF=<tarball> to test an unpublished commit
 ```
 
-Nine checks need a live WSL distribution (`skills-real`, `fs-real`, `relay-real`,
-`relay-profile-real`, `tool-bash-real`,
-`bash-session-real`, `bash-parity-real`, `search-real`, and `conpty-relay`); they build their own
-fixtures under `/tmp/dsh-wsl-compat` (override with `WSL_COMPAT_ROOT`, and the distribution with
-`WSL_COMPAT_DISTRO`) and remove them again. `bash-parity-real` writes its spill files under the
-system temp directory and compares **two tools against each other**, so a difference that nobody
-wrote down in [docs/bash-parity.md](docs/bash-parity.md) is a red build; the same table is read by
-`tests/wsl-bash-parity.test.ts`, which needs the installed host package and says `NOT VERIFIED`
-rather than skipping when it is absent.
-Those same live gates run in CI on **two WSL kernels** — `ci.yml`'s `real-WSL hard gates` job is
-matrixed over `wslVersion: [1, 2]` Ubuntu-24.04, and the log artifact carries which one it came from
-(`wsl-gate-logs-wsl1` / `-wsl2`). They are not interchangeable: the WSL1 runner reports no sleep location
-for any process, so a command waiting on the keyboard is left to the deadline the call asked for and the
-body prints the rows the reading took, while on WSL2 the same wait is stopped in about 0.6 s and re-run.
-Each cell says which of the two it asserted — `branch:"reading-acts"` or `"reading-declares"` — and both
-spellings are in a passing frame's logs: frame 37506092966 (head `ff626e6`, 2026-10-06T17:59:13Z) reads
-`reading-acts` with `canAct` true on the `src` and `lib` planes of the WSL2 arm, and `reading-declares` on
-the WSL1 one.
-`docs/CHECK-CATALOG.md` states which cells assert which of the two shapes.
-**Which persistent shell is being tested matters**: the world now mounts the pipe-driven session by
-default, so `host-materialize` and `host-declare` each run twice in `test:node` — once per tier — and
-`persistent-shell-fallback` is pinned to the PTY tier because its subject is that tier's
-`spawnTerminal` probe. The session tier's own boot-decision table (probe passes / `spawn` missing /
-probe throws) is **not** covered offline yet; `bash-session-real` covers the protocol and the mount
-shape on a real distribution, and the gap is recorded here rather than counted as covered.
-`exec-shape` reproduces the DSH Desktop
-`child_process` wrapper (plain `exec`/`execFile` wrappers + `syncBuiltinESMExports()`, which
-strips `util.promisify.custom`) in a probe process and asserts both the wrapped and the plain
-shapes produce a correct `{ stdout, stderr }`. `conpty-relay` takes the case's
-`runtime.json` so it can load that release's own node-pty, resolves the relay's interpreter
-the way the plugin does, and requires a live bash prompt through a real ConPTY — the
-invariant issue #40 broke. `host-api` needs a running `dsh web` for the case, so it is
-expected to fail in a sweep — point it at a live instance's `runtime.json` instead (an
-absolute path; it is 12/12 there). The `typecheck` check exits non-zero because of the
-pre-existing `tsc --noEmit` errors in this tree; the gate is that the count does not grow —
-machine-enforced since the CI consolidation by `npm run typecheck:gate` against
-`ci/typecheck-baseline.json` (`--record` to rebaseline after a reviewed change; the count
-is environment-bound, record it from the environment the gate runs in).
+Nine checks need a live WSL distribution (`skills-real`, `fs-real`, `relay-real`, `relay-profile-real`, `tool-bash-real`, `bash-session-real`, `bash-parity-real`, `search-real`, and `conpty-relay`); they build their own fixtures under `/tmp/dsh-wsl-compat` (override with `WSL_COMPAT_ROOT`, and the distribution with `WSL_COMPAT_DISTRO`) and remove them again. `bash-parity-real` writes its spill files under the system temp directory and compares **two tools against each other**, so a difference that nobody wrote down in [docs/bash-parity.md](docs/bash-parity.md) is a red build; the same table is read by `tests/wsl-bash-parity.test.ts`, which needs the installed host package and says `NOT VERIFIED` rather than skipping when it is absent. Those same live gates run in CI on **two WSL kernels** — `ci.yml`'s `real-WSL hard gates` job is matrixed over `wslVersion: [1, 2]` Ubuntu-24.04, and the log artifact carries which one it came from (`wsl-gate-logs-wsl1` / `-wsl2`). They are not interchangeable: the WSL1 runner reports no sleep location for any process, so a command waiting on the keyboard is left to the deadline the call asked for and the body prints the rows the reading took, while on WSL2 the same wait is stopped in about 0.6 s and re-run. Each cell says which of the two it asserted — `branch:"reading-acts"` or `"reading-declares"` — and both spellings are in a passing frame's logs: frame 37506092966 (head `ff626e6`, 2026-10-06T17:59:13Z) reads `reading-acts` with `canAct` true on the `src` and `lib` planes of the WSL2 arm, and `reading-declares` on the WSL1 one. `docs/CHECK-CATALOG.md` states which cells assert which of the two shapes. **Which persistent shell is being tested matters**: the world now mounts the pipe-driven session by default, so `host-materialize` and `host-declare` each run twice in `test:node` — once per tier — and `persistent-shell-fallback` is pinned to the PTY tier because its subject is that tier's `spawnTerminal` probe. The session tier's own boot-decision table (probe passes / `spawn` missing / probe throws) is **not** covered offline yet; `bash-session-real` covers the protocol and the mount shape on a real distribution, and the gap is recorded here rather than counted as covered. `exec-shape` reproduces the DSH Desktop `child_process` wrapper (plain `exec`/`execFile` wrappers + `syncBuiltinESMExports()`, which strips `util.promisify.custom`) in a probe process and asserts both the wrapped and the plain shapes produce a correct `{ stdout, stderr }`. `conpty-relay` takes the case's `runtime.json` so it can load that release's own node-pty, resolves the relay's interpreter the way the plugin does, and requires a live bash prompt through a real ConPTY — the invariant issue #40 broke. `host-api` needs a running `dsh web` for the case, so it is expected to fail in a sweep — point it at a live instance's `runtime.json` instead (an absolute path; it is 12/12 there). The `typecheck` check exits non-zero because of the pre-existing `tsc --noEmit` errors in this tree; the gate is that the count does not grow — machine-enforced since the CI consolidation by `npm run typecheck:gate` against `ci/typecheck-baseline.json` (`--record` to rebaseline after a reviewed change; the count is environment-bound, record it from the environment the gate runs in).
 
-**A budget is not coverage, and issue #51 is the proof.** The same baseline also carries
-`banned: ["TS2515"]`: a line with a banned code reddens **at any count**. `src/shell.ts` has
-been reporting "does not implement inherited abstract member execute" since the 0.2.x seam
-landed, and it sat inside a budget that was met exactly (212 of 212) — so a provider missing
-the very method its host calls passed CI. `node scripts/typecheck-gate.mjs --self-test`,
-which `npm run test:node` now runs, proves that second rule bites without needing a broken
-tree, and `--record` refuses while a banned violation stands.
+**A budget is not coverage, and issue #51 is the proof.** The same baseline also carries `banned: ["TS2515"]`: a line with a banned code reddens **at any count**. `src/shell.ts` has been reporting "does not implement inherited abstract member execute" since the 0.2.x seam landed, and it sat inside a budget that was met exactly (212 of 212) — so a provider missing the very method its host calls passed CI. `node scripts/typecheck-gate.mjs --self-test`, which `npm run test:node` now runs, proves that second rule bites without needing a broken tree, and `--record` refuses while a banned violation stands.

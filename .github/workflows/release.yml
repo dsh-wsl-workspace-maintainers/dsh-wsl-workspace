@@ -72,35 +72,40 @@ jobs:
       - name: publish through Trusted Publishing
         # No NODE_AUTH_TOKEN: npm exchanges the workflow's OIDC identity for a short-lived publish grant,
         # and `--provenance` records which commit and workflow produced these bytes.
-        run: npm publish --registry=https://registry.npmjs.org --access public --provenance
+        #
+        # Idempotent on purpose: a `workflow_dispatch` for a tag whose version is already on the registry
+        # (the retry path this file documents) must be able to repair the *other* record without failing
+        # here. A first publish still fails loudly if the registry rejects it.
+        run: |
+          set -eu
+          VERSION="$(node -p "require('./package.json').version")"
+          if npm view "dsh-wsl-workspace@${VERSION}" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
+            echo "::notice::dsh-wsl-workspace@${VERSION} is already on the registry — this run will only write the GitHub Release"
+          else
+            npm publish --registry=https://registry.npmjs.org --access public --provenance
+          fi
 
       - name: publish the GitHub Release
-        # The tag and the npm version used to move while the Releases page stayed behind — measured
-        # 2026-10-21: `latest` on npm was 0.7.9 and the newest Release was 0.7.8, because nothing ever
-        # created one. A release is two records (the registry's and the repository's), so the job that
-        # publishes one now publishes the other from the same tag, with the CHANGELOG section as its notes.
+        # A release is two records: the registry's and the repository's. Measured 2026-10-21 — `npm view`
+        # said 0.7.9, the tag existed, and the Releases page stopped at 0.7.8, because nothing ever created
+        # one. The notes come from the **Chinese** CHANGELOG section (this project's release notes are
+        # read in Chinese) and are unwrapped first: GitHub renders release bodies with hard line breaks,
+        # so prose wrapped at 100 columns arrives as a ragged column of fragments.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
           VERSION="$(node -p "require('./package.json').version")"
           TAG="v$VERSION"
-          # The section for this version, from its heading to the next one. Empty is allowed: `gh` then falls
-          # back to the generated notes, and a Release with the commit list is still better than none.
-          node - "${VERSION}" <<'JS' > /tmp/release-notes.md
-          const fs = require('node:fs')
-          const version = process.argv[2]
-          const text = fs.readFileSync('CHANGELOG.md', 'utf8')
-          const heading = new RegExp('^## ' + version.replaceAll('.', '\\.') + ' — ', 'm')
-          const start = text.search(heading)
-          if (start === -1) { process.stdout.write(''); process.exit(0) }
-          const rest = text.slice(start)
-          const next = rest.slice(1).search(/^## /m)
-          process.stdout.write(next === -1 ? rest : rest.slice(0, next + 1))
-          JS
+          node scripts/unwrap-prose.mjs --stdout CHANGELOG.zh.md --section "$VERSION" > /tmp/release-notes.md
+          if [ ! -s /tmp/release-notes.md ]; then
+            echo "::warning::no Chinese section for ${VERSION}; falling back to CHANGELOG.md"
+            node scripts/unwrap-prose.mjs --stdout CHANGELOG.md --section "$VERSION" > /tmp/release-notes.md
+          fi
           if [ -s /tmp/release-notes.md ]; then
-            gh release create "$TAG" --title "$TAG — $(sed -n '1s/^## [^ ]* — //p' /tmp/release-notes.md | head -1)" --notes-file /tmp/release-notes.md --verify-tag || \
-            gh release edit "$TAG" --notes-file /tmp/release-notes.md
+            gh release create "$TAG" --title "$TAG" --notes-file /tmp/release-notes.md --verify-tag \
+              || gh release edit "$TAG" --title "$TAG" --notes-file /tmp/release-notes.md
           else
-            gh release create "$TAG" --generate-notes --verify-tag || gh release edit "$TAG" --generate-notes
+            gh release create "$TAG" --title "$TAG" --generate-notes --verify-tag \
+              || gh release edit "$TAG" --generate-notes
           fi

@@ -4,93 +4,26 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
 
 ## 0.7.9 — 2026-10-20
 
-**A drive-path workspace can finally read its own skills, and the door answers a Linux `cwd` there.**
-Both were silent failures: a `/mnt/<drive>` workspace registered under its Windows drive path (9P cannot
-serve drvfs) got an empty skill catalog with no error, and `wsl_terminal` refused a Linux `cwd` with
-"the distribution is unknown" although the dialog had stored it. The skill provider now resolves that
-workspace the way the other providers do and reads `/mnt` paths through their **drive spelling**; the
-door reads the same registration. Reported by the world-consistency table, not by a user — the first
-defect this repository's gates found before a report did.
+**A drive-path workspace can finally read its own skills, and the door answers a Linux `cwd` there.** Both were silent failures: a `/mnt/<drive>` workspace registered under its Windows drive path (9P cannot serve drvfs) got an empty skill catalog with no error, and `wsl_terminal` refused a Linux `cwd` with "the distribution is unknown" although the dialog had stored it. The skill provider now resolves that workspace the way the other providers do and reads `/mnt` paths through their **drive spelling**; the door reads the same registration. Reported by the world-consistency table, not by a user — the first defect this repository's gates found before a report did.
 
-- **A failed browse no longer leaves its message behind.** Switching back to a working distribution used
-  to keep "could not browse this directory" over a listing that had just loaded: one `error` string could
-  not say which failure it held, so the browse failure is now retired by the browse that replaces it —
-  and only that one, since a preset or distro-list failure is a different fact.
-- **`/mnt/<drive>` has one spelling.** `C://项目//src` (a pasted path, or a tool that doubles a separator)
-  used to produce `/mnt/c//项目/src`, so the same directory had two cache keys and the skill scan and the
-  workspace store could disagree about which path this is.
-- **Tests that answer "would we catch the next one?"** Five gates landed earlier today (world
-  consistency, client interaction states, artifact semantics, install shapes, one real session); this
-  release adds a `scripts/mutation-sweep.mjs` that plants defects the suite was never designed for and
-  reports which gate noticed. Its first run found a real gap — the glob inline cap was never asserted at
-  its boundary — and the lock for it is in `tests/wsl-search.test.ts`. `@deepseek-ai/dsh-jobs` is pinned
-  so the background-job tools exist in the session probe; the byte assertion still needs a live agent and
-  is reported as a declared not-measured cell rather than a pass.
-- **Not claimed here**: [#78](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/78)
-  (`run_code` on a `\\wsl.localhost\…` root with `workspace-write`) is unchanged: the guard refuses that
-  shape in words, and giving the WSL world a real sandbox is a product decision, not a test.
+- **A failed browse no longer leaves its message behind.** Switching back to a working distribution used to keep "could not browse this directory" over a listing that had just loaded: one `error` string could not say which failure it held, so the browse failure is now retired by the browse that replaces it — and only that one, since a preset or distro-list failure is a different fact.
+- **`/mnt/<drive>` has one spelling.** `C://项目//src` (a pasted path, or a tool that doubles a separator) used to produce `/mnt/c//项目/src`, so the same directory had two cache keys and the skill scan and the workspace store could disagree about which path this is.
+- **Tests that answer "would we catch the next one?"** Five gates landed earlier today (world consistency, client interaction states, artifact semantics, install shapes, one real session); this release adds a `scripts/mutation-sweep.mjs` that plants defects the suite was never designed for and reports which gate noticed. Its first run found a real gap — the glob inline cap was never asserted at its boundary — and the lock for it is in `tests/wsl-search.test.ts`. `@deepseek-ai/dsh-jobs` is pinned so the background-job tools exist in the session probe; the byte assertion still needs a live agent and is reported as a declared not-measured cell rather than a pass.
+- **Not claimed here**: [#78](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/78) (`run_code` on a `\\wsl.localhost\…` root with `workspace-write`) is unchanged: the guard refuses that shape in words, and giving the WSL world a real sandbox is a product decision, not a test.
 
 ## 0.7.8 — 2026-10-20
 
-**This release ships what 0.7.7's own record already described.** The 0.7.7 tarball on the registry was built
-before those fixes landed; [#85](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/85)
-folded them into the already-published line, which changed the record and not the bytes. Two are provable from
-the tarball itself, measured today: `dsh-wsl-workspace@0.7.7` has **no `lib/wsl-image-tool.js`** — the row
-that answers `read_image` inside the WSL world
-([#83](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/83)) — and its `lib/index.js`
-still ends `PERSONA_APPEND` with `Your working directory {{cwd}} is inside a WSL …`, the exact sentence a
-strict renderer rejects with `unknown prompt variable "{{cwd}}"`
-([#95](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/95)). The entries for the
-fixes this release carries are the ones already written under 0.7.7 below (#79, #81, #83, #84, #86, #87); they
-are unchanged, and this line exists so that the record and the bytes agree.
+**This release ships what 0.7.7's own record already described.** The 0.7.7 tarball on the registry was built before those fixes landed; [#85](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/85) folded them into the already-published line, which changed the record and not the bytes. Two are provable from the tarball itself, measured today: `dsh-wsl-workspace@0.7.7` has **no `lib/wsl-image-tool.js`** — the row that answers `read_image` inside the WSL world ([#83](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/83)) — and its `lib/index.js` still ends `PERSONA_APPEND` with `Your working directory {{cwd}} is inside a WSL …`, the exact sentence a strict renderer rejects with `unknown prompt variable "{{cwd}}"` ([#95](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/95)). The entries for the fixes this release carries are the ones already written under 0.7.7 below (#79, #81, #83, #84, #86, #87); they are unchanged, and this line exists so that the record and the bytes agree.
 
-- **A `wsl-*` session is declared and tested against DSH 0.2.1-rc.2.** The compatibility window's head,
-  `dshReleases` and both READMEs move together, and the host family the test tree runs against is pinned at
-  `0.2.1-rc.2` ([#92](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/92)). What that
-  release changed under this plugin is named there rather than left to be discovered at runtime — the
-  foreground `bash` and the fs tool suite each grew a `workingDirectory` hand — and the consumer-coverage
-  ledger's five new pairs now each have a call behind them
-  ([#94](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/94)).
+- **A `wsl-*` session is declared and tested against DSH 0.2.1-rc.2.** The compatibility window's head, `dshReleases` and both READMEs move together, and the host family the test tree runs against is pinned at `0.2.1-rc.2` ([#92](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/92)). What that release changed under this plugin is named there rather than left to be discovered at runtime — the foreground `bash` and the fs tool suite each grew a `workingDirectory` hand — and the consumer-coverage ledger's five new pairs now each have a call behind them ([#94](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/94)).
 
-- **Not claimed here**: [#89](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/89)
-  (`five file: rows never started` on 0.2.1-rc.2) does not reproduce on this package, on a web profile, or
-  against the host bundled in the Desktop application — three surfaces, all green. It stays open until its
-  reporter answers.
+- **Not claimed here**: [#89](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/89) (`five file: rows never started` on 0.2.1-rc.2) does not reproduce on this package, on a web profile, or against the host bundled in the Desktop application — three surfaces, all green. It stays open until its reporter answers.
 
 ## 0.7.7 — 2026-10-07
-- **The stderr arm of the spill file keeps the same promises the stdout arm does.** Four things were
-  measured on a real distribution (2026-10-11, Ubuntu, `seq 1 200000 >&2`) and all four are fixed.
-  (1) *The file was short*: it held 1 011 753 of the stream's 1 288 895 bytes and ended mid-number,
-  because the stderr spill was taken **before** `settleStderr()` while stdout's had already been moved
-  after it — so the bytes still in flight reached the answer (through `takeStderr`) and never the file.
-  Both spills are now taken after the wait, and the file is the whole stream. (2) *The truncation was
-  invisible*: the settled run hardcoded `stderrTruncated: false` (the flag was cleared before the run
-  was built), and the renderer's `[output truncated; full output: …]` sentence existed for stdout only
-  — a model whose command wrote 1.29 MB to fd 2 read ~400 kB of it with nothing saying the rest
-  existed and no path to it. The run now carries the flag it actually set, and the body gets
-  `[stderr truncated; full output: …]`. (3) *Our own echo was in the file*: the shell's line editor
-  writes the line it just read to stderr, so the file's first line was
-  `… } | base64 -w0 )" # __DSH_WSL_BASH_REC`; the first window now goes through the same
-  `dropProtocolEcho` predicate the answer uses. (4) *A NUL the command wrote was eaten*: the reader
-  filtered **every** NUL in a chunk, so `printf 'a\0b\n' >&2` came back `ab` while the same bytes on
-  stdout kept theirs. The marker is now read as what it is — the last byte of the chunk that carries
-  it, since nothing else is written to fd 2 for that frame.
-  *What this leaves open, named*: a command whose stderr ends with a NUL of its own exactly on a chunk
-  boundary loses that byte, because that shape is indistinguishable from the marker. The alternative —
-  filtering every NUL — is the defect above. It is asserted as behaviour in
-  `tests/wsl-bash-spill.test.ts`, not left as a comment in the session file.
-- **What a user installs is now the plugin, not a copy of the repository.** `package.json#files` shipped
-  `src/` and both README screenshots: a fresh `npm pack` of the previous tree is **2,757,545 B across 79
-  members**, of which 2,265,091 B (82.1%) was the 30 source files and the 2 images — neither of which
-  anything at runtime reads (the plugin loads `lib/`; the source-reading gates read the repository). The
-  same pack is now **492,454 B across 47 members**, and the only difference between the two member lists
-  is the 32 removed entries. The nine READMEs point their screenshots at absolute
-  `raw.githubusercontent.com/…/HEAD/…` URLs in the same commit, so the npm page still renders without the
-  bytes in the tarball — chosen deliberately over relying on the registry rewriting a relative path.
+- **The stderr arm of the spill file keeps the same promises the stdout arm does.** Four things were measured on a real distribution (2026-10-11, Ubuntu, `seq 1 200000 >&2`) and all four are fixed. (1) *The file was short*: it held 1 011 753 of the stream's 1 288 895 bytes and ended mid-number, because the stderr spill was taken **before** `settleStderr()` while stdout's had already been moved after it — so the bytes still in flight reached the answer (through `takeStderr`) and never the file. Both spills are now taken after the wait, and the file is the whole stream. (2) *The truncation was invisible*: the settled run hardcoded `stderrTruncated: false` (the flag was cleared before the run was built), and the renderer's `[output truncated; full output: …]` sentence existed for stdout only — a model whose command wrote 1.29 MB to fd 2 read ~400 kB of it with nothing saying the rest existed and no path to it. The run now carries the flag it actually set, and the body gets `[stderr truncated; full output: …]`. (3) *Our own echo was in the file*: the shell's line editor writes the line it just read to stderr, so the file's first line was `… } | base64 -w0 )" # __DSH_WSL_BASH_REC`; the first window now goes through the same `dropProtocolEcho` predicate the answer uses. (4) *A NUL the command wrote was eaten*: the reader filtered **every** NUL in a chunk, so `printf 'a\0b\n' >&2` came back `ab` while the same bytes on stdout kept theirs. The marker is now read as what it is — the last byte of the chunk that carries it, since nothing else is written to fd 2 for that frame. *What this leaves open, named*: a command whose stderr ends with a NUL of its own exactly on a chunk boundary loses that byte, because that shape is indistinguishable from the marker. The alternative — filtering every NUL — is the defect above. It is asserted as behaviour in `tests/wsl-bash-spill.test.ts`, not left as a comment in the session file.
+- **What a user installs is now the plugin, not a copy of the repository.** `package.json#files` shipped `src/` and both README screenshots: a fresh `npm pack` of the previous tree is **2,757,545 B across 79 members**, of which 2,265,091 B (82.1%) was the 30 source files and the 2 images — neither of which anything at runtime reads (the plugin loads `lib/`; the source-reading gates read the repository). The same pack is now **492,454 B across 47 members**, and the only difference between the two member lists is the 32 removed entries. The nine READMEs point their screenshots at absolute `raw.githubusercontent.com/…/HEAD/…` URLs in the same commit, so the npm page still renders without the bytes in the tarball — chosen deliberately over relying on the registry rewriting a relative path.
 
-- **The deliberate-red ledger is empty, and the ten debts it held are paid.** Every entry was a
-  reproduction with a stated repair; all ten are now fixed, and the mechanism outlived them — a NEW red
-  nobody declared still fails the gate.
+- **The deliberate-red ledger is empty, and the ten debts it held are paid.** Every entry was a reproduction with a stated repair; all ten are now fixed, and the mechanism outlived them — a NEW red nobody declared still fails the gate.
 
   - **`check` folded every `stat` failure into `{exists:false}`** (issue #44 §6). A directory nobody can
     read, or an `EIO` over 9P, was reported as *not existing* — the one thing a caller cannot tell apart
@@ -121,12 +54,7 @@ are unchanged, and this line exists so that the record and the bytes agree.
     the linker's sentence and left the operator a bare exit number. `fs.symlinkSync` is the same junction
     and arrives as an Error carrying `EEXIST`/`EPERM`.
 
-  Hazards A, B and E were **measurements of Node and the OS**, not of this repository: each test
-  reproduced a shape and watched the information disappear, so fixing the product left them red. They are
-  now assertions about this repository's own call sites and fail if a site returns; the measurements stay
-  above them as the reason those rules read the way they do. `tests/deliberate-reds.test.mjs` now
-  exercises the ledger mechanism against its own synthetic entries, because a control that reads the real
-  array stops covering the gate the moment the last debt is closed.
+  Hazards A, B and E were **measurements of Node and the OS**, not of this repository: each test reproduced a shape and watched the information disappear, so fixing the product left them red. They are now assertions about this repository's own call sites and fail if a site returns; the measurements stay above them as the reason those rules read the way they do. `tests/deliberate-reds.test.mjs` now exercises the ledger mechanism against its own synthetic entries, because a control that reads the real array stops covering the gate the moment the last debt is closed.
 
 - **`bash_background`'s `job_output` was always empty on DSH 0.2.x (issue #56).** `bash_background` (and `bash`'s `run_in_background: true`, which shares the same producer) started the job and `job_list` tracked it, but `job_output` returned `(no new output)` on every read — during the run, after completion, and the completion notice carried no body. The command *did* run and its stdout landed on disk, so the read channel was dead, not the task.
 
@@ -137,715 +65,104 @@ are unchanged, and this line exists so that the record and the bytes agree.
   A unit gate now mirrors the 0.2.x drain loop against the produced `output` sources and would have failed on the old producer (no sources, or none yielding the bytes), so this regression cannot silently return.
 
 
-- **Every `bash` call in a WSL workspace failed on DSH Desktop 0.2.x (issue #51), and the fix is
-  three separate things.** (1) *The shell seam*: 0.2.x calls `ctx.shell.execute(spec)` and awaits
-  `result()`, while this plugin implemented the 0.1.x `resolve`/`run`/`start` — so **both** the
-  persistent path and the one-shot fallback were dead, not one of them. One spawn primitive now
-  serves all three faces, with `onExpiry` and `observed` filled in; the CI gate that hid it was the
-  typecheck **error-count** budget (the `TS2515` line was in the output the whole time), which now
-  reddens on banned codes at any count, self-tests itself, and may only ever be lowered
-  (212 → 209). (2) *The readiness contract*: the host injects `PS1`/`PROMPT_COMMAND` as Windows
-  variables, which WSL drops unless `WSLENV` names them, so the persistent shell came up with the
-  distribution's own prompt and the host could not recognise it — one bridge in the relay, proven on
-  a real ConPTY (before: default prompt; after: `prompt=[dsh> ]` with the `133;D;` marker), and the
-  contract values now have a parity gate against the installed host instead of a hand copy.
-  (3) *The persistent shell itself*: the host's PTY tool decides "finished" by matching a sentinel
-  line in terminal text and requiring the exit code to be followed immediately by a newline, and an
-  interactive Linux shell repaints with `ESC[<n>X`, filling the cells after the sentinel with
-  spaces — measured in a real Desktop session as **three calls hanging 303.8 s each** before the
-  host wiped the shell. The world now mounts this plugin's own `bash`: one long-lived
-  `bash --norc -i` over **pipes**, completing on a NUL-delimited record carrying a per-command
-  nonce, with the login environment sourced silently, history expansion off (which also closes the
-  `!` class of failures for this path), a pseudo-terminal of its own for a command caught waiting for
-  input (`script -qec`, decided by reading the process rather than its name — see the bullet on the
-  reading; `tty: true` asks for one up front), and a session rebuild that replays `cd` and exported
-  variables when a call wedges
-  *without* executing a merely-slow command a second time.
-  Measured on this machine, both build planes: first call ~0.5 s including boot, then a **median of 8 ms**
-  (measured 2026-10-06, once the answer stopped waiting for the state record — the same command through
-  one `wsl.exe` per call is 222-236 ms, and a person typing into an open terminal sees 16 ms), with
-  `cd`/`export`/exit codes/CJK/`!`/`sed -i`/`tar`/`git commit`/`sudo` all verified, while the same
-  command through the PTY tier still times out — that control is the last cell of the new
-  `bash-session-real` gate, so the replaced behaviour cannot silently come back. Verified end to end
-  through **real host tool dispatch** (the host's own `bash` tool calling our executor, in
-  `tool-bash-real`), and `DSH_WSL_PTY_SHELL=1` keeps the old tier reachable. **Clicked inside DSH
-  Desktop with this build installed**, and the clicks found two defects the offline gates could not
-  see — the host's plugin loader unwraps `exports.default`, so a module-level `inject` never reaches
-  the fiber and every call failed `cannot get property "subprocess" without inject`; and the shell's
-  echo of a frame reaches stderr as only its *tail*, so a fragment of our own framing was in the
-  model's body on every call. Both are fixed and both are now gated by cells that enter through the
-  channel the product uses.
-- **When an answer names two files, it now says which one holds everything.** A truncated `bash` result can
-  carry both our `[output truncated; full output: …]` path and the host's appended
-  `Full formatted result stored at:` path, and nothing said which is which. One sentence now follows both
-  the stdout and the stderr arm: `[the path above holds the whole stream; if this answer also names a
-  "formatted result" path, that one is the host's excerpt and can hold fewer lines]`. Measured in a real
-  session on the client's own build (2026-10-13, `seq 1 250000`): the path we name holds
-  **1 638 895 bytes / 250 000 lines** — the same size the bare command produces — while the formatted
-  excerpt holds 524 511 bytes / 74 892 lines; the stderr arm measures 1 638 895 against 357 165 / 50 985.
-  The two sentences the client recognizes are untouched, so nothing that parsed them before stops parsing
-  now.
-- **`read_image` answers inside the WSL world again (issue #54).** The host registers that tool from a
-  context whose realm chain does not reach the world this plugin cuts, so every image read in a WSL session
-  answered `cannot get property "fs" without inject` in ~12 ms — before the path was even resolved (a path
-  that does not exist gives the same sentence). The world now mounts its own read beside the host's row,
-  resolving `fs` by realm key, and answers with the real bytes: measured in a real session, **296 ms,
-  `image/png` 446x568 / 61992 bytes** for a file inside the distribution. Two things this took, recorded
-  because both were invisible to the offline gates: the returned value must satisfy the **host's own output
-  validation** (our first build read the file correctly and then died with
-  `"value.image.name" is not a declared property`, because the schema declared five fields while the
-  attachment service returns seven), and a real session resolves tools per agent
-  (`dsh-tools` `get(name, agent)`), so a non-WSL session in the same process keeps the host's read and was
-  re-measured at 22 ms. The image formats accepted are the same four the host accepts, and the same
-  image-capable-route refusal is applied, so switching to this read loses no check.
-- **`run_code` in the one shape where it cannot start now says so, with the ways out (issue #78).** On
-  Windows the file sandbox grants write by reading the workspace root's security descriptor, and a
-  `\\wsl.localhost\…` root is a 9P share that has none, so a PTC session under `workspace-write` failed at
-  worker startup with `GetNamedSecurityInfoW failed (Win32 1)` — a bare Win32 code, no cause, no exit, and
-  every retry identical. A `tools.guard()` now refuses exactly that shape (that tool, that mode, a root
-  under `\\wsl.localhost\` or `\\wsl$\`) and names the three settings that do run: switch the session to
-  read-only, switch it to danger-full-access, or use the world's own tools. Measured on the machine, same
-  installed build: the refused call answers in **2 ms** with the rejected root quoted; the same program
-  still answers `1` under `read-only` (829 ms, the host marking enforcement partial) and under
-  `danger-full-access` (478 ms); and `bash` in the refused mode still reaches the distribution
-  (448 ms, kernel `6.18.40.1-microsoft-standard-WSL2`). This **does not give the WSL world a real sandbox**
-  — confinement that holds would have to be enforced inside the distribution; the refusal is the honest
-  state until that exists, and the cause itself sits with the host's Windows ACL runner.
-- **For maintainers: a consumer ledger, two probes, and a gate that used to be green while a suite was
-  dead.** `docs/CONSUMER-COVERAGE.md` derives, on every run, every `(service, host package)` pair that asks
-  for a service our generated worlds isolate, and `tests/consumer-coverage.test.mjs` holds the count down
-  (43 of 45 pairs have never been executed) — the gap that let #54 and #78 arrive unseen, because every
-  harness entered through a tool we register ourselves. `npm run test:realm-probe` and
-  `npm run test:confine-probe` answer both issues' two arms against a real booted host; `run-seams` now
-  treats a suite that exits non-zero without naming a red as an observed red, which had let two probes die
-  silently on the ubuntu runner inside a green frame. Both probes are measured on the maintainer machine
-  and **SKIP in CI** (the pinned closure has no `@deepseek-ai/dsh-attachment`): a check in a job that cannot
-  run it is not coverage.
+- **Every `bash` call in a WSL workspace failed on DSH Desktop 0.2.x (issue #51), and the fix is three separate things.** (1) *The shell seam*: 0.2.x calls `ctx.shell.execute(spec)` and awaits `result()`, while this plugin implemented the 0.1.x `resolve`/`run`/`start` — so **both** the persistent path and the one-shot fallback were dead, not one of them. One spawn primitive now serves all three faces, with `onExpiry` and `observed` filled in; the CI gate that hid it was the typecheck **error-count** budget (the `TS2515` line was in the output the whole time), which now reddens on banned codes at any count, self-tests itself, and may only ever be lowered (212 → 209). (2) *The readiness contract*: the host injects `PS1`/`PROMPT_COMMAND` as Windows variables, which WSL drops unless `WSLENV` names them, so the persistent shell came up with the distribution's own prompt and the host could not recognise it — one bridge in the relay, proven on a real ConPTY (before: default prompt; after: `prompt=[dsh> ]` with the `133;D;` marker), and the contract values now have a parity gate against the installed host instead of a hand copy. (3) *The persistent shell itself*: the host's PTY tool decides "finished" by matching a sentinel line in terminal text and requiring the exit code to be followed immediately by a newline, and an interactive Linux shell repaints with `ESC[<n>X`, filling the cells after the sentinel with spaces — measured in a real Desktop session as **three calls hanging 303.8 s each** before the host wiped the shell. The world now mounts this plugin's own `bash`: one long-lived `bash --norc -i` over **pipes**, completing on a NUL-delimited record carrying a per-command nonce, with the login environment sourced silently, history expansion off (which also closes the `!` class of failures for this path), a pseudo-terminal of its own for a command caught waiting for input (`script -qec`, decided by reading the process rather than its name — see the bullet on the reading; `tty: true` asks for one up front), and a session rebuild that replays `cd` and exported variables when a call wedges *without* executing a merely-slow command a second time. Measured on this machine, both build planes: first call ~0.5 s including boot, then a **median of 8 ms** (measured 2026-10-06, once the answer stopped waiting for the state record — the same command through one `wsl.exe` per call is 222-236 ms, and a person typing into an open terminal sees 16 ms), with `cd`/`export`/exit codes/CJK/`!`/`sed -i`/`tar`/`git commit`/`sudo` all verified, while the same command through the PTY tier still times out — that control is the last cell of the new `bash-session-real` gate, so the replaced behaviour cannot silently come back. Verified end to end through **real host tool dispatch** (the host's own `bash` tool calling our executor, in `tool-bash-real`), and `DSH_WSL_PTY_SHELL=1` keeps the old tier reachable. **Clicked inside DSH Desktop with this build installed**, and the clicks found two defects the offline gates could not see — the host's plugin loader unwraps `exports.default`, so a module-level `inject` never reaches the fiber and every call failed `cannot get property "subprocess" without inject`; and the shell's echo of a frame reaches stderr as only its *tail*, so a fragment of our own framing was in the model's body on every call. Both are fixed and both are now gated by cells that enter through the channel the product uses.
+- **When an answer names two files, it now says which one holds everything.** A truncated `bash` result can carry both our `[output truncated; full output: …]` path and the host's appended `Full formatted result stored at:` path, and nothing said which is which. One sentence now follows both the stdout and the stderr arm: `[the path above holds the whole stream; if this answer also names a "formatted result" path, that one is the host's excerpt and can hold fewer lines]`. Measured in a real session on the client's own build (2026-10-13, `seq 1 250000`): the path we name holds **1 638 895 bytes / 250 000 lines** — the same size the bare command produces — while the formatted excerpt holds 524 511 bytes / 74 892 lines; the stderr arm measures 1 638 895 against 357 165 / 50 985. The two sentences the client recognizes are untouched, so nothing that parsed them before stops parsing now.
+- **`read_image` answers inside the WSL world again (issue #54).** The host registers that tool from a context whose realm chain does not reach the world this plugin cuts, so every image read in a WSL session answered `cannot get property "fs" without inject` in ~12 ms — before the path was even resolved (a path that does not exist gives the same sentence). The world now mounts its own read beside the host's row, resolving `fs` by realm key, and answers with the real bytes: measured in a real session, **296 ms, `image/png` 446x568 / 61992 bytes** for a file inside the distribution. Two things this took, recorded because both were invisible to the offline gates: the returned value must satisfy the **host's own output validation** (our first build read the file correctly and then died with `"value.image.name" is not a declared property`, because the schema declared five fields while the attachment service returns seven), and a real session resolves tools per agent (`dsh-tools` `get(name, agent)`), so a non-WSL session in the same process keeps the host's read and was re-measured at 22 ms. The image formats accepted are the same four the host accepts, and the same image-capable-route refusal is applied, so switching to this read loses no check.
+- **`run_code` in the one shape where it cannot start now says so, with the ways out (issue #78).** On Windows the file sandbox grants write by reading the workspace root's security descriptor, and a `\\wsl.localhost\…` root is a 9P share that has none, so a PTC session under `workspace-write` failed at worker startup with `GetNamedSecurityInfoW failed (Win32 1)` — a bare Win32 code, no cause, no exit, and every retry identical. A `tools.guard()` now refuses exactly that shape (that tool, that mode, a root under `\\wsl.localhost\` or `\\wsl$\`) and names the three settings that do run: switch the session to read-only, switch it to danger-full-access, or use the world's own tools. Measured on the machine, same installed build: the refused call answers in **2 ms** with the rejected root quoted; the same program still answers `1` under `read-only` (829 ms, the host marking enforcement partial) and under `danger-full-access` (478 ms); and `bash` in the refused mode still reaches the distribution (448 ms, kernel `6.18.40.1-microsoft-standard-WSL2`). This **does not give the WSL world a real sandbox** — confinement that holds would have to be enforced inside the distribution; the refusal is the honest state until that exists, and the cause itself sits with the host's Windows ACL runner.
+- **For maintainers: a consumer ledger, two probes, and a gate that used to be green while a suite was dead.** `docs/CONSUMER-COVERAGE.md` derives, on every run, every `(service, host package)` pair that asks for a service our generated worlds isolate, and `tests/consumer-coverage.test.mjs` holds the count down (43 of 45 pairs have never been executed) — the gap that let #54 and #78 arrive unseen, because every harness entered through a tool we register ourselves. `npm run test:realm-probe` and `npm run test:confine-probe` answer both issues' two arms against a real booted host; `run-seams` now treats a suite that exits non-zero without naming a red as an observed red, which had let two probes die silently on the ubuntu runner inside a green frame. Both probes are measured on the maintainer machine and **SKIP in CI** (the pinned closure has no `@deepseek-ai/dsh-attachment`): a check in a job that cannot run it is not coverage.
 
-- **The WSL sentence no longer carries a prompt variable, so a `wsl-*` session stops dying before its first model request** ([#87](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/87)).
-  `PERSONA_APPEND` read `Your working directory {{cwd}} is inside a WSL …`, and `appendPersona()` writes that
-  sentence into the persona's model-facing scalar. A persona is a template: `@deepseek-ai/dsh-system-prompt`
-  resolves every `{{…}}` group against the variables registered for that assembly and throws
-  `unknown prompt variable "{{cwd}}" in section "deployment:persona-prefix"` when one is missing — and the
-  persona section sits at order 0, so the whole variant failed at turn 1 step 1. DSH stopped registering `cwd`
-  between two releases, measured against the published packages rather than inferred: `dsh-agent-loop@0.2.0-rc.2`
-  registers `provider`, `model` **and `cwd`** (`lib/index.js:1566`), while `0.2.1-rc.2` registers only
-  `provider` and `model` (`lib/index.js:1591-1592`). The sentence now reads
-  `Your working directory is inside a WSL …`: the same claim to the model, with no group whose meaning depends on
-  a registry this plugin does not own. **Three of the four variants were hit, not four** — `wsl-minimal`'s persona
-  carries `complete: true` and is never appended to, which is also why the issue's "4 个变体均如此" needed
-  correcting. One claim in the report is the reporter's reading of the upstream docs and not something these
-  packages show us: that 0.2.x hands the working directory to the model through another service. What is measured
-  here is only that the alternative to this change was a session that died before spending a token. Verified on a
-  real Desktop (`0.2.1-rc.1`, whose bundled loop registers `provider` and `model` and not `cwd`): the same prompt
-  in the `\\wsl.localhost\Ubuntu\home\ruler` workspace under `wsl-standard` answered 处理失败 with
-  `unknown prompt variable "{{cwd}}"`, `1 轮 1 步` and no token spend; after installing this build the same prompt
-  completed in **6 s / 16.3K tok**, and the session's own transcript carries the fixed sentence with **zero**
-  literal `{{cwd}}` in its 68,810 decompressed bytes. `PERSONA_APPEND` is the only `{{` in `src/`, so the whole
-  injection surface is now locked by [PR #90](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/90):
-  four persona shapes whose source text has no `{{` assert the variant has none either, the variant's reference
-  multiset must equal the source's, and the generated sentence must interpolate through the host's own
-  `renderPrompt` against an empty registry — with the pre-fix sentence kept as the control that the device bites.
-- **`grep` and `glob` answer inside a `/mnt/<drive>` WSL workspace instead of refusing it** ([#86](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/86)).
-  A workspace registered under a Windows drive path (`F:\TechEnergy\Code\Scanner`, because 9P cannot
-  export drvfs) gave the model `grep is only available in a WSL workspace session` on **every** call,
-  while `bash`, `read`, `write` and `edit` in the same session worked — so the session was healthy and
-  only search thought it was somewhere else. `resolveTarget()` knew two cwds: a WSL UNC and an absolute
-  Linux path. A drive cwd was neither, so it returned `undefined` and both tools threw. It now takes the
-  third shape the rest of the plugin already serves: `windowsToMntPath` for the Linux workdir, and the
-  distribution from the registration the dialog wrote, in the order the persistent shell walks it
-  (`src/host/wsl-relay.ts`: configured → stored entry → registry default) so `grep` searches the
-  distribution the session's `bash` runs in rather than whichever one the registry calls default. A
-  relative or empty cwd still names no world and is still refused. **One thing to know before calling
-  this a one-line patch**: `tests/wsl-search.test.ts` had a cell asserting
-  `resolveTarget('C:\\Users\\mille\\ws') === undefined` under the name "refuses a cwd that is not in a
-  WSL world" — the defect was written down as the contract, so the cell is split rather than edited:
-  what genuinely names no world stays refused, and the drive shape gets its own cases. Measured both
-  ways: with the pre-fix source the three new drive cells are red and the fourth — which calls the
-  registered `grep`/`glob` tools and asserts the refusal sentence is not what comes back — fails with
-  `grep refused a WSL drive workspace`; with the fix, 36/36 in that file, 226 tests in `test:unit`,
-  111 in the `test:node` host bucket with both materializer tiers PASSED, `typecheck-gate` 209 =
-  baseline, `test:docs` 11/11. The same round also ran against the **built** `lib/wsl-search.js`, not the
-  source: main's copy reproduces both reported sentences verbatim, this build returns
-  `Found 1 match … ISSUE86-NEEDLE-…` from `grep` and `needle.txt` from `glob` — real `wsl.exe`, real
-  distribution, a real drive-path cwd, and a registration naming **only** the distribution, which is the
-  shape the generated `search-wsl` row actually produces.
+- **The WSL sentence no longer carries a prompt variable, so a `wsl-*` session stops dying before its first model request** ([#87](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/87)). `PERSONA_APPEND` read `Your working directory {{cwd}} is inside a WSL …`, and `appendPersona()` writes that sentence into the persona's model-facing scalar. A persona is a template: `@deepseek-ai/dsh-system-prompt` resolves every `{{…}}` group against the variables registered for that assembly and throws `unknown prompt variable "{{cwd}}" in section "deployment:persona-prefix"` when one is missing — and the persona section sits at order 0, so the whole variant failed at turn 1 step 1. DSH stopped registering `cwd` between two releases, measured against the published packages rather than inferred: `dsh-agent-loop@0.2.0-rc.2` registers `provider`, `model` **and `cwd`** (`lib/index.js:1566`), while `0.2.1-rc.2` registers only `provider` and `model` (`lib/index.js:1591-1592`). The sentence now reads `Your working directory is inside a WSL …`: the same claim to the model, with no group whose meaning depends on a registry this plugin does not own. **Three of the four variants were hit, not four** — `wsl-minimal`'s persona carries `complete: true` and is never appended to, which is also why the issue's "4 个变体均如此" needed correcting. One claim in the report is the reporter's reading of the upstream docs and not something these packages show us: that 0.2.x hands the working directory to the model through another service. What is measured here is only that the alternative to this change was a session that died before spending a token. Verified on a real Desktop (`0.2.1-rc.1`, whose bundled loop registers `provider` and `model` and not `cwd`): the same prompt in the `\\wsl.localhost\Ubuntu\home\ruler` workspace under `wsl-standard` answered 处理失败 with `unknown prompt variable "{{cwd}}"`, `1 轮 1 步` and no token spend; after installing this build the same prompt completed in **6 s / 16.3K tok**, and the session's own transcript carries the fixed sentence with **zero** literal `{{cwd}}` in its 68,810 decompressed bytes. `PERSONA_APPEND` is the only `{{` in `src/`, so the whole injection surface is now locked by [PR #90](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/90): four persona shapes whose source text has no `{{` assert the variant has none either, the variant's reference multiset must equal the source's, and the generated sentence must interpolate through the host's own `renderPrompt` against an empty registry — with the pre-fix sentence kept as the control that the device bites.
+- **`grep` and `glob` answer inside a `/mnt/<drive>` WSL workspace instead of refusing it** ([#86](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/86)). A workspace registered under a Windows drive path (`F:\TechEnergy\Code\Scanner`, because 9P cannot export drvfs) gave the model `grep is only available in a WSL workspace session` on **every** call, while `bash`, `read`, `write` and `edit` in the same session worked — so the session was healthy and only search thought it was somewhere else. `resolveTarget()` knew two cwds: a WSL UNC and an absolute Linux path. A drive cwd was neither, so it returned `undefined` and both tools threw. It now takes the third shape the rest of the plugin already serves: `windowsToMntPath` for the Linux workdir, and the distribution from the registration the dialog wrote, in the order the persistent shell walks it (`src/host/wsl-relay.ts`: configured → stored entry → registry default) so `grep` searches the distribution the session's `bash` runs in rather than whichever one the registry calls default. A relative or empty cwd still names no world and is still refused. **One thing to know before calling this a one-line patch**: `tests/wsl-search.test.ts` had a cell asserting `resolveTarget('C:\\Users\\mille\\ws') === undefined` under the name "refuses a cwd that is not in a WSL world" — the defect was written down as the contract, so the cell is split rather than edited: what genuinely names no world stays refused, and the drive shape gets its own cases. Measured both ways: with the pre-fix source the three new drive cells are red and the fourth — which calls the registered `grep`/`glob` tools and asserts the refusal sentence is not what comes back — fails with `grep refused a WSL drive workspace`; with the fix, 36/36 in that file, 226 tests in `test:unit`, 111 in the `test:node` host bucket with both materializer tiers PASSED, `typecheck-gate` 209 = baseline, `test:docs` 11/11. The same round also ran against the **built** `lib/wsl-search.js`, not the source: main's copy reproduces both reported sentences verbatim, this build returns `Found 1 match … ISSUE86-NEEDLE-…` from `grep` and `needle.txt` from `glob` — real `wsl.exe`, real distribution, a real drive-path cwd, and a registration naming **only** the distribution, which is the shape the generated `search-wsl` row actually produces.
 
 ## 0.7.6 — 2026-10-01
-- **A second pass made the session `bash` answer like the host's `bash`, field by field.** A matrix of
-  34 everyday commands found four behaviours that were not everyday-good, and all four are fixed:
-  `run_in_background: true` was an argument silently ignored (it now delegates to the same jobs
-  producer `bash_background` uses); a relative `workdir` resolved to nothing and ran wherever the last
-  call had left the shell (it now joins onto the session directory and lets bash's own `cd` error
-  speak, as the host's `resolveWorkdir` does); a stream larger than the cap lost its head with only a
-  boolean to say so (it now spills to a file and says `[output truncated; full output: …]`, the same
-  sentence and the same directory as the one-shot path, one file per command); and a rebuild left
-  detached children running (it now reaps exactly the processes carrying its own session token, with a
-  control process that must survive). The journal replays shell options, `shopt`s, aliases and
-  functions as well as `cd` and exports — chunked into separate frames, because `eval` parses its
-  whole string before running any of it, so a `shopt` on line 50 cannot rescue a completion function
-  on line 1623 that needs extglob to be *parsed*. What differs is now a table two gates read:
-  `tests/wsl-bash-parity.test.ts` against the installed host package, and
-  `scripts/compatibility/bash-parity-real.mjs` running one probe script through both tools on a real
-  distribution — an undeclared difference, or a declared one that stopped being true, fails the build
-  ([docs/bash-parity.md](docs/bash-parity.md)). Footprint measured: ~9.1 MB of Windows working set per
-  session across two `wsl.exe` processes, 3.4 MB inside the distribution, `vmmem` unchanged, no runtime
-  files until a stream overflows.
+- **A second pass made the session `bash` answer like the host's `bash`, field by field.** A matrix of 34 everyday commands found four behaviours that were not everyday-good, and all four are fixed: `run_in_background: true` was an argument silently ignored (it now delegates to the same jobs producer `bash_background` uses); a relative `workdir` resolved to nothing and ran wherever the last call had left the shell (it now joins onto the session directory and lets bash's own `cd` error speak, as the host's `resolveWorkdir` does); a stream larger than the cap lost its head with only a boolean to say so (it now spills to a file and says `[output truncated; full output: …]`, the same sentence and the same directory as the one-shot path, one file per command); and a rebuild left detached children running (it now reaps exactly the processes carrying its own session token, with a control process that must survive). The journal replays shell options, `shopt`s, aliases and functions as well as `cd` and exports — chunked into separate frames, because `eval` parses its whole string before running any of it, so a `shopt` on line 50 cannot rescue a completion function on line 1623 that needs extglob to be *parsed*. What differs is now a table two gates read: `tests/wsl-bash-parity.test.ts` against the installed host package, and `scripts/compatibility/bash-parity-real.mjs` running one probe script through both tools on a real distribution — an undeclared difference, or a declared one that stopped being true, fails the build ([docs/bash-parity.md](docs/bash-parity.md)). Footprint measured: ~9.1 MB of Windows working set per session across two `wsl.exe` processes, 3.4 MB inside the distribution, `vmmem` unchanged, no runtime files until a stream overflows.
 
-- **An agent's shell now ends with the agent.** The session `bash` registered its cleanup on the
-  plugin's scope only, so every agent that had ever called `bash` left a shell behind — two `wsl.exe`
-  and about 9 MB of Windows working set — until the whole world was disposed. The cell that found it
-  drives a second agent through the same registered tool and asks what happens when one of them stops.
-  The other isolation boundaries it now pins were already true and had never been tested: a second
-  agent does not inherit the first one's directory, exports or aliases; two calls issued at once each
-  settle with their own answer; and a rebuild's process sweep stops only the processes carrying its
-  own session token, so one agent's wedged shell cannot reap another's work. `sudo` also says what it
-  needs: where the distribution asks for a password, the reply now adds that this shell has nobody to
-  type it and names the two ways out, instead of leaving sudo's own line for the model to retry. And an
-  alias used on the line that defines it answers 127 here exactly as it does in `bash -ic` on the same
-  distribution — measured, and recorded as bash's rule rather than ours.
+- **An agent's shell now ends with the agent.** The session `bash` registered its cleanup on the plugin's scope only, so every agent that had ever called `bash` left a shell behind — two `wsl.exe` and about 9 MB of Windows working set — until the whole world was disposed. The cell that found it drives a second agent through the same registered tool and asks what happens when one of them stops. The other isolation boundaries it now pins were already true and had never been tested: a second agent does not inherit the first one's directory, exports or aliases; two calls issued at once each settle with their own answer; and a rebuild's process sweep stops only the processes carrying its own session token, so one agent's wedged shell cannot reap another's work. `sudo` also says what it needs: where the distribution asks for a password, the reply now adds that this shell has nobody to type it and names the two ways out, instead of leaving sudo's own line for the model to retry. And an alias used on the line that defines it answers 127 here exactly as it does in `bash -ic` on the same distribution — measured, and recorded as bash's rule rather than ours.
 
-- **Three seams in the pseudo-terminal tier, found by driving it rather than reasoning about it.** An
-  emphasising program on a terminal it cannot colour writes overstrike, and a measured `man` page came
-  back as `N\bNA\bAM\bME\bE` — unreadable where a person at a real terminal reads `NAME`; the fold now
-  resolves the two shapes this distribution was measured emitting (`X\bX`, `_\bX`) the way a terminal
-  does. The escalation decision read only the command's first word, so `bash -c 'sudo true'` — a shape
-  models write constantly — sat to its deadline returning `(no output)` plus a session rebuild where
-  bare `sudo true` answers in 46 ms; one layer of a `bash`/`sh`/`zsh`/`dash` `-c` wrapper is now read,
-  and a wrapper whose contents cannot be read is left alone rather than escalated on a guess. And
-  `tty: false` did nothing: with only `true` honoured, `man ls` came back through the pty with no way
-  back to the plain pipe, so `false` is a veto now. What is *not* fixed, because it is what a terminal
-  is: an escalated call has one stream, so the `[stderr]` section the plain path writes cannot appear
-  there (the host's own PTY tier is the same — it is a row in [docs/bash-parity.md](docs/bash-parity.md)
-  with a probe behind it), and a program on a terminal that nothing can type into used to cost its
-  deadline plus a rebuild — measured 5.7-6.1 s with a screen dump — because the frame gives a pty
-  `/dev/null` for input rather than letting the program eat the next command's bytes; that case is what
-  the reading below now ends early.
+- **Three seams in the pseudo-terminal tier, found by driving it rather than reasoning about it.** An emphasising program on a terminal it cannot colour writes overstrike, and a measured `man` page came back as `N\bNA\bAM\bME\bE` — unreadable where a person at a real terminal reads `NAME`; the fold now resolves the two shapes this distribution was measured emitting (`X\bX`, `_\bX`) the way a terminal does. The escalation decision read only the command's first word, so `bash -c 'sudo true'` — a shape models write constantly — sat to its deadline returning `(no output)` plus a session rebuild where bare `sudo true` answers in 46 ms; one layer of a `bash`/`sh`/`zsh`/`dash` `-c` wrapper is now read, and a wrapper whose contents cannot be read is left alone rather than escalated on a guess. And `tty: false` did nothing: with only `true` honoured, `man ls` came back through the pty with no way back to the plain pipe, so `false` is a veto now. What is *not* fixed, because it is what a terminal is: an escalated call has one stream, so the `[stderr]` section the plain path writes cannot appear there (the host's own PTY tier is the same — it is a row in [docs/bash-parity.md](docs/bash-parity.md) with a probe behind it), and a program on a terminal that nothing can type into used to cost its deadline plus a rebuild — measured 5.7-6.1 s with a screen dump — because the frame gives a pty `/dev/null` for input rather than letting the program eat the next command's bytes; that case is what the reading below now ends early.
 
-- **A command waiting for a keyboard is diagnosed by reading the distribution, not by matching its
-  name — and it gets an answer instead of a deadline.** Nothing in this release ships a list of command
-  names. The path here was: one whitelist of first words → three "classes" (credential / keyboard /
-  pager) with an 8-second ceiling on one of them → all of it deleted in favour of a second look taken
-  from outside the shell while the call is in flight. Each step is kept in the record because each was
-  paid for by a measurement: the whitelist stopped at a hyphen so `ssh-copy-id`/`ssh-keygen`/`redis-cli`
-  could never match it; reading only the first word cost **121 703 ms** in a real session, where the
-  model sent `{"command":"printf x; vim note.txt","timeoutMs":15000}` and got the screen's raw escapes
-  after the two-minute default had run out; honouring a named deadline bought nothing on a wait that can
-  never be satisfied, since an agent reads a 16 889 ms silence as "this environment is slow" and
-  reprices every later call — while `tar -cf /dev/null /usr` legitimately takes 15 s and `vim -es` over
-  **1 000 000 lines** takes 1 s, so any rule that stops a quiet command must be able to tell those apart.
-  What ships reads, per sample (200–280 ms; first look at 600 ms of silence, then every 400 ms for the
-  first few looks and every 2 s after that): the process state,
-  whether the job owns the terminal's foreground group, `/proc/<pid>/wchan`, whether a terminal is among
-  the process's descriptors, and whether its CPU is advancing (`/proc/<pid>/schedstat`). `sleep`, a
-  network wait and a build are each excluded by a different one of those columns; a program asleep in a
-  terminal read is not. It then stops the wait — `SIGCONT` first, because a stopped process ignores
-  `SIGTERM` — and runs the command once more on a pseudo-terminal inside the same call, where the
-  keyboard read meets end-of-file and the program prints its own complaint. Measured on the real
-  session (`D:\Temp\issue51-s0\v5-run.txt`): `sh -c 'read x < /dev/tty'` — a program called `sh`, in no
-  list that ever existed — stopped at 628 ms and answered at 1 760 ms; `sleep 4` was untouched;
-  `sudo` asking for a password, which hides its `/proc` entries by clearing its dumpable flag, is
-  read through the distribution's root rights — a second pass of the same probe, run as root, sees the
-  wait its own user cannot; it reads `/proc` and nothing else, runs at most once per call, and a
-  distribution where root cannot be used falls back to the unconfirmable reading and says so — and came
-  back with sudo's own words at 2 412 ms; a 60 000 ms deadline asked
-  of a keyboard wait returned in 1 733 ms. Two things are said out
-  loud rather than done quietly: **the command has now run twice** ("anything it had already done before
-  that prompt has now been done twice"), because an unannounced second execution is the defect this
-  ticket already caught once; and if the `/proc` walk never answers, the body says the check could not
-  run instead of leaving a silent deadline — a premise that has gone away is not allowed to look like a
-  verdict. And when the walk does answer but this kernel reports no sleep location — which is what the
-  WSL1 runner does, `wchan` and `/proc/<pid>/syscall` empty for every process, no foreground job named —
-  the deadline body prints the rows it read and says so (`w=not-reported`, beside `w=running` for a
-  process on the CPU and `w=0` for one it may not look inside), instead of leaving "timed out" to be read
-  as "examined and found ordinary". `tty: true` asks for a terminal up front and `tty: false` vetoes the second attempt; the
-  pager and live-display behaviours that the class lists existed to encode are simply what the pipe does
-  (`man` prints the page, `top: failed tty get` refuses in 687 ms), and the sheet of which symptom
-  belongs to which layer is [docs/tty-triage.md](docs/tty-triage.md).
+- **A command waiting for a keyboard is diagnosed by reading the distribution, not by matching its name — and it gets an answer instead of a deadline.** Nothing in this release ships a list of command names. The path here was: one whitelist of first words → three "classes" (credential / keyboard / pager) with an 8-second ceiling on one of them → all of it deleted in favour of a second look taken from outside the shell while the call is in flight. Each step is kept in the record because each was paid for by a measurement: the whitelist stopped at a hyphen so `ssh-copy-id`/`ssh-keygen`/`redis-cli` could never match it; reading only the first word cost **121 703 ms** in a real session, where the model sent `{"command":"printf x; vim note.txt","timeoutMs":15000}` and got the screen's raw escapes after the two-minute default had run out; honouring a named deadline bought nothing on a wait that can never be satisfied, since an agent reads a 16 889 ms silence as "this environment is slow" and reprices every later call — while `tar -cf /dev/null /usr` legitimately takes 15 s and `vim -es` over **1 000 000 lines** takes 1 s, so any rule that stops a quiet command must be able to tell those apart. What ships reads, per sample (200–280 ms; first look at 600 ms of silence, then every 400 ms for the first few looks and every 2 s after that): the process state, whether the job owns the terminal's foreground group, `/proc/<pid>/wchan`, whether a terminal is among the process's descriptors, and whether its CPU is advancing (`/proc/<pid>/schedstat`). `sleep`, a network wait and a build are each excluded by a different one of those columns; a program asleep in a terminal read is not. It then stops the wait — `SIGCONT` first, because a stopped process ignores `SIGTERM` — and runs the command once more on a pseudo-terminal inside the same call, where the keyboard read meets end-of-file and the program prints its own complaint. Measured on the real session (`D:\Temp\issue51-s0\v5-run.txt`): `sh -c 'read x < /dev/tty'` — a program called `sh`, in no list that ever existed — stopped at 628 ms and answered at 1 760 ms; `sleep 4` was untouched; `sudo` asking for a password, which hides its `/proc` entries by clearing its dumpable flag, is read through the distribution's root rights — a second pass of the same probe, run as root, sees the wait its own user cannot; it reads `/proc` and nothing else, runs at most once per call, and a distribution where root cannot be used falls back to the unconfirmable reading and says so — and came back with sudo's own words at 2 412 ms; a 60 000 ms deadline asked of a keyboard wait returned in 1 733 ms. Two things are said out loud rather than done quietly: **the command has now run twice** ("anything it had already done before that prompt has now been done twice"), because an unannounced second execution is the defect this ticket already caught once; and if the `/proc` walk never answers, the body says the check could not run instead of leaving a silent deadline — a premise that has gone away is not allowed to look like a verdict. And when the walk does answer but this kernel reports no sleep location — which is what the WSL1 runner does, `wchan` and `/proc/<pid>/syscall` empty for every process, no foreground job named — the deadline body prints the rows it read and says so (`w=not-reported`, beside `w=running` for a process on the CPU and `w=0` for one it may not look inside), instead of leaving "timed out" to be read as "examined and found ordinary". `tty: true` asks for a terminal up front and `tty: false` vetoes the second attempt; the pager and live-display behaviours that the class lists existed to encode are simply what the pipe does (`man` prints the page, `top: failed tty get` refuses in 687 ms), and the sheet of which symptom belongs to which layer is [docs/tty-triage.md](docs/tty-triage.md).
 
-- **A repeated failure is named, and still executed.** The same command bytes failing twice in the same
-  shell adds `[this exact command has failed 2 times in this shell with nothing succeeding in it since: …]`,
-  and any success clears every streak — the claim is about a shell where nothing has worked since, so an
-  `npm install` succeeding between two failing `npm test` calls must not be talked about as a stuck loop.
-  Deliberately not a refusal: a tool declining to run
-  what it was asked is the shape this ticket is about, and the ordinary case — `npm test` passing on the
-  third try after an install — is exactly what a refusal would break.
+- **A repeated failure is named, and still executed.** The same command bytes failing twice in the same shell adds `[this exact command has failed 2 times in this shell with nothing succeeding in it since: …]`, and any success clears every streak — the claim is about a shell where nothing has worked since, so an `npm install` succeeding between two failing `npm test` calls must not be talked about as a stuck loop. Deliberately not a refusal: a tool declining to run what it was asked is the shape this ticket is about, and the ordinary case — `npm test` passing on the third try after an install — is exactly what a refusal would break.
 
-- **`sudo`'s note offers the human first.** The product has interactive terminal tabs in the right sidebar
-  (`dsh-client-ui-sidebar-terminal`; the host's own PTY, which this plugin does not touch) where a person
-  can type the password. That is now the first way out, with NOPASSWD / `DSH_WSL_USER=root` second as the
-  way to make the agent able to run it alone.
+- **`sudo`'s note offers the human first.** The product has interactive terminal tabs in the right sidebar (`dsh-client-ui-sidebar-terminal`; the host's own PTY, which this plugin does not touch) where a person can type the password. That is now the first way out, with NOPASSWD / `DSH_WSL_USER=root` second as the way to make the agent able to run it alone.
 
-- **The keyboard hint is given by the reading, not by whether we applied our own bound.** The first live
-  session of this on the installed desktop did not send `vim note.txt`; the model sent
-  `{"command":"printf x; vim note.txt","timeoutMs":15000}` — naming its own deadline, which under the
-  older rule bought it a generic sentence instead of an explanation of the wait. The body now says what
-  was seen whatever the call asked for. A second cell makes the timeout wording check itself: it may
-  claim a restart only when the session reported one, and the measurement there is that an escalated
-  `sleep` really does rebuild the session.
+- **The keyboard hint is given by the reading, not by whether we applied our own bound.** The first live session of this on the installed desktop did not send `vim note.txt`; the model sent `{"command":"printf x; vim note.txt","timeoutMs":15000}` — naming its own deadline, which under the older rule bought it a generic sentence instead of an explanation of the wait. The body now says what was seen whatever the call asked for. A second cell makes the timeout wording check itself: it may claim a restart only when the session reported one, and the measurement there is that an escalated `sleep` really does rebuild the session.
 
-- **The ordinary-commands checklist was driven through a real dsh session, and that is what found the
-  121 703 ms.** A real DSH 0.2.0-rc.2 instance (its own `DSH_HOME`, its own port, a scripted local
-  provider so no inference was bought): 27 rows of everyday commands, read back from the session's own
-  durable log rather than from a transcript someone has to relay. Most rows answered as designed —
-  `sudo`'s own verdict with the password note, the pager class in 73 ms, `man`/`less` printing whole
-  documents — and two rows did not: the compound `printf`-then-editor line above, and a cell whose
-  expectation was written for the wrong medium. The pass also caught a false promise in the tool
-  description: a live display on a pipe does not print a document, it refuses — `top: failed tty get`,
-  exit 1, 687 ms — so the description says that and points at `top -bn1`.
+- **The ordinary-commands checklist was driven through a real dsh session, and that is what found the 121 703 ms.** A real DSH 0.2.0-rc.2 instance (its own `DSH_HOME`, its own port, a scripted local provider so no inference was bought): 27 rows of everyday commands, read back from the session's own durable log rather than from a transcript someone has to relay. Most rows answered as designed — `sudo`'s own verdict with the password note, the pager class in 73 ms, `man`/`less` printing whole documents — and two rows did not: the compound `printf`-then-editor line above, and a cell whose expectation was written for the wrong medium. The pass also caught a false promise in the tool description: a live display on a pipe does not print a document, it refuses — `top: failed tty get`, exit 1, 687 ms — so the description says that and points at `top -bn1`.
 
-- **A failure this tool did not predict now names its own layer.** An escalated call that ends badly
-  without matching one of the known shapes (a password, a waiting keyboard) appends
-  `[this call ran on a pseudo-terminal (script -qec, one stream): re-run the same command with "tty": false to rule this layer out before looking anywhere else]`,
-  and every terminal decision is logged at debug level — `wsl-bash: stopped a command waiting for input
-  (terminal at 601ms) and re-running it on a pseudo-terminal` — so a `dsh web`/`headless` log answers
-  the question too (the installed desktop keeps its child's stdout in memory only, so there the
-  transcript lines are the readable half). The sheet of which symptom belongs to which layer — including
-  the host's PTY tier's own sentinel, the one issue #51 was filed against — is
-  [docs/tty-triage.md](docs/tty-triage.md), and every line it names is asserted by a cell in
-  `bash-session-real` (55 cells now, on both planes).
+- **A failure this tool did not predict now names its own layer.** An escalated call that ends badly without matching one of the known shapes (a password, a waiting keyboard) appends `[this call ran on a pseudo-terminal (script -qec, one stream): re-run the same command with "tty": false to rule this layer out before looking anywhere else]`, and every terminal decision is logged at debug level — `wsl-bash: stopped a command waiting for input (terminal at 601ms) and re-running it on a pseudo-terminal` — so a `dsh web`/`headless` log answers the question too (the installed desktop keeps its child's stdout in memory only, so there the transcript lines are the readable half). The sheet of which symptom belongs to which layer — including the host's PTY tier's own sentinel, the one issue #51 was filed against — is [docs/tty-triage.md](docs/tty-triage.md), and every line it names is asserted by a cell in `bash-session-real` (55 cells now, on both planes).
 
-- **A live model found the one shape the cells could not: a builtin that reads the terminal blocks the
-  *shell itself*.** The build was driven end to end by a real model on a real token plan — four calls in a
-  WSL workspace, every command chosen by the model — and it picked \`read -r line < /dev/tty\` where every
-  cell in this repository used \`sh -c …\`. A child that blocks is found by walking the shell's
-  descendants; a *builtin* has no child, so nothing was classified and the call died on its 30 s deadline
-  with no note (the model's own summary noticed, and said so). Measured while it happens, the shell's own
-  row is \`Ss+ pgid==tpgid wchan=wait_woken fd0=/dev/tty\` with CPU flat — the same signature, one level up —
-  so the shell is now part of the walk, marked, because between commands it waits on a pipe and must not
-  be read as a wait. Freeing it took a measurement rather than a hope: \`kill -INT\` does **not** work (bash
-  catches it and the read syscall restarts — the call ran to its deadline with the signal delivered), so
-  the shell is stopped like any other wedged process, the session rebuilds from its journal, and the
-  command is re-run on a terminal by the same retry path. Same prompt, second run: that call came back in
-  **3 104 ms** with \`read-exit=1 x=''\` and the note naming the restart, and the model's closing summary
-  quoted it. Three further defects surfaced while landing it, all announced by a cell: the stop set named
-  every row in the sample (which now always contains the shell), the privileged path took its stop set
-  from the unreadable user-plane rows instead of the witness's, and a watchdog-stopped call was reported
-  in the caller-cancel shape — which made the live gate abort its own run.
+- **A live model found the one shape the cells could not: a builtin that reads the terminal blocks the *shell itself*.** The build was driven end to end by a real model on a real token plan — four calls in a WSL workspace, every command chosen by the model — and it picked \`read -r line < /dev/tty\` where every cell in this repository used \`sh -c …\`. A child that blocks is found by walking the shell's descendants; a *builtin* has no child, so nothing was classified and the call died on its 30 s deadline with no note (the model's own summary noticed, and said so). Measured while it happens, the shell's own row is \`Ss+ pgid==tpgid wchan=wait_woken fd0=/dev/tty\` with CPU flat — the same signature, one level up — so the shell is now part of the walk, marked, because between commands it waits on a pipe and must not be read as a wait. Freeing it took a measurement rather than a hope: \`kill -INT\` does **not** work (bash catches it and the read syscall restarts — the call ran to its deadline with the signal delivered), so the shell is stopped like any other wedged process, the session rebuilds from its journal, and the command is re-run on a terminal by the same retry path. Same prompt, second run: that call came back in **3 104 ms** with \`read-exit=1 x=''\` and the note naming the restart, and the model's closing summary quoted it. Three further defects surfaced while landing it, all announced by a cell: the stop set named every row in the sample (which now always contains the shell), the privileged path took its stop set from the unreadable user-plane rows instead of the witness's, and a watchdog-stopped call was reported in the caller-cancel shape — which made the live gate abort its own run.
 
-- **The terminal is given by a reading, not by a list, and the second attempt is announced.** Three sets
-  of command names — credential, keyboard, pager — decided whether a call got a pseudo-terminal, and how
-  long it was allowed to wait. They are gone: they were the maintenance cost of this layer and the source
-  of two of its defects, every distribution could disagree with them, and the thing they were standing in
-  for is directly observable. What replaces them is one function (`src/host/wsl-bash-starve.ts`) that
-  reads the distribution from outside the shell while the call is in flight, and a stop-plus-retry that
-  acts on what it finds. The full shape, the measurements behind each threshold and the doors a caller
-  can use are in the bullet above and in [docs/tty-triage.md](docs/tty-triage.md).
+- **The terminal is given by a reading, not by a list, and the second attempt is announced.** Three sets of command names — credential, keyboard, pager — decided whether a call got a pseudo-terminal, and how long it was allowed to wait. They are gone: they were the maintenance cost of this layer and the source of two of its defects, every distribution could disagree with them, and the thing they were standing in for is directly observable. What replaces them is one function (`src/host/wsl-bash-starve.ts`) that reads the distribution from outside the shell while the call is in flight, and a stop-plus-retry that acts on what it finds. The full shape, the measurements behind each threshold and the doors a caller can use are in the bullet above and in [docs/tty-triage.md](docs/tty-triage.md).
 
-- **A DSH Desktop profile generated no WSL variant at all (issue #47).** The variant
-  generator asked the host for two modules at call time — the entry-list dialect and the
-  YAML engine under it — on the assumption that host and plugin share a `node_modules`.
-  Desktop ships the host inside an archive, and Node finds a bare specifier by walking the
-  filesystem upward, so that walk never reaches it. The first healthy source preset threw,
-  the throw left the generation loop, and everything after the loop — including the sweep
-  of the retired mechanism's leftovers — was skipped. The dialog's only answer was that no
-  healthy `wsl` preset exists, and the cause sat in one swallowed host-console line.
-  Reproduced on this machine with real packages rather than inferred: a dialect built
-  against the release the host umbrella hoists, loaded through the release a sibling plugin
-  hoists, fails inside the loader, on wording that names neither package, version nor path.
-- **The dialect is built in the plugin now** (`src/index.ts`), from the same engine
-  namespace that parses with it, so schema and engine cannot come from different majors.
-  Only the read half of the published schema was ever used here; its write half serves a
-  path this plugin does not take. Six lines, no new dependency.
-- **The engine is a real dependency** (`js-yaml: ^4.1.0`, resolving to 4.3.2 — the release
-  the host umbrella itself hoists). Declaring it an optional peer with a `*` range had
-  handed the choice of major to whichever release the profile happened to carry, and with
-  `autoInstallPeers` off an optional peer is never installed at all. The sibling plugin that
-  keeps working in the same profile keeps working precisely because it declares a real
-  dependency; this now matches. The two peer entries nothing imports anymore are deleted,
-  so the manifest stops describing an import that does not exist.
-- **One failing source is one variant's failure.** Generation is fault-tolerant per source,
-  the retired-directory sweep runs regardless, and the outcome is a count line —
-  `WSL preset variants: n/m registered` — because proving that routes answer had never
-  proved that anything was generated. On `dsh web` that line is in the boot log and the
-  compatibility matrix now asserts it; **on DSH Desktop it is not persisted anywhere**
-  (measured on a real install: its log directory holds only crash bundles, which embed a
-  child's stderr solely when that child exits non-zero, and capture only *renderer* console
-  output — so a main-process `console.error` has no sink). Making the outcome visible there is
-  issue #47's own recommendation #3 and is now filed as a separate ticket, on measured
-  grounds rather than as polish. Before this change, a source that vanished
-  mid-update preserved the previous complete variant only by accident: the abort skipped
-  the sweep that would otherwise delete it. The accident is gone, the contract stays, and
-  `tests/host-materialize.mjs` caught the difference on the first run.
-- **A dialect failure names what it stood on** — package, version and path. That act is
-  decided on a user's machine by an installer; it has since been measured through a real pnpm
-  layout rather than assumed (see the last bullet), and the line still names the copy so a
-  frame on some other installer carries its own conclusion.
-- **New gate** `tests/host-profile-isolation.mjs` (`npm run test:profile`): profile-shaped
-  trees under the temp dir, each booting the plugin's own copy — the loaned schema absent,
-  the hoisted engine on the wrong major, both at once, and one unreadable source among
-  healthy ones. Its control arm, its dialect-equivalence check against the pinned host
-  schema, and its probe that every provider path a declaration names really imports were
-  green on the *same* frame as the eight reds it was written to produce; three separate
-  mutations of the fix each reddened a different subset, which is what keeps the two
-  defects from being reported as one. `ci/install-pinned.mjs` materialises the hostile
-  engine release in a second tree that is never linked into the repo root.
-- **Two older gates were asking the wrong question.** `scripts/verify-install.mjs` now
-  asserts the installed tree's runtime surface too: every declared dependency must be
-  reachable from the installed `lib/` and on the declared version line, and an empty
-  `dependencies` is itself a refusal — its earlier green was *produced* by the engine being
-  absent, which is the state the issue reported. `scripts/verify-dsh-compat.sh` asserts the
-  outcome count per matrix release: generating less than it was offered is `VARIANTS_FAIL`,
-  and a line that never appears is `VARIANTS_NOT_VERIFIED`, never a pass.
-- **What this machine could not decide, and what it did.** Measured for real, with pnpm's
-  hoisted linker and the reporter's own `autoInstallPeers: false`: the published 0.7.5 in a
-  profile tree whose sibling package hoists `js-yaml` 5.x generates nothing, and this build
-  in that same tree gets its engine nested under itself and registers every source it was
-  offered. The same pair was then run in this machine's own Desktop profile shape — and it
-  turned out the real thing is installed here: `.dsh\profiles\desktop` carries 0.7.5 under
-  exactly those settings with no engine and no include package on its walk-up, which is the
-  report's shortage sitting on a maintainer machine the whole time. Still unmeasured: the
-  packaged host **process** — reading that profile is free, launching a GUI plus its
-  self-updater on a machine its owner is using is not, and it waits for a nod. The
-  reporter's host-console line, which his report nominated as decisive, turns out not to be
-  reachable by him at all: a healthy Desktop boot persists no host output (above), so that
-  check is asked of a maintainer with a shell, and the reply drafted for #47 asks him instead
-  for the observable — whether the dialog lists the variants.
-  Both limits, and the frames that back the rest, are in `docs/compatibility-evidence.md`.
-- **A WSL session's file references preview again (issue #49).** The conversation's file
-  links, a tool row's line reference and the turn tail's changed files all open through the
-  right Sidebar's navigation controller, and the address they carry holds the path exactly as
-  the model wrote it — a Linux path. The host decodes that address and resolves it with
-  `node:path.resolve(cwd, path)`, where a POSIX absolute path is root-relative: `/mnt/d/x`
-  landed on the workspace drive (`D:\mnt\d\x`), an in-distribution path under the cwd share's
-  root, and a `/mnt/<drive>` reference under a UNC cwd became
-  `\\wsl.localhost\<distro>\mnt\<drive>\…`, which 9P refuses with `EPERM`. Reproduced on the
-  real DSH Desktop both ways before the fix: `文件不存在，可能已被移动或删除` for a file the
-  `write` tool had just created at that very path, and `EPERM` for the same reference from a
-  UNC workspace.
-- **The repair is client-side, because the host plane offers this plugin no hook.** `fs` and
-  the `workspaceFiles` endpoint belong to other plugins, and cordis refuses a second
-  `provide` for a name another fiber owns, while neither publishes a path-resolution seam.
-  The client half now translates the address before the Sidebar sees it — `/mnt/<drive>/…`
-  back to `X:\…`, and every other Linux path through the distribution's UNC share — at
-  `openResource` / `openResourceIn`, the one entry every reference surface goes through, so
-  the tab's content and the metadata read under the same address are repaired together. A
-  translated path inside the workspace becomes the same relative address the Files panel
-  builds, so the Sidebar reveals an open tab instead of duplicating it.
-- `listWorkspaceRecords` is a new host route, cached by the client: an in-distribution path
-  needs the distribution, which a UNC workspace carries but a `/mnt/<drive>` workspace only
-  has in `wsl-workspaces.json`. `host-api.mjs` covers it and its probe floor moved 12 → 13.
-- The address grammar is **mirrored** rather than imported — six of the eleven declared
-  releases ship no `@deepseek-ai/dsh-util-workspace-path`, or ship it without the grammar —
-  and a unit case cross-checks the mirror against the owning package byte for byte wherever
-  it is resolvable. Anything the hook cannot rebuild byte-for-byte, or whose distribution is
-  unknown, or a session it does not treat as WSL-bound, is passed through untouched rather
-  than guessed at.
-- Only 0.1.5-rc.1 and later ship a right Sidebar, a document preview and the resource model;
-  the six earlier declared releases have no reference surface to fix, and the hook simply
-  does not install there.
-- Measured for this entry: the eleven declared releases at 14/16 on the harness sweep (the
-  same two known baselines as before), `host-api` 13/13 against a live 0.2.0-rc.2 frontend,
-  and the reference click driven end-to-end in a real browser on 0.1.5-rc.1, 0.1.5-rc.2,
-  0.1.7-rc.1, 0.1.7-rc.2 and 0.2.0-rc.2, plus four configurations on the real DSH Desktop
-  (drive-spelling and UNC workspaces × `/mnt/<drive>` and in-distribution paths).
-- **The agent can now type into a terminal of its own** (`wsl_terminal`, issue #51's last gap). A
-  pipe cannot be typed into, so every program that asks a question — `sudo` wanting a password,
-  `ssh` a first-connection fingerprint, a REPL, an editor, a TUI — was diagnosed, stopped and
-  re-run on a one-shot pseudo-terminal only so the model could read the complaint, and a person had
-  to take over; the ticket's contract is that *everything a person can run is reachable by the
-  agent*, so the unanswered class gets a door. The tool is the model-facing shape over the host's
-  own PTY registry and `dsh-terminal-bash` backend pointed at this plugin's relay — no new terminal
-  machinery, the same stack behind the right sidebar's terminal tab — with `open`/`send`/`read`/
-  `signal`/`close`/`list`, mounted beside the pipe `bash` (which stays the default: it carries every
-  byte, a terminal screen is a 160-column rendering with bounded scrollback). Two facts it took
-  reading host code to get right: the shell runs as the **workspace's configured user** because the
-  host builds a PTY child's environment itself and drops every `DSH_*` variable, so the relay reads
-  the workspace store back (the same fix the session `bash` needed — it had been resolving the user
-  from the environment alone); and the backend's quiet window is lowered to 1200 ms from its 3000 ms
-  default (source note in `src/host/variants.ts`) so a send the host does not recognise as a prompt
-  returns in ~1.2–1.8 s instead of ~3.0–3.6 s — the send says which of the two happened rather than
-  presenting a quiet screen as a prompt. Verified on a real distribution, both build planes, as
-  `root` and as `ruler`: `bash-session-real` now carries the door's own cells (66/66), including a
-  keystroke typed into a program blocked on `/dev/tty` reaching it (`GOT=…`), `submit: false` typing
-  without running and the next Enter running it, `SIGINT` ending a `sleep 30` with the shell
-  surviving, and `close` leaving no `bash -i` behind — `open` measured 477–490 ms. Found on the way:
-  `tests/host-profile-isolation.mjs` was red on Windows only (it counted a boot *diagnostic* as a
-  failure, so its two healthy-frame cells passed in CI and failed on the platform this plugin exists
-  for); those cells now separate diagnostics from failures and say why.
-- **A command can be fed its input now** (`stdin`). The session shell's own stdin *is* the protocol
-  channel, so a command's stdin was `/dev/null` by construction — right for most calls, and fatal for
-  the class that reads a program's input from a pipe (`cat`, a build tool asking its question on stdin,
-  a script that reads data). The call's `stdin` text now travels inside the same frame and is decoded
-  into a temporary file the command's stdin is redirected from, removed after the exit status has been
-  read; the escalated (`tty: true`) path gets it too, because `script` forwards its stdin to the pty it
-  creates, and a background job receives it through the one-shot executor's own `stdin` spec field.
-  Over 32 KiB the call is refused by name and nothing runs — the frame's cost is measured (64 kB
-  answers in ~3.8 s, 256 kB in ~59 s), and a program fed half its input fails in ways that look like the
-  program's fault. Live cells: `cat` printing both fed lines **and the call still settling afterwards**
-  (the record that ends a call must not be eaten by the command's own read — that is the failure this
-  channel is shaped around), the same on a real pseudo-terminal (`read x; echo GOT=$x`), and the
-  refusal's own sentence.
+- **A DSH Desktop profile generated no WSL variant at all (issue #47).** The variant generator asked the host for two modules at call time — the entry-list dialect and the YAML engine under it — on the assumption that host and plugin share a `node_modules`. Desktop ships the host inside an archive, and Node finds a bare specifier by walking the filesystem upward, so that walk never reaches it. The first healthy source preset threw, the throw left the generation loop, and everything after the loop — including the sweep of the retired mechanism's leftovers — was skipped. The dialog's only answer was that no healthy `wsl` preset exists, and the cause sat in one swallowed host-console line. Reproduced on this machine with real packages rather than inferred: a dialect built against the release the host umbrella hoists, loaded through the release a sibling plugin hoists, fails inside the loader, on wording that names neither package, version nor path.
+- **The dialect is built in the plugin now** (`src/index.ts`), from the same engine namespace that parses with it, so schema and engine cannot come from different majors. Only the read half of the published schema was ever used here; its write half serves a path this plugin does not take. Six lines, no new dependency.
+- **The engine is a real dependency** (`js-yaml: ^4.1.0`, resolving to 4.3.2 — the release the host umbrella itself hoists). Declaring it an optional peer with a `*` range had handed the choice of major to whichever release the profile happened to carry, and with `autoInstallPeers` off an optional peer is never installed at all. The sibling plugin that keeps working in the same profile keeps working precisely because it declares a real dependency; this now matches. The two peer entries nothing imports anymore are deleted, so the manifest stops describing an import that does not exist.
+- **One failing source is one variant's failure.** Generation is fault-tolerant per source, the retired-directory sweep runs regardless, and the outcome is a count line — `WSL preset variants: n/m registered` — because proving that routes answer had never proved that anything was generated. On `dsh web` that line is in the boot log and the compatibility matrix now asserts it; **on DSH Desktop it is not persisted anywhere** (measured on a real install: its log directory holds only crash bundles, which embed a child's stderr solely when that child exits non-zero, and capture only *renderer* console output — so a main-process `console.error` has no sink). Making the outcome visible there is issue #47's own recommendation #3 and is now filed as a separate ticket, on measured grounds rather than as polish. Before this change, a source that vanished mid-update preserved the previous complete variant only by accident: the abort skipped the sweep that would otherwise delete it. The accident is gone, the contract stays, and `tests/host-materialize.mjs` caught the difference on the first run.
+- **A dialect failure names what it stood on** — package, version and path. That act is decided on a user's machine by an installer; it has since been measured through a real pnpm layout rather than assumed (see the last bullet), and the line still names the copy so a frame on some other installer carries its own conclusion.
+- **New gate** `tests/host-profile-isolation.mjs` (`npm run test:profile`): profile-shaped trees under the temp dir, each booting the plugin's own copy — the loaned schema absent, the hoisted engine on the wrong major, both at once, and one unreadable source among healthy ones. Its control arm, its dialect-equivalence check against the pinned host schema, and its probe that every provider path a declaration names really imports were green on the *same* frame as the eight reds it was written to produce; three separate mutations of the fix each reddened a different subset, which is what keeps the two defects from being reported as one. `ci/install-pinned.mjs` materialises the hostile engine release in a second tree that is never linked into the repo root.
+- **Two older gates were asking the wrong question.** `scripts/verify-install.mjs` now asserts the installed tree's runtime surface too: every declared dependency must be reachable from the installed `lib/` and on the declared version line, and an empty `dependencies` is itself a refusal — its earlier green was *produced* by the engine being absent, which is the state the issue reported. `scripts/verify-dsh-compat.sh` asserts the outcome count per matrix release: generating less than it was offered is `VARIANTS_FAIL`, and a line that never appears is `VARIANTS_NOT_VERIFIED`, never a pass.
+- **What this machine could not decide, and what it did.** Measured for real, with pnpm's hoisted linker and the reporter's own `autoInstallPeers: false`: the published 0.7.5 in a profile tree whose sibling package hoists `js-yaml` 5.x generates nothing, and this build in that same tree gets its engine nested under itself and registers every source it was offered. The same pair was then run in this machine's own Desktop profile shape — and it turned out the real thing is installed here: `.dsh\profiles\desktop` carries 0.7.5 under exactly those settings with no engine and no include package on its walk-up, which is the report's shortage sitting on a maintainer machine the whole time. Still unmeasured: the packaged host **process** — reading that profile is free, launching a GUI plus its self-updater on a machine its owner is using is not, and it waits for a nod. The reporter's host-console line, which his report nominated as decisive, turns out not to be reachable by him at all: a healthy Desktop boot persists no host output (above), so that check is asked of a maintainer with a shell, and the reply drafted for #47 asks him instead for the observable — whether the dialog lists the variants. Both limits, and the frames that back the rest, are in `docs/compatibility-evidence.md`.
+- **A WSL session's file references preview again (issue #49).** The conversation's file links, a tool row's line reference and the turn tail's changed files all open through the right Sidebar's navigation controller, and the address they carry holds the path exactly as the model wrote it — a Linux path. The host decodes that address and resolves it with `node:path.resolve(cwd, path)`, where a POSIX absolute path is root-relative: `/mnt/d/x` landed on the workspace drive (`D:\mnt\d\x`), an in-distribution path under the cwd share's root, and a `/mnt/<drive>` reference under a UNC cwd became `\\wsl.localhost\<distro>\mnt\<drive>\…`, which 9P refuses with `EPERM`. Reproduced on the real DSH Desktop both ways before the fix: `文件不存在，可能已被移动或删除` for a file the `write` tool had just created at that very path, and `EPERM` for the same reference from a UNC workspace.
+- **The repair is client-side, because the host plane offers this plugin no hook.** `fs` and the `workspaceFiles` endpoint belong to other plugins, and cordis refuses a second `provide` for a name another fiber owns, while neither publishes a path-resolution seam. The client half now translates the address before the Sidebar sees it — `/mnt/<drive>/…` back to `X:\…`, and every other Linux path through the distribution's UNC share — at `openResource` / `openResourceIn`, the one entry every reference surface goes through, so the tab's content and the metadata read under the same address are repaired together. A translated path inside the workspace becomes the same relative address the Files panel builds, so the Sidebar reveals an open tab instead of duplicating it.
+- `listWorkspaceRecords` is a new host route, cached by the client: an in-distribution path needs the distribution, which a UNC workspace carries but a `/mnt/<drive>` workspace only has in `wsl-workspaces.json`. `host-api.mjs` covers it and its probe floor moved 12 → 13.
+- The address grammar is **mirrored** rather than imported — six of the eleven declared releases ship no `@deepseek-ai/dsh-util-workspace-path`, or ship it without the grammar — and a unit case cross-checks the mirror against the owning package byte for byte wherever it is resolvable. Anything the hook cannot rebuild byte-for-byte, or whose distribution is unknown, or a session it does not treat as WSL-bound, is passed through untouched rather than guessed at.
+- Only 0.1.5-rc.1 and later ship a right Sidebar, a document preview and the resource model; the six earlier declared releases have no reference surface to fix, and the hook simply does not install there.
+- Measured for this entry: the eleven declared releases at 14/16 on the harness sweep (the same two known baselines as before), `host-api` 13/13 against a live 0.2.0-rc.2 frontend, and the reference click driven end-to-end in a real browser on 0.1.5-rc.1, 0.1.5-rc.2, 0.1.7-rc.1, 0.1.7-rc.2 and 0.2.0-rc.2, plus four configurations on the real DSH Desktop (drive-spelling and UNC workspaces × `/mnt/<drive>` and in-distribution paths).
+- **The agent can now type into a terminal of its own** (`wsl_terminal`, issue #51's last gap). A pipe cannot be typed into, so every program that asks a question — `sudo` wanting a password, `ssh` a first-connection fingerprint, a REPL, an editor, a TUI — was diagnosed, stopped and re-run on a one-shot pseudo-terminal only so the model could read the complaint, and a person had to take over; the ticket's contract is that *everything a person can run is reachable by the agent*, so the unanswered class gets a door. The tool is the model-facing shape over the host's own PTY registry and `dsh-terminal-bash` backend pointed at this plugin's relay — no new terminal machinery, the same stack behind the right sidebar's terminal tab — with `open`/`send`/`read`/ `signal`/`close`/`list`, mounted beside the pipe `bash` (which stays the default: it carries every byte, a terminal screen is a 160-column rendering with bounded scrollback). Two facts it took reading host code to get right: the shell runs as the **workspace's configured user** because the host builds a PTY child's environment itself and drops every `DSH_*` variable, so the relay reads the workspace store back (the same fix the session `bash` needed — it had been resolving the user from the environment alone); and the backend's quiet window is lowered to 1200 ms from its 3000 ms default (source note in `src/host/variants.ts`) so a send the host does not recognise as a prompt returns in ~1.2–1.8 s instead of ~3.0–3.6 s — the send says which of the two happened rather than presenting a quiet screen as a prompt. Verified on a real distribution, both build planes, as `root` and as `ruler`: `bash-session-real` now carries the door's own cells (66/66), including a keystroke typed into a program blocked on `/dev/tty` reaching it (`GOT=…`), `submit: false` typing without running and the next Enter running it, `SIGINT` ending a `sleep 30` with the shell surviving, and `close` leaving no `bash -i` behind — `open` measured 477–490 ms. Found on the way: `tests/host-profile-isolation.mjs` was red on Windows only (it counted a boot *diagnostic* as a failure, so its two healthy-frame cells passed in CI and failed on the platform this plugin exists for); those cells now separate diagnostics from failures and say why.
+- **A command can be fed its input now** (`stdin`). The session shell's own stdin *is* the protocol channel, so a command's stdin was `/dev/null` by construction — right for most calls, and fatal for the class that reads a program's input from a pipe (`cat`, a build tool asking its question on stdin, a script that reads data). The call's `stdin` text now travels inside the same frame and is decoded into a temporary file the command's stdin is redirected from, removed after the exit status has been read; the escalated (`tty: true`) path gets it too, because `script` forwards its stdin to the pty it creates, and a background job receives it through the one-shot executor's own `stdin` spec field. Over 32 KiB the call is refused by name and nothing runs — the frame's cost is measured (64 kB answers in ~3.8 s, 256 kB in ~59 s), and a program fed half its input fails in ways that look like the program's fault. Live cells: `cat` printing both fed lines **and the call still settling afterwards** (the record that ends a call must not be eaten by the command's own read — that is the failure this channel is shaped around), the same on a real pseudo-terminal (`read x; echo GOT=$x`), and the refusal's own sentence.
 
-- **An outside adversarial run found three things this machine could not see, and each is now closed.**
-  (1) *The readiness contract depended on the distribution's startup files leaving it alone.* On a
-  distribution shipping `/etc/profile.d/80-systemd-osc-context.sh`, that file runs
-  `PROMPT_COMMAND+=(…)`, bash refuses to export an array, and the interactive shell the relay `exec`s
-  inherits no `PROMPT_COMMAND` at all — measured here in a simulated profile: `env | grep -c
-  '^PROMPT_COMMAND='` goes from `1` to `0` and the `133;D;` marker never reaches the wire, so
-  `wsl_terminal` pays its quiet window on every keystroke and the `DSH_WSL_PTY_SHELL=1` tier never
-  settles. The relay now bridges the contract a second time under a name no startup file knows
-  (`__DSH_READINESS_PROMPT_COMMAND`) and re-asserts it between the login pass and the `exec`, `unset`
-  first — assigning to an array only writes element `[0]` and still exports nothing. Four arms measured:
-  old command + hostile profile `0`/no marker (the report's shape), old + benign `1`/marker (why this
-  machine was green), **new + hostile `1`/marker `prompt=[dsh> ]`**, new + no contract bridged
-  `0`/no marker (a host that injects none still gets its own shell). (2) *The function snapshot's cap
-  was all-or-nothing*, so on a distribution whose own startup functions are 86,954 bytes the whole
-  section — the function the model had just defined included — was dropped, and the journal's own
-  `alias, function, shopt and set options survive a restart` cell went red for the same reason. The cap
-  is now a per-function budget over only the functions the distribution's own files did not define
-  (a rebuilt shell re-sources those), and what does not fit is named. (3) *A rebuild that had something to
-  report was not believed by the cell that checks it*: the note renders as `was restarted and its
-  directory …` when nothing was left out and `was restarted; not restored: …` when something was, and
-  the check matched only the first, so on a reporting machine the claim and the fact were both true and
-  the cell still read them as disagreeing. Both wordings count now, and a starve-triggered rebuild
-  carries what it could not restore into the note of the call that asked for the terminal, instead of
-  losing it with the first attempt.
+- **An outside adversarial run found three things this machine could not see, and each is now closed.** (1) *The readiness contract depended on the distribution's startup files leaving it alone.* On a distribution shipping `/etc/profile.d/80-systemd-osc-context.sh`, that file runs `PROMPT_COMMAND+=(…)`, bash refuses to export an array, and the interactive shell the relay `exec`s inherits no `PROMPT_COMMAND` at all — measured here in a simulated profile: `env | grep -c '^PROMPT_COMMAND='` goes from `1` to `0` and the `133;D;` marker never reaches the wire, so `wsl_terminal` pays its quiet window on every keystroke and the `DSH_WSL_PTY_SHELL=1` tier never settles. The relay now bridges the contract a second time under a name no startup file knows (`__DSH_READINESS_PROMPT_COMMAND`) and re-asserts it between the login pass and the `exec`, `unset` first — assigning to an array only writes element `[0]` and still exports nothing. Four arms measured: old command + hostile profile `0`/no marker (the report's shape), old + benign `1`/marker (why this machine was green), **new + hostile `1`/marker `prompt=[dsh> ]`**, new + no contract bridged `0`/no marker (a host that injects none still gets its own shell). (2) *The function snapshot's cap was all-or-nothing*, so on a distribution whose own startup functions are 86,954 bytes the whole section — the function the model had just defined included — was dropped, and the journal's own `alias, function, shopt and set options survive a restart` cell went red for the same reason. The cap is now a per-function budget over only the functions the distribution's own files did not define (a rebuilt shell re-sources those), and what does not fit is named. (3) *A rebuild that had something to report was not believed by the cell that checks it*: the note renders as `was restarted and its directory …` when nothing was left out and `was restarted; not restored: …` when something was, and the check matched only the first, so on a reporting machine the claim and the fact were both true and the cell still read them as disagreeing. Both wordings count now, and a starve-triggered rebuild carries what it could not restore into the note of the call that asked for the terminal, instead of losing it with the first attempt.
 
 ## 0.7.5 — 2026-09-30
 
-- **The persistent shell works on DSH Desktop again (issue #40).** The Desktop
-  host process *is* the packaged Electron executable running in node mode
-  (`ELECTRON_RUN_AS_NODE=1`; the Desktop's own code is
-  `new DesktopHostProcess(resources.node, …)` with
-  `resources.node = process.execPath`), and the plugin pointed the PTY backend's
-  `shellPath` at `process.execPath` with `shellArgs[0] = lib/wsl-relay.js`. An
-  Electron binary writes **nothing at all** under a ConPTY: the relay's
-  `wsl.exe` child inherits a dead stream, the relay exits 0 with zero bytes, the
-  backend's readiness probe never sees a prompt, and **every** `bash` call fails
-  with `PTY shell exited during startup`. The `0.1.0-rc.7` one-shot fallback is
-  unaffected, which is exactly what hid the failure behind a mode that works.
-  Measured with the host's own node-pty: same relay, same `\\wsl.localhost\…`
-  cwd, same environment — a real node gives a bash prompt, the Electron binary
-  gives 0 bytes and a clean exit.
-- **The relay's interpreter is now resolved deliberately**
-  (`src/shared/relay-node.ts`): first the runtime payload the Desktop passes to
-  its host process (the `…/resources/runtime/primary-runtime` path in
-  `process.argv`, which carries a real node), then the same payload beside the
-  running executable (inside `Contents/Resources/…` on macOS), then
-  `DSH_DESKTOP_NODE_EXECUTABLE`, then a `node` on `PATH`, and only then
-  `process.execPath`. Every candidate is **asked what it is** (`-e` printing
-  `process.versions.electron`), because `--version` cannot tell them apart: with
-  `ELECTRON_RUN_AS_NODE` inherited the Electron executable answers with the
-  *node* version (measured: `v24.18.1`), so any `^v\d+\.\d+\.\d+` test selects
-  the broken one. A host that is not Electron (`dsh web`) keeps
-  `process.execPath` and spawns no probe at all, so its behaviour is identical
-  to 0.7.4; on the Desktop the chosen interpreter and every rejected candidate
-  go to the boot log.
-- PR #39 diagnosed this correctly and pointed the same way, but its first
-  candidate, `DSH_DESKTOP_NODE_EXECUTABLE`, **is the Electron executable** — the
-  Desktop's own `resources/runtime/bin/node.cmd` is `set
-  ELECTRON_RUN_AS_NODE=1` followed by that variable — and its `--version` check
-  cannot tell the two apart. This fix takes the same direction with the payload
-  path first and a discriminator that actually rejects Electron.
-- `tests/relay-node.test.mjs`: candidate derivation (argv / beside the
-  executable / the environment variable, including de-duplication and order) and
-  the Electron discriminator, including the version-shaped output that must be
-  refused.
-- `scripts/compatibility/conpty-relay.mjs`: **a new standing gate** — it drives
-  the relay through a real ConPTY with the host's own node-pty and requires the
-  resolved interpreter to produce a live bash prompt. That is the invariant
-  issue #40 broke, and nothing checked it before. Registered in
-  `Run-Checks.ps1` and the harness, so it runs on every declared release.
-- **The second error in issue #40 is fixed too**: `bash_background` handed the jobs
-  registry an `owner` of the wrong shape, which failed with
-  `session "[object Object]" has no live agent` on `0.1.7` and later. That contract
-  **changed at `0.1.7-rc.1`**: `start()` took the agent object before (the registry
-  reads `owner.id` and `owner.ctx`) and takes the session id after (resolving it with
-  `agents.get(id)`) — the host's own producers moved the same way, from
-  `owner: parent` to `owner: parent.id`. The plugin now picks the shape from whether
-  the registry offers `resolveOwner`; `tests/wsl-jobs.test.ts`, which had pinned the
-  wrong half as correct behaviour, now pins both contracts, and all eleven declared
-  releases were exercised one by one.
-- `dsh.compatibility.dshReleases` declares `0.2.0-rc.2` (the DSH release DSH
-  Desktop 0.2.0-rc.2 ships), so this build claims eleven releases instead of ten.
-- **The second error in issue #40 is fixed too**: `bash_background` handed the
-  jobs registry the agent object as the job owner, but the registry resolves that
-  owner with `ctx.agents.get(owner)` and wants the **session id**, so every call
-  failed with `session "[object Object]" has no live agent`. The host's own
-  producers pass `agent.id`. `tests/wsl-jobs.test.ts` had asserted the broken
-  contract as if it were correct; it now asserts the session id.
-- **Verification**: sixteen harness checks on each of the eleven declared
-  releases (14/16 everywhere — the two failures are the documented baseline:
-  `typecheck`, and `host-api`, which needs a *running* frontend and passes 12/12
-  when pointed at one), plus the runbook's six-item frontend pass on all eleven
-  (dialog distro list, create & open, write, read, one-shot/persistent bash,
-  skills, reopen from the UI) with `web.err` at 0 bytes and every file re-read
-  independently on the Linux side.
-- **And a full pass inside the real DSH Desktop.** The official installer was
-  unpacked and the Electron application itself was started (isolated `DSH_HOME`,
-  window driven over CDP, plugin installed and enabled through the Desktop's own
-  plugin panel). With **0.7.4** installed, every `bash` call returned
-  `PTY shell exited during startup` and `bash_background` returned
-  `session "[object Object]" has no live agent`, while the dialog, the
-  distribution list and the skills all worked. With **0.7.5**, bash returned
-  `6.18.33.2-microsoft-standard-WSL2` / `/home/mille/fx-3381` / `mille`, a second
-  independent `pwd` still said `/tmp`, `bash_background` returned `bash-1` with
-  `job_list` reporting `bash-1 [bash] running` and `bg.txt` really containing
-  `BG_3381_OK`, and the workspace still opened after a window reload. The boot log
-  names the interpreter it chose. The whole run is written up in
-  `docs/compatibility-evidence.md`.
+- **The persistent shell works on DSH Desktop again (issue #40).** The Desktop host process *is* the packaged Electron executable running in node mode (`ELECTRON_RUN_AS_NODE=1`; the Desktop's own code is `new DesktopHostProcess(resources.node, …)` with `resources.node = process.execPath`), and the plugin pointed the PTY backend's `shellPath` at `process.execPath` with `shellArgs[0] = lib/wsl-relay.js`. An Electron binary writes **nothing at all** under a ConPTY: the relay's `wsl.exe` child inherits a dead stream, the relay exits 0 with zero bytes, the backend's readiness probe never sees a prompt, and **every** `bash` call fails with `PTY shell exited during startup`. The `0.1.0-rc.7` one-shot fallback is unaffected, which is exactly what hid the failure behind a mode that works. Measured with the host's own node-pty: same relay, same `\\wsl.localhost\…` cwd, same environment — a real node gives a bash prompt, the Electron binary gives 0 bytes and a clean exit.
+- **The relay's interpreter is now resolved deliberately** (`src/shared/relay-node.ts`): first the runtime payload the Desktop passes to its host process (the `…/resources/runtime/primary-runtime` path in `process.argv`, which carries a real node), then the same payload beside the running executable (inside `Contents/Resources/…` on macOS), then `DSH_DESKTOP_NODE_EXECUTABLE`, then a `node` on `PATH`, and only then `process.execPath`. Every candidate is **asked what it is** (`-e` printing `process.versions.electron`), because `--version` cannot tell them apart: with `ELECTRON_RUN_AS_NODE` inherited the Electron executable answers with the *node* version (measured: `v24.18.1`), so any `^v\d+\.\d+\.\d+` test selects the broken one. A host that is not Electron (`dsh web`) keeps `process.execPath` and spawns no probe at all, so its behaviour is identical to 0.7.4; on the Desktop the chosen interpreter and every rejected candidate go to the boot log.
+- PR #39 diagnosed this correctly and pointed the same way, but its first candidate, `DSH_DESKTOP_NODE_EXECUTABLE`, **is the Electron executable** — the Desktop's own `resources/runtime/bin/node.cmd` is `set ELECTRON_RUN_AS_NODE=1` followed by that variable — and its `--version` check cannot tell the two apart. This fix takes the same direction with the payload path first and a discriminator that actually rejects Electron.
+- `tests/relay-node.test.mjs`: candidate derivation (argv / beside the executable / the environment variable, including de-duplication and order) and the Electron discriminator, including the version-shaped output that must be refused.
+- `scripts/compatibility/conpty-relay.mjs`: **a new standing gate** — it drives the relay through a real ConPTY with the host's own node-pty and requires the resolved interpreter to produce a live bash prompt. That is the invariant issue #40 broke, and nothing checked it before. Registered in `Run-Checks.ps1` and the harness, so it runs on every declared release.
+- **The second error in issue #40 is fixed too**: `bash_background` handed the jobs registry an `owner` of the wrong shape, which failed with `session "[object Object]" has no live agent` on `0.1.7` and later. That contract **changed at `0.1.7-rc.1`**: `start()` took the agent object before (the registry reads `owner.id` and `owner.ctx`) and takes the session id after (resolving it with `agents.get(id)`) — the host's own producers moved the same way, from `owner: parent` to `owner: parent.id`. The plugin now picks the shape from whether the registry offers `resolveOwner`; `tests/wsl-jobs.test.ts`, which had pinned the wrong half as correct behaviour, now pins both contracts, and all eleven declared releases were exercised one by one.
+- `dsh.compatibility.dshReleases` declares `0.2.0-rc.2` (the DSH release DSH Desktop 0.2.0-rc.2 ships), so this build claims eleven releases instead of ten.
+- **The second error in issue #40 is fixed too**: `bash_background` handed the jobs registry the agent object as the job owner, but the registry resolves that owner with `ctx.agents.get(owner)` and wants the **session id**, so every call failed with `session "[object Object]" has no live agent`. The host's own producers pass `agent.id`. `tests/wsl-jobs.test.ts` had asserted the broken contract as if it were correct; it now asserts the session id.
+- **Verification**: sixteen harness checks on each of the eleven declared releases (14/16 everywhere — the two failures are the documented baseline: `typecheck`, and `host-api`, which needs a *running* frontend and passes 12/12 when pointed at one), plus the runbook's six-item frontend pass on all eleven (dialog distro list, create & open, write, read, one-shot/persistent bash, skills, reopen from the UI) with `web.err` at 0 bytes and every file re-read independently on the Linux side.
+- **And a full pass inside the real DSH Desktop.** The official installer was unpacked and the Electron application itself was started (isolated `DSH_HOME`, window driven over CDP, plugin installed and enabled through the Desktop's own plugin panel). With **0.7.4** installed, every `bash` call returned `PTY shell exited during startup` and `bash_background` returned `session "[object Object]" has no live agent`, while the dialog, the distribution list and the skills all worked. With **0.7.5**, bash returned `6.18.33.2-microsoft-standard-WSL2` / `/home/mille/fx-3381` / `mille`, a second independent `pwd` still said `/tmp`, `bash_background` returned `bash-1` with `job_list` reporting `bash-1 [bash] running` and `bg.txt` really containing `BG_3381_OK`, and the workspace still opened after a window reload. The boot log names the interpreter it chose. The whole run is written up in `docs/compatibility-evidence.md`.
 
 ## 0.7.4 — 2026-09-28
 
-- **The dialog works in DSH Desktop again (issues #35, #36).** The Desktop host
-  wraps `child_process` before the plugin is loaded: it installs plain
-  `exec`/`execFile` wrappers and re-exports them with
-  `syncBuiltinESMExports()`. That copy of `execFile` carries no
-  `util.promisify.custom`, so `promisify(execFile)` fell back to the generic
-  implementation, which resolves with the **first** callback argument only —
-  the stdout string — and `result.stdout` was `undefined` on every call. The
-  distro lookup read `.stdout` and threw
-  `Cannot read properties of undefined (reading 'includes')`, the frontend
-  caught it and rendered an empty picker: the dialog opened, the distribution
-  list stayed empty, and "Create & open" could not be completed, while
-  `wsl.exe -l -q` in a terminal listed the distribution normally. All three
-  call sites now use the **callback** form of `execFile`, which no wrapper can
-  reshape.
-- **The `wsl.exe` lookup is a candidate list.** `wsl.exe` is tried on `PATH`
-  first, then the absolute `%SystemRoot%\System32\wsl.exe`, and a lookup that
-  fails now names every candidate it tried and the error each one produced,
-  instead of a type error from inside the decoder.
-- `tests/exec-shape.mjs` reproduces the Desktop wrapper (plain wrappers plus
-  `syncBuiltinESMExports()`), spawns a probe with and without `--import`,
-  asserts the wrapped shape is broken and the new helpers are right, and runs
-  the real `listDistros`/`defaultDistro`/`resolveLinuxSymlink` through both
-  shapes. It is registered as the `exec-shape` check in
-  `scripts/compatibility/Run-Checks.ps1` so a future refactor cannot
-  reintroduce the promisified call.
-- `dsh.compatibility.dshReleases` declares `0.1.7-rc.2` as well, so this build
-  claims ten releases instead of nine.
-- **Verification**: fifteen harness checks on each of the ten declared releases
-  (13/15 everywhere — the two failures are the documented baseline: `typecheck`
-  and `host-api`, which needs a *running* frontend and passes 12/12 when pointed
-  at one), plus the runbook's six-item frontend pass on all ten (dialog distro
-  list, create & open, write, read, one-shot bash, persistent bash, skills) with
-  `web.err` at 0 bytes and the file re-read independently on the Linux side.
-  The Desktop-wrapper reproduction is in `docs/compatibility-evidence.md`,
-  together with the pack-identity hash and the plain-npm install gate.
+- **The dialog works in DSH Desktop again (issues #35, #36).** The Desktop host wraps `child_process` before the plugin is loaded: it installs plain `exec`/`execFile` wrappers and re-exports them with `syncBuiltinESMExports()`. That copy of `execFile` carries no `util.promisify.custom`, so `promisify(execFile)` fell back to the generic implementation, which resolves with the **first** callback argument only — the stdout string — and `result.stdout` was `undefined` on every call. The distro lookup read `.stdout` and threw `Cannot read properties of undefined (reading 'includes')`, the frontend caught it and rendered an empty picker: the dialog opened, the distribution list stayed empty, and "Create & open" could not be completed, while `wsl.exe -l -q` in a terminal listed the distribution normally. All three call sites now use the **callback** form of `execFile`, which no wrapper can reshape.
+- **The `wsl.exe` lookup is a candidate list.** `wsl.exe` is tried on `PATH` first, then the absolute `%SystemRoot%\System32\wsl.exe`, and a lookup that fails now names every candidate it tried and the error each one produced, instead of a type error from inside the decoder.
+- `tests/exec-shape.mjs` reproduces the Desktop wrapper (plain wrappers plus `syncBuiltinESMExports()`), spawns a probe with and without `--import`, asserts the wrapped shape is broken and the new helpers are right, and runs the real `listDistros`/`defaultDistro`/`resolveLinuxSymlink` through both shapes. It is registered as the `exec-shape` check in `scripts/compatibility/Run-Checks.ps1` so a future refactor cannot reintroduce the promisified call.
+- `dsh.compatibility.dshReleases` declares `0.1.7-rc.2` as well, so this build claims ten releases instead of nine.
+- **Verification**: fifteen harness checks on each of the ten declared releases (13/15 everywhere — the two failures are the documented baseline: `typecheck` and `host-api`, which needs a *running* frontend and passes 12/12 when pointed at one), plus the runbook's six-item frontend pass on all ten (dialog distro list, create & open, write, read, one-shot bash, persistent bash, skills) with `web.err` at 0 bytes and the file re-read independently on the Linux side. The Desktop-wrapper reproduction is in `docs/compatibility-evidence.md`, together with the pack-identity hash and the plain-npm install gate.
 
 ## 0.7.3 — 2026-09-23
 
-- **The plugin loads on DSH `0.1.7-rc.1` again, and its modes come back.** The
-  `0.1.7` line renamed the host preset face — `read()` became `readDocument()`, which
-  returns a document (`{agentPreset, content, name, description}`) instead of the
-  composition text, and `AgentPreset` lost its `path` — so the variant generator
-  threw `agentPresets.read is not a function` on every boot and no `wsl-*` mode
-  ever reached the picker. The roster face is now probed by capability and both
-  generations are served: `readDocument()` where it exists, `read()` behind it.
-- **A variant is a declaration row on that line.** `0.1.7` stopped scanning
-  `$DSH_HOME/.agent-presets/` — a preset there is a declarative
-  `@deepseek-ai/dsh-agent-preset` row, and the directory a variant used to be
-  written to is read by nothing at all. The generator now expands the composed
-  variant back into an entry list and publishes it through
-  `ctx.agentPresets.register()`; the plugin's effect owns the returned disposers, so
-  an unload or hot reload retires the variants instead of leaving orphans the next
-  apply could not replace (`Duplicate agent preset: wsl-<mode>`). Earlier releases
-  keep the directory channel, unchanged.
-- **The world's own providers are named as `file:` URLs on that channel.** A preset
-  mounted from a declaration is imported by the registry's entry tree, which —
-  unlike the boot-time Include — does not turn an absolute path into a `file:` URL.
-  Without the rewrite the provider rows never started, the audit reported each as
-  `never started`, and the whole variant was refused as unusable.
-- **The PTC variant is named again on `0.1.7`.** The label table that gives the
-  shipped modes their bilingual `WSL · …` names carried the mode's older id
-  (`code`) but not `ptc`, the id it has used since `0.1.1`. That stayed invisible
-  as long as the release published its own display name, because the lookup fell
-  through to it — but `0.1.7` publishes none, so the mode reached the picker as
-  `WSL · ptc` with the generic `WSL execution world for ptc: …` description. Both
-  ids are covered now, and the variant reads `WSL · PTC mode（PTC 模式）` on every
-  channel, like the other three shipped modes.
-- `dsh.compatibility.dshReleases` declares `0.1.7-rc.1`. The two modules the
-  declaration channel needs (`@deepseek-ai/cordis-plugin-include`, `js-yaml`) are
-  resolved at call time and declared as **optional** peers, so a release that lacks
-  them fails one variant rather than refusing to load the plugin.
+- **The plugin loads on DSH `0.1.7-rc.1` again, and its modes come back.** The `0.1.7` line renamed the host preset face — `read()` became `readDocument()`, which returns a document (`{agentPreset, content, name, description}`) instead of the composition text, and `AgentPreset` lost its `path` — so the variant generator threw `agentPresets.read is not a function` on every boot and no `wsl-*` mode ever reached the picker. The roster face is now probed by capability and both generations are served: `readDocument()` where it exists, `read()` behind it.
+- **A variant is a declaration row on that line.** `0.1.7` stopped scanning `$DSH_HOME/.agent-presets/` — a preset there is a declarative `@deepseek-ai/dsh-agent-preset` row, and the directory a variant used to be written to is read by nothing at all. The generator now expands the composed variant back into an entry list and publishes it through `ctx.agentPresets.register()`; the plugin's effect owns the returned disposers, so an unload or hot reload retires the variants instead of leaving orphans the next apply could not replace (`Duplicate agent preset: wsl-<mode>`). Earlier releases keep the directory channel, unchanged.
+- **The world's own providers are named as `file:` URLs on that channel.** A preset mounted from a declaration is imported by the registry's entry tree, which — unlike the boot-time Include — does not turn an absolute path into a `file:` URL. Without the rewrite the provider rows never started, the audit reported each as `never started`, and the whole variant was refused as unusable.
+- **The PTC variant is named again on `0.1.7`.** The label table that gives the shipped modes their bilingual `WSL · …` names carried the mode's older id (`code`) but not `ptc`, the id it has used since `0.1.1`. That stayed invisible as long as the release published its own display name, because the lookup fell through to it — but `0.1.7` publishes none, so the mode reached the picker as `WSL · ptc` with the generic `WSL execution world for ptc: …` description. Both ids are covered now, and the variant reads `WSL · PTC mode（PTC 模式）` on every channel, like the other three shipped modes.
+- `dsh.compatibility.dshReleases` declares `0.1.7-rc.1`. The two modules the declaration channel needs (`@deepseek-ai/cordis-plugin-include`, `js-yaml`) are resolved at call time and declared as **optional** peers, so a release that lacks them fails one variant rather than refusing to load the plugin.
 
 ## 0.7.2 — 2026-09-21
 
-- **The WSL skill catalog is no longer re-walked on the request path (issue #25).**
-  The host rebuilds the catalog during a request and awaits each provider's
-  `list()`, and this provider kept its own answer for only 10 s — so every time the
-  catalog was re-collected (a new session or scope, or simply a lookup more than
-  10 s after the last one) that request paid a full walk of the workspace, one
-  directory at a time: two `stat`s and one `readdir` each. A `readdir` over the
-  `\\wsl.localhost\…` 9P share measures 3-16 ms here and the walk's budget is 4096
-  directories, which is why a large workspace cost 20.4 s, on the request path. A
-  published catalog is now served as-is, and only the provider's own change detector
-  can drop it: a repeat lookup costs 1-3 ms and no filesystem traffic. The freshness
-  contract is unchanged — a new nested skills directory still appears within 30 s,
-  and an added, removed or edited skill within 3 s.
-- The walk itself is cheaper: one BFS layer is probed concurrently (bounded) and
-  published in frontier order, so the catalog stays deterministic, and a
-  directory's `.dsh/skills` / `.agents/skills` are probed only when its own listing
-  showed that marker. The budget-sized walk went from 20.4 s to 4.8 s on the same
-  machine; node's filesystem thread pool caps the real parallelism.
+- **The WSL skill catalog is no longer re-walked on the request path (issue #25).** The host rebuilds the catalog during a request and awaits each provider's `list()`, and this provider kept its own answer for only 10 s — so every time the catalog was re-collected (a new session or scope, or simply a lookup more than 10 s after the last one) that request paid a full walk of the workspace, one directory at a time: two `stat`s and one `readdir` each. A `readdir` over the `\\wsl.localhost\…` 9P share measures 3-16 ms here and the walk's budget is 4096 directories, which is why a large workspace cost 20.4 s, on the request path. A published catalog is now served as-is, and only the provider's own change detector can drop it: a repeat lookup costs 1-3 ms and no filesystem traffic. The freshness contract is unchanged — a new nested skills directory still appears within 30 s, and an added, removed or edited skill within 3 s.
+- The walk itself is cheaper: one BFS layer is probed concurrently (bounded) and published in frontier order, so the catalog stays deterministic, and a directory's `.dsh/skills` / `.agents/skills` are probed only when its own listing showed that marker. The budget-sized walk went from 20.4 s to 4.8 s on the same machine; node's filesystem thread pool caps the real parallelism.
 
 ## 0.7.1 — 2026-09-20
 
-- **`npm install dsh-wsl-workspace` no longer fails.** Verifying the published
-  artifact turned up a regression this release introduced: npm auto-installs
-  missing peer dependencies, and the `@deepseek-ai/dsh-tool-fs-search` peer added in
-  0.6.0 itself peers on `@deepseek-ai/dsh-retention`, which is **not published** — so
-  a plain `npm install` died with `E404 … @deepseek-ai/dsh-retention` (0.4.3 installs
-  fine, so it was ours). `dsh plugin add` uses pnpm, which only *warns* about unmet
-  peers, which is why every harness run and real install passed. All ten host peers
-  are now marked optional in `peerDependenciesMeta`: the package still declares what
-  the host must provide, but npm no longer tries to fetch it.
+- **`npm install dsh-wsl-workspace` no longer fails.** Verifying the published artifact turned up a regression this release introduced: npm auto-installs missing peer dependencies, and the `@deepseek-ai/dsh-tool-fs-search` peer added in 0.6.0 itself peers on `@deepseek-ai/dsh-retention`, which is **not published** — so a plain `npm install` died with `E404 … @deepseek-ai/dsh-retention` (0.4.3 installs fine, so it was ours). `dsh plugin add` uses pnpm, which only *warns* about unmet peers, which is why every harness run and real install passed. All ten host peers are now marked optional in `peerDependenciesMeta`: the package still declares what the host must provide, but npm no longer tries to fetch it.
 
 ## 0.7.0 — 2026-09-20
 
-The WSL world now matches the host everywhere a session can tell the difference,
-and the last two known issues are closed. Everything below ships together: a WSL
-variant gets Linux symlinks, the session's access mode, in-distribution search, a
-live skill catalog, a stateful shell, and tracked background jobs.
+The WSL world now matches the host everywhere a session can tell the difference, and the last two known issues are closed. Everything below ships together: a WSL variant gets Linux symlinks, the session's access mode, in-distribution search, a live skill catalog, a stateful shell, and tracked background jobs.
 
-- **The host's `bash` contract is stated in the tool description.** The persistent
-  tool wraps each command as `eval -- $'…'`, so a command ending in `&` backgrounds
-  the *whole* wrapped command — the call returns immediately with exit code 0 and
-  no output while the real output arrives later, possibly inside the next call's.
-  And the shell is one process for the whole Agent, so a `cd` carries into the next
-  call. The host default says neither, and DSH's own Minimal preset recommends the
-  hazardous form (`sleep 10 &`). The world now overrides `description` (a supported
-  key on every declared release) with both facts and the safe forms.
-- **`0.1.0-rc.7` falls back to a working one-shot shell.** That release's
-  `dsh-subprocess-local` has no Windows process inspector, so the host's PTY-backed
-  persistent shell cannot start on Windows at all — every `bash` call failed with
-  `subprocess-local: terminal inspection is unsupported on platform win32` (the
-  host ships the same gap: its Minimal preset mounts `persistent-bash` there with
-  no Windows guard). The plugin now *probes* the substrate instead of assuming —
-  it hands `spawnTerminal` a program that cannot exist, which reaches the inspector
-  check and nothing else — and when the answer is no, the world keeps the one-shot
-  `dsh-tool-bash` row: a working, stateless shell rather than an error per call.
-- **Tracked background jobs, restored.** Replacing the one-shot bash tool with the
-  persistent one also removed the only thing that started a registry job, so
-  `job_list` always answered "no background jobs" and a `run_in_background: true`
-  argument handed to `bash` was silently ignored (the parameter schema allows extra
-  properties, so nothing complained). The world now mounts `bash_background`
-  (`src/host/wsl-jobs.ts`), a thin producer over the host's own `ctx.jobs.start`
-  plus this plugin's `ctx.shell.start`: it returns a job id, and
-  `job_list`/`job_output`/`job_kill` work on it as usual. It is mounted only where
-  the source mode also mounts the `job_*` tools, and only alongside the persistent
-  shell.
-- **Six defects found by hunting the new code with worst-case input**: a hidden-file
-  guard that also applied to an explicitly named file (`grep path=.env` returned
-  nothing), a discarded `find` exit status (`glob path=/nope-missing` looked like an
-  empty directory), a line-terminated glob header (a root whose name contains a
-  newline came back truncated), untranslated Windows paths (`grep path='D:\proj'`
-  failed where `read` worked), a closed spill schema (which would have failed the
-  tool's own output validation on every capped search), and a catalog detector that
-  could stack polls on a slow share. Plus two in the new producer: it was mounted in
-  a mode with no `job_*` tools to read its ids, and it defaulted a job's working
-  directory to the host process's rather than the session workspace.
-- **Verification**: thirteen checks on each of the eight declared releases
-  (`0.1.0-rc.7` … `0.1.5-rc.2`) — `search-real` drives the real tools against a real
-  distribution fixture — leaving only the two pre-existing baseline failures
-  (`typecheck`, and `host-api` which needs a live server). 152 unit tests, including
-  a parity check of every renderer against the host suite's own formatters. Real
-  browser sessions on five releases for the tool behaviour, and a **frontend pass on
-  all eight** (entry button, dialog, path check, create & open, mode picker, help
-  panel with v0.7.0 and 8 release chips), with the session log as evidence for the
-  tool set, the search results, the catalog replacement, the shell fallback and the
-  background-job lifecycle.
+- **The host's `bash` contract is stated in the tool description.** The persistent tool wraps each command as `eval -- $'…'`, so a command ending in `&` backgrounds the *whole* wrapped command — the call returns immediately with exit code 0 and no output while the real output arrives later, possibly inside the next call's. And the shell is one process for the whole Agent, so a `cd` carries into the next call. The host default says neither, and DSH's own Minimal preset recommends the hazardous form (`sleep 10 &`). The world now overrides `description` (a supported key on every declared release) with both facts and the safe forms.
+- **`0.1.0-rc.7` falls back to a working one-shot shell.** That release's `dsh-subprocess-local` has no Windows process inspector, so the host's PTY-backed persistent shell cannot start on Windows at all — every `bash` call failed with `subprocess-local: terminal inspection is unsupported on platform win32` (the host ships the same gap: its Minimal preset mounts `persistent-bash` there with no Windows guard). The plugin now *probes* the substrate instead of assuming — it hands `spawnTerminal` a program that cannot exist, which reaches the inspector check and nothing else — and when the answer is no, the world keeps the one-shot `dsh-tool-bash` row: a working, stateless shell rather than an error per call.
+- **Tracked background jobs, restored.** Replacing the one-shot bash tool with the persistent one also removed the only thing that started a registry job, so `job_list` always answered "no background jobs" and a `run_in_background: true` argument handed to `bash` was silently ignored (the parameter schema allows extra properties, so nothing complained). The world now mounts `bash_background` (`src/host/wsl-jobs.ts`), a thin producer over the host's own `ctx.jobs.start` plus this plugin's `ctx.shell.start`: it returns a job id, and `job_list`/`job_output`/`job_kill` work on it as usual. It is mounted only where the source mode also mounts the `job_*` tools, and only alongside the persistent shell.
+- **Six defects found by hunting the new code with worst-case input**: a hidden-file guard that also applied to an explicitly named file (`grep path=.env` returned nothing), a discarded `find` exit status (`glob path=/nope-missing` looked like an empty directory), a line-terminated glob header (a root whose name contains a newline came back truncated), untranslated Windows paths (`grep path='D:\proj'` failed where `read` worked), a closed spill schema (which would have failed the tool's own output validation on every capped search), and a catalog detector that could stack polls on a slow share. Plus two in the new producer: it was mounted in a mode with no `job_*` tools to read its ids, and it defaulted a job's working directory to the host process's rather than the session workspace.
+- **Verification**: thirteen checks on each of the eight declared releases (`0.1.0-rc.7` … `0.1.5-rc.2`) — `search-real` drives the real tools against a real distribution fixture — leaving only the two pre-existing baseline failures (`typecheck`, and `host-api` which needs a live server). 152 unit tests, including a parity check of every renderer against the host suite's own formatters. Real browser sessions on five releases for the tool behaviour, and a **frontend pass on all eight** (entry button, dialog, path check, create & open, mode picker, help panel with v0.7.0 and 8 release chips), with the session log as evidence for the tool set, the search results, the catalog replacement, the shell fallback and the background-job lifecycle.
 
 ## 0.6.0 — 2026-09-19
 

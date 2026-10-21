@@ -1,10 +1,6 @@
 # Check catalog
 
-Single inventory of every test, gate and manual pass in this repository, its
-run command, its environment prerequisites, and where it lives in the
-automation. CI wiring: `.github/workflows/ci.yml` (per PR/push) and
-`.github/workflows/compat.yml` (rolling window, weekly/dispatch). Local and CI
-run the same commands: the `npm run test:*` buckets below.
+Single inventory of every test, gate and manual pass in this repository, its run command, its environment prerequisites, and where it lives in the automation. CI wiring: `.github/workflows/ci.yml` (per PR/push) and `.github/workflows/compat.yml` (rolling window, weekly/dispatch). Local and CI run the same commands: the `npm run test:*` buckets below.
 
 ## A. Pure-node unit bucket — `npm run test:unit` (+ `npm run test:win32` on windows), no host packages needed
 
@@ -33,16 +29,7 @@ run the same commands: the `npm run test:*` buckets below.
 
 ## B. Node buckets needing the pinned host packages — `npm run test:node`
 
-The `@deepseek-ai/*` peers are optional and provided by the host at runtime;
-in a clean checkout `node ci/install-pinned.mjs` materialises the pinned tree
-(ci/pinned-deps.json → ci/deps) and links it in. `test:node` rebuilds `lib/`
-first because the client/host integration checks consume built artifacts.
-The same command also materialises a SECOND tree (ci/deps-conflict) holding the
-`js-yaml` major the umbrella does NOT carry. It is deliberately never linked into
-the repo root: a hoisted wrong-major at the root would flip
-`tests/host-materialize.mjs`'s `require('js-yaml')` and poison the development
-tree, and the whole point of that copy is to be reachable only from inside a
-built arm.
+The `@deepseek-ai/*` peers are optional and provided by the host at runtime; in a clean checkout `node ci/install-pinned.mjs` materialises the pinned tree (ci/pinned-deps.json → ci/deps) and links it in. `test:node` rebuilds `lib/` first because the client/host integration checks consume built artifacts. The same command also materialises a SECOND tree (ci/deps-conflict) holding the `js-yaml` major the umbrella does NOT carry. It is deliberately never linked into the repo root: a hoisted wrong-major at the root would flip `tests/host-materialize.mjs`'s `require('js-yaml')` and poison the development tree, and the whole point of that copy is to be reachable only from inside a built arm.
 
 | Check | What it pins down | Extra prereq | CI home |
 | --- | --- | --- | --- |
@@ -85,44 +72,11 @@ built arm.
 ## D. Checks needing Windows + a real WSL distribution — `npm run test:wsl`
 
 
-Hard gates in ci.yml#wsl-gate on windows-latest, **matrixed over WSL1 and WSL2** Ubuntu-24.04 via
-Vampire/setup-wsl (`fail-fast: false`, and the log artifact carries the version:
-`wsl-gate-logs-wsl1` / `-wsl2`). The two kernels are not interchangeable evidence, and the tip's own
-green frame is 37506092966 (head `ff626e6`, 2026-10-06T17:46:07Z → 17:59:13Z), with both arms green on
-each of the two frames before it too — on both planes — `bash-session-real`
-73/73 on each, `bash-parity-real` 12/12, `tool-bash-real` 10/10. What differs is what each kernel will
-tell the tool: WSL1 answers `/proc/<pid>/wchan` **and** `/proc/<pid>/syscall` empty for every process and
-names no foreground job, so a keyboard wait there cannot be confirmed and is left to the deadline the call
-asked for, with the body printing the rows it read; WSL2 fills the names and the numbers where the kernel
-reports them (CI reads `sleep:S+ w=hrtimer_nanosleep sc=230 0tty fg` and `shell:Ss w=do_wait sc=61 1tty
-bg`), the terminal's own read carries the `wait_woken` name measured on the production session on
-2026-10-05, and the foreground job is named there too, so the same wait is stopped at ~0.6 s and re-run.
-The six reactive
-cells branch on which of those two the reading supports (`branch:"reading-acts"` /
-`branch:"reading-declares"`) and print the rows either way, so a kernel that begins to report a wait
-reddens the cell that let it burn a deadline. Before that frame five of those cells were simply red on
-WSL1, and a sixth reported nothing because the arm died mid-run.
-Environment knobs: `WSL_COMPAT_DISTRO`, `WSL_COMPAT_USER`,
-`WSL_COMPAT_ROOT`, `WSL_COMPAT_RELAY_CWD`, `WSL_COMPAT_DRIVE_CWD`, and
-`DSH_WSL_TEST_PLANE` (`src` default | `lib`).
+Hard gates in ci.yml#wsl-gate on windows-latest, **matrixed over WSL1 and WSL2** Ubuntu-24.04 via Vampire/setup-wsl (`fail-fast: false`, and the log artifact carries the version: `wsl-gate-logs-wsl1` / `-wsl2`). The two kernels are not interchangeable evidence, and the tip's own green frame is 37506092966 (head `ff626e6`, 2026-10-06T17:46:07Z → 17:59:13Z), with both arms green on each of the two frames before it too — on both planes — `bash-session-real` 73/73 on each, `bash-parity-real` 12/12, `tool-bash-real` 10/10. What differs is what each kernel will tell the tool: WSL1 answers `/proc/<pid>/wchan` **and** `/proc/<pid>/syscall` empty for every process and names no foreground job, so a keyboard wait there cannot be confirmed and is left to the deadline the call asked for, with the body printing the rows it read; WSL2 fills the names and the numbers where the kernel reports them (CI reads `sleep:S+ w=hrtimer_nanosleep sc=230 0tty fg` and `shell:Ss w=do_wait sc=61 1tty bg`), the terminal's own read carries the `wait_woken` name measured on the production session on 2026-10-05, and the foreground job is named there too, so the same wait is stopped at ~0.6 s and re-run. The six reactive cells branch on which of those two the reading supports (`branch:"reading-acts"` / `branch:"reading-declares"`) and print the rows either way, so a kernel that begins to report a wait reddens the cell that let it burn a deadline. Before that frame five of those cells were simply red on WSL1, and a sixth reported nothing because the arm died mid-run. Environment knobs: `WSL_COMPAT_DISTRO`, `WSL_COMPAT_USER`, `WSL_COMPAT_ROOT`, `WSL_COMPAT_RELAY_CWD`, `WSL_COMPAT_DRIVE_CWD`, and `DSH_WSL_TEST_PLANE` (`src` default | `lib`).
 
-**Which plane a gate tested is now evidence, not assumption (issue #44 §1).** Every driver
-resolves its subject through `scripts/compatibility/plane.mjs`, which prints
-`plane-module: <key> -> <specifier>`; `scripts/verify-plane-log.mjs <log> <src|lib>` fails a run
-whose log carries no such line, names the wrong plane, or points at a content-hashed chunk.
-`ci.yml#wsl-gate` runs `fs-real`/`search-real`/`relay-real`/`tool-bash-real` a second time under
-`DSH_WSL_TEST_PLANE=lib` with a separate fixture root (`/tmp/dsh-wsl-lib`) and then checks every
-log. Two decisions recorded rather than quietly taken: the **default stays `src`** until the lib
-plane has been green twice on a runner; and `skills-real` is **still src-plane only**, because
-`tsdown.config.ts` declares no entry for the provider (the class is file-local to
-`lib/index.js:1122`) and adding entries changes what users install — `plane.mjs` therefore
-*throws* under `lib` instead of falling back, so the gap cannot read as a pass. Measured on the
-maintainer machine (WSL2, smoke tier only — not evidence about WSL1): `fs-real` under
-`DSH_WSL_TEST_PLANE=lib` printed `plane-module: fs -> lib/fs.js`, reported both `PASS real 9P fs…`
-lines, rc 0, and the verifier answered `OK — 1 plane line(s) … all lib`.
+**Which plane a gate tested is now evidence, not assumption (issue #44 §1).** Every driver resolves its subject through `scripts/compatibility/plane.mjs`, which prints `plane-module: <key> -> <specifier>`; `scripts/verify-plane-log.mjs <log> <src|lib>` fails a run whose log carries no such line, names the wrong plane, or points at a content-hashed chunk. `ci.yml#wsl-gate` runs `fs-real`/`search-real`/`relay-real`/`tool-bash-real` a second time under `DSH_WSL_TEST_PLANE=lib` with a separate fixture root (`/tmp/dsh-wsl-lib`) and then checks every log. Two decisions recorded rather than quietly taken: the **default stays `src`** until the lib plane has been green twice on a runner; and `skills-real` is **still src-plane only**, because `tsdown.config.ts` declares no entry for the provider (the class is file-local to `lib/index.js:1122`) and adding entries changes what users install — `plane.mjs` therefore *throws* under `lib` instead of falling back, so the gap cannot read as a pass. Measured on the maintainer machine (WSL2, smoke tier only — not evidence about WSL1): `fs-real` under `DSH_WSL_TEST_PLANE=lib` printed `plane-module: fs -> lib/fs.js`, reported both `PASS real 9P fs…` lines, rc 0, and the verifier answered `OK — 1 plane line(s) … all lib`.
 
-Verifier controls run here: a log with no plane line → rc 1; a `src` log checked as `lib` → rc 1;
-`lib/wsl-Ckyi3g6C.js` → rc 1 (`content-hashed chunk`); a matching line → rc 0.
+Verifier controls run here: a log with no plane line → rc 1; a `src` log checked as `lib` → rc 1; `lib/wsl-Ckyi3g6C.js` → rc 1 (`content-hashed chunk`); a matching line → rc 0.
 
 | Check | What it pins down | Notes |
 | --- | --- | --- |
@@ -146,73 +100,14 @@ Verifier controls run here: a log with no plane line → rc 1; a `src` log check
 | `tests/support/w78-confine-probe.mjs` (`npm run test:confine-probe`) | **#78 的归属判据**：`run_code` 的 PTC provider 解析到的 `sandbox` 是**宿主 root realm 的 `@deepseek-ai/dsh-sandbox-local`**（win32 上即 windows-acl 那条 runner）；本插件的 no-op provider 只在 `Symbol(sandbox#wsl-world)` 那个 realm 内服务自己组的消费者，挂载本插件不改变 root 槽位。我们的 `confine()` 被真调用一次并断言 argv 原样、`enforcement: partial`、两个空数组。变异对照：翻掉 `sandbox: true` 只动世界内的读取，PTC 那一侧纹丝不动 ⇒ **现成的修法不在"再提供一个 no-op"上，而在那一行的挂载层次上**。UNC 那一格本机**未复现** `GetNamedSecurityInfoW (Win32 1)`：realpath 先失败（`ENOENT`，发行版没在跑），报成 `not observed` 而不算通过；无 session 的一格拿到 `SetNamedSecurityInfoW failed (Win32 5)`，作为"ACL 这条路真的被走过"的凭据。**2026-10-19：profile 级那六行改按绝对路径挂载**（原先按包名）。同一文件被解析出两份时，Node 的 ESM 缓存按 URL 记账，于是 `provider instanceof LocalSandboxProvider` 对宿主自己的那只**永远为假**——row 0 与 row 4 就是这样红的，而 realm 键、构造器名、`confine()` 的实际行为全都证明槽位里就是宿主那只。把盘符大小写规范化（`file:///D:/…` vs `file:///d:/…` 确实是两个模块，实测 `D:/Temp/rc2-round/module-identity-case.mjs`）救不了它：两份副本的 realpath 本来就一致，不一致的是**谁去解析**——探针按路径导入、loader 按名字解析。改完六行全绿。规矩：断言"是不是这个类"之前，装置与被告必须共用同一个路径来源 | node ≥ 24（同上。`@deepseek-ai/dsh-ptc-runtime` 不在钉住的闭包里，所以 PTC 类没有被构造——读的是它自己 entry 的 ctx 槽，即 `index.js:950` 解引用的那一处；探针把这条写成 caveat，没有含糊过去） ／ **CI home:** ci.yml#runtime-tests（经 `npm run test:seams`；posix 上按 `SKIP:` 收口——windows-acl 那条链在 linux 上不存在，所以这格只在维护者机器上真测） |
 | `tests/support/w92-rc2-consumers.mjs` (`npm run test:rc2-consumers`) | **#92 升树留下的五格出口换成真调用**：`fs`×`dsh-working-directory`、`fs`×`dsh-workspace-changes`、`fs`×`dsh-experimental-worktree`、`sandbox`×`dsh-experimental-worktree`、`terminals`×`dsh-tool-terminal`（台账 `docs/CONSUMER-COVERAGE.md` 的棘轮 46→42 就是其中四格换的；第五格 `fs`×`dsh-workspace-changes` 停在 `挂载未调用`，出厂闭包里那一臂按名字报 `SKIP:`，理由与两侧实测写在台账的棘轮段）。四件事在装置形状上记下来，因为它们各自伪装过一次结论：**一臂一次 boot**（第一版四包合一，boot 不收口，五格全成无主读数）；**行按路径挂载并断言那枚副本的版本 == 本次被测的 `@deepseek-ai/dsh`**——loader 拿到落后一版的副本时宿主打 `disabling profile plugin row "tool-fs": … is incompatible with dsh 0.2.1-rc.2` 然后什么都不装，boot 照样退 0（`D:/Temp/rc2-round/w54-restored.log` 实测一次禁四行；只按路径挂不够，路径本身可以指向旧版）；**agent/session 用宿主自己的 `Session.create`**——手搓的 `{ id, header, append }` 字面量死在 `session.snapshotEvents is not a function`，而其中 `changes-intent` 那一格会把装置缺陷打成"面板看不见 WSL 写入"这个产品结论；**realm 读数自带正对照** `realm:instrument-control`（`webserver` → `Symbol(fs)`/`LocalFileSystem` vs `fs-wsl` → `Symbol(fs#wsl-world)`/`WslFileSystem`），两者分不开就不许本文件谈 realm。读数：`workingDirectory.ensure` 对 UNC 会话原样回 UNC（`Linux path = false`）；`fs/write-intent` 确实越过 isolate 到 root realm，载荷 `{targetKey, displayPath}`、`targetKey = \\wsl.localhost\Ubuntu\tmp\…`，root 的 `fs.processPath` 原样回它且 `existsSync = true` ⇒ 变更面板**拿得到**我们写过的文件；`workspaceChanges.summary()` 被真调一次回 `undefined`，那写成读数不写成结论（recorder 要先有 `turn/start` 与 `tools/pre-execute`，本臂两样都没有）；`terminal_list` 应答 `[]`（本次 boot 没开终端）；worktree 挂在世界之外拿到 `LocalSandboxProvider`，把行插进 `wsl-world` 的 `config:` 里才拿到 `WslSandboxProvider`——我们的 `confine()` 原样放行 argv，命令死在下一步：我们的 `fs` 对仓库目录回 `/mnt/d/…`，同一条 `git --version` 用 Windows 写法 `rc=0`、用这个写法 `ENOENT`（`worktree-path-shape` 那格就是这两发的对照）。副作用边界：真起一次发行版跑一发 `bash`（写完自己 `rm` 掉探针文件）、在 `node:os` 临时目录里 `git init` 两枚，不碰维护者正在用的 Desktop 实例。 | node ≥ 24（boot 真宿主 profile） ／ **CI home:** ci.yml#runtime-tests（经 `npm run test:seams`；posix 上按 `SKIP:` 收口——`\\wsl.localhost\…` 的 realm 问题在 linux 上没有可答的问题，跳过不等于通过）。`W92_ONLY=<臂名>` 只跑一臂，收尾会明写 PARTIAL，不当 verdict。**预算**：这一格用 runner 的默认 900 s，不另开数字。中途我给它单列过 30 分钟预算，量下来撤回——真因不是慢：那一帧它 18 行结论全打出来了，之后**进程不退出**，于是被 `spawnSync` 的 `ETIMEDOUT` 判死（`harness-exit` 那一格抓住的正是这种"已经答完却像死掉"的套件）。改法在探针里：`report()` 打完最后一行就 `process.exit`，不再把退出交给事件环排空（一臂 warm 实测 3.5 s，五臂单跑约 9-10 分钟）。 |
 
-`scripts/compatibility/host-api.mjs` (12 API probes) needs a running
-`dsh web` and lives in the compat matrix, not in ci.yml: the compat job boots
-one per version. v0.7.5 adds `scripts/compatibility/conpty-relay.mjs` (the
-relay interpreter under a real ConPTY, per the case's `runtime.json`) at the
-same tier: it is registered in Run-Checks.ps1 for the maintainer sweep and
-needs a booted case manifest, so no cloud fixture exists for it yet —
-recorded here rather than silently dropped from the automation map.
+`scripts/compatibility/host-api.mjs` (12 API probes) needs a running `dsh web` and lives in the compat matrix, not in ci.yml: the compat job boots one per version. v0.7.5 adds `scripts/compatibility/conpty-relay.mjs` (the relay interpreter under a real ConPTY, per the case's `runtime.json`) at the same tier: it is registered in Run-Checks.ps1 for the maintainer sweep and needs a booted case manifest, so no cloud fixture exists for it yet — recorded here rather than silently dropped from the automation map.
 
-**Its prompt assertion was rewritten for issue #51, because it was the thing that
-failed to catch the defect.** It used to require `/[$#]\s*$/` over output whose injected
-`PS1` was `'DSH> '` — uppercase, so it could never match the host's lowercase
-`CONTROLLED_PROMPT`, and a distribution default ending in `$ ` satisfied it regardless.
-That is why a green run of this gate coexisted with a persistent shell whose readiness
-contract never reached the distribution. It now asserts the two facts the backend itself
-compares: the OSC `133;D;` marker on the raw bytes, and the literal `dsh> ` after the
-escape strip, with the injected values taken verbatim from `dsh-terminal-bash:951-952`.
-Controls run 2026-10-04 against the real relay under a real ConPTY at
-`\\wsl.localhost\Ubuntu\home` (the reporter's exact cwd): with the bridge → `PASS … marker
-+ "dsh> " both present` (1487 bytes); dropping `env: bridgeReadiness(process.env)` from
-`lib/wsl-relay.js` → `AssertionError: no OSC 133;D readiness marker reached the wire`,
-restored byte-identical. First run locally: it needs a `runtime.json` whose `runtimeRoot`
-holds `node-pty` at the pnpm-nested path — a junction over the pinned tree supplies it, and
-the pinned `node-pty` is `1.2.0-beta.15`, the version the host itself ships.
+**Its prompt assertion was rewritten for issue #51, because it was the thing that failed to catch the defect.** It used to require `/[$#]\s*$/` over output whose injected `PS1` was `'DSH> '` — uppercase, so it could never match the host's lowercase `CONTROLLED_PROMPT`, and a distribution default ending in `$ ` satisfied it regardless. That is why a green run of this gate coexisted with a persistent shell whose readiness contract never reached the distribution. It now asserts the two facts the backend itself compares: the OSC `133;D;` marker on the raw bytes, and the literal `dsh> ` after the escape strip, with the injected values taken verbatim from `dsh-terminal-bash:951-952`. Controls run 2026-10-04 against the real relay under a real ConPTY at `\\wsl.localhost\Ubuntu\home` (the reporter's exact cwd): with the bridge → `PASS … marker
++ "dsh> " both present` (1487 bytes); dropping `env: bridgeReadiness(process.env)` from `lib/wsl-relay.js` → `AssertionError: no OSC 133;D readiness marker reached the wire`, restored byte-identical. First run locally: it needs a `runtime.json` whose `runtimeRoot` holds `node-pty` at the pnpm-nested path — a junction over the pinned tree supplies it, and the pinned `node-pty` is `1.2.0-beta.15`, the version the host itself ships.
 
-**The runtime counterpart of that manual tier is now in the boot path** (`src/host/pty-readiness.ts`,
-wired at `src/index.ts` after `persistentShellAllowed`). The cheap probe only asked whether a host
-can build a terminal inspector, so a Desktop that answered yes mounted a PTY world in which every
-`bash` call failed — issue #51. The new stage starts the real relay through the host's own
-`subprocess.spawnTerminal`, sends one arithmetic command, and requires the computed answer **and**
-the OSC `133;D;` marker **and** the controlled prompt inside 15 s; anything else demotes the world to
-the one-shot `bash`, which needs no PTY. Its scope is stated rather than implied: it covers the
-readiness path (a relay that cannot start, a contract that never crosses, a shell that never answers)
-and **not** the host's `dsh-win32-process` foreground inspection, which sits behind a predicate this
-plugin cannot construct at boot. That predicate is now named rather than open — measured on 2026-10-04
-across a 6-cell grid, a 3-command cell and a native-bash control, the host's post-marker 6-character
-prompt window is filled by the command's own output under any Windows pseudo-console, so
-`promptTextSeen` holds only in the moment between the prompt being drawn and the next printable
-arriving: one run caught it (`stdin_read` 74 ms after the send), nine did not and paid
-`inferred_idle` at ≈3.5 s. See "Point 3's failing term, pinned" in
-[compatibility-evidence.md](compatibility-evidence.md). A pass here therefore certifies the wire,
-not the settle cost — there is no plugin-side knob for that window, and the probe must not be read as
-covering it. On the UNC question its reach
-was widened the same day it landed, while re-checking point 1: the probe takes its cwd from the
-registered workspaces (`readinessCwd()` in `src/index.ts`), so once a WSL workspace exists it starts
-the relay at a real `\\wsl.localhost\…` path and a UNC-cwd startup failure demotes the world; with no
-workspace registered yet it falls back to a Windows directory, and such a pass is labelled
-`the UNC startup shape is unverified` instead of being counted as covering that case. Validated
-against the real stack, not only a fixture: through `@deepseek-ai/dsh-subprocess-local` over the
-pinned `node-pty` and the shipped `lib/wsl-relay.js` — `ready=true … in 3404ms` at `SystemRoot`,
-`ready=true … in 881ms` at the workspace UNC with the instance running, `… in 1172ms` with it
-terminated, and with a nonexistent relay path `ready=false … the shell resolved {"exitCode":1} … no
-OSC 133;D marker, no "dsh>" prompt`. That the UNC cells pass here is *why* point 1's mechanism stays
-open: the check now looks at the right shape and this machine does not fail in it. Cost on the user's
-machine is one bounded PTY + `wsl.exe` per Windows boot, 0.45–3.4 s measured here and 15 s worst case,
-always terminated by the probe's own `finally`.
+**The runtime counterpart of that manual tier is now in the boot path** (`src/host/pty-readiness.ts`, wired at `src/index.ts` after `persistentShellAllowed`). The cheap probe only asked whether a host can build a terminal inspector, so a Desktop that answered yes mounted a PTY world in which every `bash` call failed — issue #51. The new stage starts the real relay through the host's own `subprocess.spawnTerminal`, sends one arithmetic command, and requires the computed answer **and** the OSC `133;D;` marker **and** the controlled prompt inside 15 s; anything else demotes the world to the one-shot `bash`, which needs no PTY. Its scope is stated rather than implied: it covers the readiness path (a relay that cannot start, a contract that never crosses, a shell that never answers) and **not** the host's `dsh-win32-process` foreground inspection, which sits behind a predicate this plugin cannot construct at boot. That predicate is now named rather than open — measured on 2026-10-04 across a 6-cell grid, a 3-command cell and a native-bash control, the host's post-marker 6-character prompt window is filled by the command's own output under any Windows pseudo-console, so `promptTextSeen` holds only in the moment between the prompt being drawn and the next printable arriving: one run caught it (`stdin_read` 74 ms after the send), nine did not and paid `inferred_idle` at ≈3.5 s. See "Point 3's failing term, pinned" in [compatibility-evidence.md](compatibility-evidence.md). A pass here therefore certifies the wire, not the settle cost — there is no plugin-side knob for that window, and the probe must not be read as covering it. On the UNC question its reach was widened the same day it landed, while re-checking point 1: the probe takes its cwd from the registered workspaces (`readinessCwd()` in `src/index.ts`), so once a WSL workspace exists it starts the relay at a real `\\wsl.localhost\…` path and a UNC-cwd startup failure demotes the world; with no workspace registered yet it falls back to a Windows directory, and such a pass is labelled `the UNC startup shape is unverified` instead of being counted as covering that case. Validated against the real stack, not only a fixture: through `@deepseek-ai/dsh-subprocess-local` over the pinned `node-pty` and the shipped `lib/wsl-relay.js` — `ready=true … in 3404ms` at `SystemRoot`, `ready=true … in 881ms` at the workspace UNC with the instance running, `… in 1172ms` with it terminated, and with a nonexistent relay path `ready=false … the shell resolved {"exitCode":1} … no OSC 133;D marker, no "dsh>" prompt`. That the UNC cells pass here is *why* point 1's mechanism stays open: the check now looks at the right shape and this machine does not fail in it. Cost on the user's machine is one bounded PTY + `wsl.exe` per Windows boot, 0.45–3.4 s measured here and 15 s worst case, always terminated by the probe's own `finally`.
 
-**Two reds on this machine are environmental, not regressions, and were measured as such
-against an unmodified HEAD worktree (`git worktree add … HEAD --detach`, same command, same
-output):** `tests/smoke.ts` dual-access compares `windowsToMntPath(tmpdir())` (`\Temp`, as
-`os.tmpdir()` reports it here) with the fs plane's real-case form (`\TEMP`), so it fails only
-on a temp directory whose casing differs; overriding `TMPDIR`/`TEMP`/`TMP` to a
-casing-consistent path makes the whole bucket pass through `SMOKE PASSED`, `dual access OK`,
-and both `PASS` shells. `scripts/compatibility/skills-real.mjs` is missing
-`deep-check`/`linked-check` — the two skills that arrive through a directory symlink into
-`/mnt/<drive>` — on this WSL2 distro (kernel 6.18.40.1); the CI runner that reports it green
-is WSL1. Both are recorded rather than fixed here, and neither is caused by the relay change
-this section describes.
+**Two reds on this machine are environmental, not regressions, and were measured as such against an unmodified HEAD worktree (`git worktree add … HEAD --detach`, same command, same output):** `tests/smoke.ts` dual-access compares `windowsToMntPath(tmpdir())` (`\Temp`, as `os.tmpdir()` reports it here) with the fs plane's real-case form (`\TEMP`), so it fails only on a temp directory whose casing differs; overriding `TMPDIR`/`TEMP`/`TMP` to a casing-consistent path makes the whole bucket pass through `SMOKE PASSED`, `dual access OK`, and both `PASS` shells. `scripts/compatibility/skills-real.mjs` is missing `deep-check`/`linked-check` — the two skills that arrive through a directory symlink into `/mnt/<drive>` — on this WSL2 distro (kernel 6.18.40.1); the CI runner that reports it green is WSL1. Both are recorded rather than fixed here, and neither is caused by the relay change this section describes.
 
 
 | `tests/support/g5-session-probe.mjs` (`npm run test:session`) | **a real host, one real session, six real tool calls** (issue #101, G5). Boots the product's own generated world — the variant text comes from `transformPresetForWsl()` over the shipped `standard` preset, and the `wsl-world` group is inserted into a real profile's overlay **verbatim** (the group's YAML is already an entry list) — then calls, in one `\\wsl.localhost\\<distro>\\…` session: `bash`, `read`, `grep`, `glob`, `read_image` (`/tmp` PNG written through the world), and `bash` `run_in_background` → `job_output`. Every cell carries a **ceiling** in its own row (`bash` 25 s cold, the rest 15 s): issue #25 was "every request takes about thirty seconds and then ends", and a per-call ceiling is the only reading that turns that into a red row instead of a slow pass. `@deepseek-ai/dsh-jobs` is pinned into the closure now, and `tool-job-output` is a **declared not-measured** cell: the job tools check the agent registry for a live owner before they answer, a probe carries a synthetic session, and the row therefore prints the reason (never a pass) — the day it answers with bytes the declaration reddens and must be deleted. Cells are the map's eight: a `file:` row that never starts (#89), a bash that cannot start (#50/#51), a `read_image` the realm cannot serve (#54), a `job_output` that is always empty (#56), and the drive/UNC translation #86 lost. Row `world-rows-activated` is `inactiveDetail()` over the loader, so "some row did not reach state 2" is named rather than felt. The reading a `compatible` declaration should rest on (R4 in #101) — `scripts/verify-dsh-compat.sh` answers install/start/uninstall, this answers "and the six tools work". A cell the machine cannot answer is a red row with the reason, never a skip. Wired into `wsl-gate` on the **lib plane, WSL2 only**: the world's rows point at `lib/*.js` by construction (so the src pass measures nothing extra), and WSL1's wait surface is a different reading that has not been taken yet | Windows + a WSL distribution (`WSL_COMPAT_DISTRO`, default `Ubuntu`; CI sets `Ubuntu-24.04`) + `node ci/install-pinned.mjs` + a built `lib/` | ci.yml#wsl-gate (lib plane, WSL2) |
@@ -234,16 +129,10 @@ this section describes.
 
 
 - W button visible beside Settings in the sidebar foot.
-- Distribution picker non-empty by eye (the #35/#36 failure shape was an
-  empty picker with a caught type error; client-lifecycle now covers the
-  server half, the pixel is human).
-- Mode picker shows and lands on `WSL · <mode>` variants; Standard/PTC/
-  Minimal/Creative switches.
-- F5/panel reload keeps the workspace (TESTING.md itself states no script
-  can see the client half).
-- The six-item frontend pass per release (create & open, write, read,
-  one-shot bash, persistent bash, skills) — the commandable half of each is
-  automated in ci.yml#wsl-gate and compat.yml; the click half stays human.
+- Distribution picker non-empty by eye (the #35/#36 failure shape was an empty picker with a caught type error; client-lifecycle now covers the server half, the pixel is human).
+- Mode picker shows and lands on `WSL · <mode>` variants; Standard/PTC/ Minimal/Creative switches.
+- F5/panel reload keeps the workspace (TESTING.md itself states no script can see the client half).
+- The six-item frontend pass per release (create & open, write, read, one-shot bash, persistent bash, skills) — the commandable half of each is automated in ci.yml#wsl-gate and compat.yml; the click half stays human.
 - The release behaviour pass in `docs/release-behaviour-matrix.zh.md`: every row of the twelve groups driven through a real product instance, one command per tool call, read back from the transcript rather than retelling, and judged against a no-fault native bash measured the same day. Its *shape* is machine-checked (bucket A); the behaviour itself stays human until a row is sunk into the census, the live gate or the parity driver — the document says which.
 - Agent-session nested-skill probe (needs a real model session).
 
@@ -268,28 +157,11 @@ this section describes.
 | E compat (local rehearsal, dsh 0.2.0-rc.2) | full chain GREEN after four harness fixes: (1) verdict-based exit — the script used to exit 0 under all-FAIL verdicts (its own false green, frame-1 CI read three `PLUGIN_ADD_FAIL` lines under a green checkmark); (2) `PLUGIN_REF` is the **extracted directory**, `plugin add` rejects a .tgz path; (3) readiness now means "any HTTP response" — 0.2.0-rc gates `/` behind a browser token (401 anonymous, 303→`./` drops the query), so an HTML-content probe can never settle; plugin health is asserted by the API poll instead; (4) `curl -w %{http_code}` + `|| echo 000` double-printed "000000" and defeated the dead-server comparison — removed at both sites; API probe polls to 200 because route registration races boot. Final: `0.2.0-rc.2 PASS compatible`, uninstall clean (405). CI-side root cause on top: the windows runner's bash PATH lacks **pnpm**, which the dsh plugin manager shells out to — compat.yml installs it |
 ## Measured and rejected during the night run (do not re-propose from the review's estimates)
 
-The review ranked some cost reductions from subagent estimates. Two do not survive measurement,
-and the reason is recorded so nobody spends a wave on them again:
+The review ranked some cost reductions from subagent estimates. Two do not survive measurement, and the reason is recorded so nobody spends a wave on them again:
 
-- **Merging the preset fixtures is worth nothing here.** `tests/host-materialize.mjs` and
-  `tests/host-declare.mjs` both declare `STANDARD_SRC`/`MINIMAL_SRC` and 17 of 22 body lines
-  match, but compared as text the blocks give **0 byte-identical lines** — the `const … = \`…\``
-  shapes, indentation and the fields each harness asserts differ — so a shared module would carry
-  both variants anyway. `tests/variants.test.ts`'s fixture is deliberately richer (26 lines,
-  3-4 positional matches against the host pair), and collapsing it into the harness fixtures would
-  delete coverage rather than move it.
-- **The hermeticity list was largely already handled.** `smoke.ts:46` already `rmSync`s its target
-  before asserting, the two smoke suites run sequentially in one `run_one` loop, and
-  `shell-extra.mjs` asserts `pwd` equals a directory it creates, so a stale tree cannot answer
-  "pass". The real new risk was two *concurrent* passes over one `/tmp/dsh-wsl-compat`, introduced
-  by tonight's lib-plane run — handled by giving the second pass its own root, not by rewriting
-  the drivers.
-- Taken from that list: `npm run test:node` no longer rebuilds `lib/` (bucket B), and
-  `tests/persistent-shell-fallback.mjs` registers an `exit` handler for its `DSH_HOME` tree,
-  because on this machine `os.tmpdir()` is `D:\Temp` and a mid-scenario throw would leak
-  directories that `git status` cannot see. Verified after the change: 0 orphans under any of the
-  seven prefixes this run created (the 1086 `dsh-*` directories already in `D:\Temp` carry
-  prefixes from other work — `guard`, `acl`, `subprocess`, … — and are not this suite's litter).
+- **Merging the preset fixtures is worth nothing here.** `tests/host-materialize.mjs` and `tests/host-declare.mjs` both declare `STANDARD_SRC`/`MINIMAL_SRC` and 17 of 22 body lines match, but compared as text the blocks give **0 byte-identical lines** — the `const … = \`…\`` shapes, indentation and the fields each harness asserts differ — so a shared module would carry both variants anyway. `tests/variants.test.ts`'s fixture is deliberately richer (26 lines, 3-4 positional matches against the host pair), and collapsing it into the harness fixtures would delete coverage rather than move it.
+- **The hermeticity list was largely already handled.** `smoke.ts:46` already `rmSync`s its target before asserting, the two smoke suites run sequentially in one `run_one` loop, and `shell-extra.mjs` asserts `pwd` equals a directory it creates, so a stale tree cannot answer "pass". The real new risk was two *concurrent* passes over one `/tmp/dsh-wsl-compat`, introduced by tonight's lib-plane run — handled by giving the second pass its own root, not by rewriting the drivers.
+- Taken from that list: `npm run test:node` no longer rebuilds `lib/` (bucket B), and `tests/persistent-shell-fallback.mjs` registers an `exit` handler for its `DSH_HOME` tree, because on this machine `os.tmpdir()` is `D:\Temp` and a mid-scenario throw would leak directories that `git status` cannot see. Verified after the change: 0 orphans under any of the seven prefixes this run created (the 1086 `dsh-*` directories already in `D:\Temp` carry prefixes from other work — `guard`, `acl`, `subprocess`, … — and are not this suite's litter).
 
 | E compat (CI, first frame with the asserted API pass wired) | frame 36739213446 (`workflow_dispatch`, ref `night/test-repair`): read-window **success** with the new version-string gate, all three matrix entries **failure** — `HOST_API_FAIL` from `Error: UNKNOWN: unknown error, mkdir '\\wsl.localhost\Ubuntu\tmp\dsh-wsl-compat\.agents'` (errno **-4094**). Attribution: **my wiring, not the product** — `compat.yml` provisions `Ubuntu-24.04` (`:101`, set as default) but exports no `WSL_COMPAT_DISTRO`, and `host-api.mjs:4` defaults to `'Ubuntu'`, so the driver opened a share root that does not exist on that runner; the two fixture directories it expects were also only ever created by the manual Windows runbook. Fixed by reading the distribution from `wsl.exe -l -q` rather than guessing a second name, creating `$WSL_COMPAT_ROOT/.agents` and the Windows-fixture directory through `wsl.exe` before anything touches 9P, and reporting `HOST_API_NOT_VERIFIED` (never a silent pass) if the machine offers no distribution. The same errno -4094 is what bucket D records for `search-real` on Win10/WSL2.1.5, so this failure shape was already known in this table — I reproduced it by forgetting the keep-warm/distro-name precondition it documents. |
 | E compat (CI, frame 36744046100) | ref `ci/compat-floors` pushed the same commit as this PR's head (1bdb4a8, `%cI` 2026-10-01T00:25:01+08:00; jobs opened 2026-09-30T16:25Z, closed 16:31:34Z server-side = 00:31 +0800): read-window **success**, `checks` **success**, all three matrix entries **failure** — twice each, at `install → boot → probe → uninstall → reprobe` *and* at `Run actions/upload-artifact@v4`; the run holds **0 artifacts** (`actions/runs/36744046100/artifacts` → `total_count 0`). The second failure is attributable to the wiring added one commit earlier: `scripts/verify-dsh-compat.sh` printed `compat-base: $BASE` as its **last** line, which sits below both RED exits, and a `run:` block executes under `bash -e -o pipefail`, so a RED verdict killed the step before the `win` output was recorded — upload-artifact then globbed its patterns against an empty base and, now honest about it (`if-no-files-found: error`), errored. Fixed on both halves: the base line is announced right after `mkdir -p "$BASE"`, and the step captures the script's status in `SCRIPT_RC` and re-raises it *after* recording the path. Rehearsed locally under GitHub's own flags (`bash --noprofile --norc -eo pipefail`), four bodies: old body + old script → rc 1, no `win` (the frame's shape); new body + old script → rc 1, no `win`, reaches the `no compat-base line` error, so the script-side move is load-bearing not cosmetic; new body + red verdicts → rc 1 **with** `win`; new body + all-PASS → rc 0 with `win`. The real script was also run for real on an unresolvable version (`9.9.9-does-not-exist`): first log line `compat-base: …`, verdict `INSTALL_FAIL`, rc 1 — red stays red. **What this frame does not establish:** why the script itself exits RED. The step log is not retrievable from this machine (`gh run view --log` refused; the job-log REST returns nothing usable), no artifact was uploaded, and the diagnostics step's green only proves a base directory existed. The three matrix failures therefore stay **unattributed**, and no product verdict is recorded from them. Retracted before it reached code: a trailing `\r` surviving `wsl.exe -l -q` was a candidate for the same errno -4094 shape, but this frame's `real-WSL hard gates` is SUCCESS and ci.yml:123 gates on `grep -iE "ubuntu.*[[:space:]]1$"` over the same stream, which a surviving `\r` would break — refuted by the frame, so no CR-stripping was added. |

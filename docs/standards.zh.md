@@ -70,6 +70,4 @@ CI 很贵，而且一轮红只告诉你一件事。**推之前**至少做到：
 
 hazards A/E 禁的是把 argv 交给命令解释器（`shell: true`），**不是**禁止 spawn 一个程序。
 
-`npm` 在 POSIX 上就是一个可执行程序，`spawnSync('npm', args)` 不需要 shell。需要 shell 的只有 Windows 上
-的 `npm.cmd`；那里的正解是找到 `bin/npm-cli.js` 并用 `node` 跑它（`npm_execpath` → `node.exe` 旁边 →
-`PATH` 上启动器旁边，**两种布局都要试**，hosted tool cache 只中其中一种），找不到就**明确报错**，不要猜。
+`npm` 在 POSIX 上就是一个可执行程序，`spawnSync('npm', args)` 不需要 shell。需要 shell 的只有 Windows 上的 `npm.cmd`；那里的正解是找到 `bin/npm-cli.js` 并用 `node` 跑它（`npm_execpath` → `node.exe` 旁边 → `PATH` 上启动器旁边，**两种布局都要试**，hosted tool cache 只中其中一种），找不到就**明确报错**，不要猜。
