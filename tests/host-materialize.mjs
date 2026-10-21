@@ -225,9 +225,17 @@ writeFileSync(join(home, 'src-copied-variant', 'preset.yml'), "name: 'Data mode�
 mkdirSync(join(home, 'src-third-party', 'plugin-data'), { recursive: true })
 writeFileSync(join(home, 'src-third-party', 'plugin-data', 'trajectory.bin'), 'opaque preset data\n', 'utf8')
 const registrations = []
+// #78's second half. The predicate that refuses `run_code` on a 9P root has its own unit test; the
+// mount at `src/index.ts:1058` had none, so a boot that stopped registering the guard kept every gate
+// green and left the user's `run_code` dying with a Win32 code. The guard is read here through the
+// host's own channel, at boot, because that is the only place the mount exists.
+const guards = []
+const NINE_P_ROOT = '\\\\wsl.localhost\\Ubuntu-24.04\\home\\u\\proj'
 const fakeCtx = {
   get: (key) => {
     if (key === 'webServer') return { register: (route) => { registrations.push(route); return () => {} } }
+    if (key === 'tools') return { guard: (fn) => { guards.push(fn); return () => {} } }
+    if (key === 'sandboxPolicy') return { resolve: () => ({ mode: 'workspace-write', workspaceRoot: NINE_P_ROOT }) }
     if (key === 'agentPresets') return {
       list: async () => Object.entries(sources).map(([id, source]) => ({ id, path: source.path })),
       read: async (id) => sources[id].text,
@@ -251,6 +259,15 @@ const assert = (condition, label) => {
 }
 
 assert(registrations.length === 1 && registrations[0].kind === 'exact' && registrations[0].path === '/wsl-workspace/api', 'route registered')
+// Read at boot, before anything else can register a guard: the plugin's answer for `run_code` has to be
+// reachable through the host's guard channel, and it has to say the sentence rather than let the worker
+// start and die.
+assert(guards.length === 1, `the boot installs exactly one tool guard (#78), got ${guards.length}`)
+{
+  const refusal = guards[0]?.({ name: 'run_code', arguments: {}, agent: { session: {} } })
+  assert(typeof refusal === 'string' && /GetNamedSecurityInfoW/.test(refusal),
+    `the mounted guard refuses run_code on a 9P root under workspace-write, got: ${JSON.stringify(refusal)}`)
+}
 
 // ── variants: generated asynchronously by the apply effect ─────────────────
 // Wait for the fire-and-forget generation to settle. It is not a fixed delay:

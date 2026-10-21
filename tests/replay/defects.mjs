@@ -387,12 +387,17 @@ export const UNITS = [
     // "is it not null" instead of "is there text". #99 needed both halves.
     plants: [
       {
+        // Both halves at once, because that is what #99 shipped as: the fold removed *and* the strip
+        // keyed on non-null. Planting only the fold turned out to be no defect at all — the truthiness
+        // check holds it, so the mutation has no observable effect, and an unobservable mutation is not
+        // a measurement. Stage 4's tri-state case is what showed this; the row says why.
         file: 'src/client/AddWslWorkspace.tsx',
-        find: '      setError(presetIssue ?? null)',
-        replace: '      setError(presetIssue as string | null)',
+        patch: before => before
+          .split('      setError(presetIssue ?? null)').join('      setError(presetIssue)')
+          .split('          {error ? (').join('          {error !== null ? ('),
         build: true,
         gates: [...FAST, 'node'],
-        note: 'the undefined/null fold is removed, so `undefined` reaches the state',
+        note: 'the pre-#99 pair: undefined reaches the state and the strip renders on non-null',
       },
       {
         file: 'src/client/AddWslWorkspace.tsx',

@@ -375,7 +375,10 @@ if (flag('--check') && existsSync(contractPath)) {
 }
 
 for (const gap of REGISTERED_GAPS) {
-  const still = collisions.some(hit => hit.tool === gap.tool && hit.rows.slice().sort().join(',') === gap.rows.slice().sort().join(','))
+  // "Still colliding" is about the tool, not the exact row pair: when the world grows a third row
+  // claiming `read_image`, the registered gap has not closed — it has got worse, and the unregistered
+  // check below is what reddens. Matching the pair here would tell the operator to delete the row.
+  const still = collisions.some(hit => hit.tool === gap.tool)
   console.log(`registered gap  ${gap.tool} (${gap.rows.join(' + ')}) #${gap.issue}: ${still ? 'still colliding' : 'NO LONGER COLLIDING — delete this row, it is the shape that lets a fixed gap outlive its ticket'}`)
   if (!still) {
     console.error('host-contract: a registered gap closed itself and nobody updated the table')

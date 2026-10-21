@@ -68,7 +68,7 @@ const flush = () => new Promise(resolve => setTimeout(resolve, 0))
  * @param scenario - mutable answers; a test changes them between passes.
  * @returns the mounted root, the rendered container, and the two ways a user acts (click, Escape).
  */
-function mount(scenario) {
+function mount(scenario, { wide = true } = {}) {
   const calls = []
   /** The params of one host call, for an answer that depends on them. */
   const paramsOf = init => (JSON.parse(init.body).params ?? {})
@@ -156,7 +156,7 @@ function mount(scenario) {
     calls,
     act,
     async render() {
-      await act(async () => { root.render(React.createElement(component, { wide: true, ...face })) })
+      await act(async () => { root.render(React.createElement(component, { wide, ...face })) })
       await act(flush)
     },
     async click(selector) {
@@ -384,6 +384,86 @@ test('Retry re-runs the open pass instead of only clearing the message', { timeo
       'and the values it fetched must be on screen',
     )
   } finally { client.unmount() }
+})
+
+test('the rail form renders the control a collapsed sidebar actually shows', { timeout: 10_000 }, async () => {
+  // #96 is why this case exists: the report was about the lone letter in the corner, and every case
+  // above mounts the wide form — the rail had never been rendered by a test, so a change to what it
+  // draws could not be noticed. The assertion is on the text the rail puts on screen and on the
+  // accessible name that has to carry the sentence the letter cannot.
+  const client = mount(healthy(), { wide: false })
+  try {
+    await client.render()
+    const rail = client.container.querySelector('.dww-action--rail')
+    assert.ok(rail !== null, 'the collapsed form must render the rail class')
+    assert.equal((rail.textContent ?? '').trim(), 'W', `the rail draws the letter and nothing else, got: ${rail.textContent}`)
+    assert.equal(rail.getAttribute('aria-label'), client.zh()['action.title'],
+      'the letter is decorative, so the accessible name has to say what the button is')
+    assert.ok(client.container.querySelector('.dww-card') === null, 'rendering the rail does not open the dialog')
+    await client.click('.dww-action--rail')
+    assert.ok(client.container.querySelector('.dww-card') !== null, 'and the rail control is the way in')
+  } finally { client.unmount() }
+})
+
+test('the preset answer is rendered by its text, whichever shape it arrives in', { timeout: 15_000 }, async () => {
+  // The #99 class in one table instead of one case per report. `checkPreset` may hand back a sentence,
+  // `undefined` (a healthy open, or a read from a replaced boot), `null` (a cleared state), or an empty
+  // string from a path that has no reason to give. Only a sentence may draw a strip; and a strip that
+  // draws must carry it. This is the row that makes "node exists" impossible to pass on.
+  const cases = [
+    { value: undefined, draws: false, label: 'undefined (a healthy open)' },
+    { value: null, draws: false, label: 'null (a cleared state)' },
+    { value: '', draws: false, label: "'' (a message with no text)" },
+    { value: 'wsl-code: Cannot find module js-yaml', draws: true, label: 'a sentence' },
+  ]
+  for (const testCase of cases) {
+    const client = mount(healthy())
+    try {
+      client.face.checkPreset = async () => testCase.value
+      await open(client)
+      const strip = client.container.querySelector('.dww-error')
+      if (!testCase.draws) {
+        assert.ok(strip === null, `${testCase.label} must draw no row, got: ${strip?.outerHTML ?? ''}`)
+        continue
+      }
+      assert.ok(strip !== null, `${testCase.label} must draw a row`)
+      assert.match(strip.textContent ?? '', /wsl-code/, `${testCase.label}: the row carries its own text`)
+      assert.notEqual((strip.textContent ?? '').trim(), '', `${testCase.label}: a drawn row is never empty`)
+    } finally { client.unmount() }
+  }
+})
+
+test('no reachable state draws an error row around nothing', { timeout: 20_000 }, async () => {
+  // The sweep across the states this gate can already build, in both forms. Per-state cases assert what
+  // a failure says; this one asserts the property that every state shares, so the next state added to
+  // the list inherits it instead of needing its own empty-row test.
+  const scenarios = {
+    'healthy install': healthy(),
+    'a refused distro list': healthy({ listDistros: 'refuse' }),
+    'a partial generation': healthy({
+      variantStatus: {
+        state: 'partial', produced: 5, sources: 6, generation: 3, at: 1, truncated: 0,
+        failed: [{ id: 'wsl-code', source: 'modes/code/agent-preset.yaml', reason: 'boom' }],
+      },
+      presets: 'none',
+    }),
+  }
+  for (const [label, scenario] of Object.entries(scenarios)) {
+    for (const wide of [true, false]) {
+      const client = mount(scenario, { wide })
+      try {
+        await open(client)
+        const strips = [...client.container.querySelectorAll('.dww-error')]
+        for (const strip of strips) {
+          assert.notEqual((strip.textContent ?? '').trim(), '',
+            `${label} in the ${wide ? 'wide' : 'rail'} form drew an empty row: ${strip.outerHTML}`)
+        }
+        if (label === 'a partial generation') {
+          assert.ok(strips.length >= 1, `${label}: the failure state must draw its row in both forms`)
+        }
+      } finally { client.unmount() }
+    }
+  }
 })
 
 test.after(() => { dom.window.close() })
