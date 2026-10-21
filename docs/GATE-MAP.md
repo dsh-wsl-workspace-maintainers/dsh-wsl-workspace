@@ -15,7 +15,7 @@
 | D 真机现形（发行版、9P、ConPTY） | `test:session` `test:win32` `test:wsl` 的 `*-real` 驱动 `test:seams` 的三台探针 | windows-latest，WSL1/WSL2 × src/lib 两平面 |
 | 卫生（已回本，不算覆盖） | `verify` `verify:lib-sync` `verify:artifact` `verify:plane` `test:matrix` `lint:portability` `script-reachability` `check-unit-closure` | ubuntu |
 
-体积基线：见 `ci/apparatus-size.json`（当前 **2.03 倍**，含前十重文件的逐行读数）。数字只记在那份记录里，这张表不抄第二遍；红线见文末。
+体积基线：见 `ci/apparatus-size.json`（当前 **2.02 倍**，含前十重文件的逐行读数）。数字只记在那份记录里，这张表不抄第二遍；红线见文末。
 
 ## 明细：逐道闸
 
@@ -48,6 +48,17 @@
 3. 类别是 D（真机）时，取 `wsl-gate-logs-wsl1` / `-wsl2` 或 `compat-*` artifact 里的原帧，别在本地复现前先归因给产品。
 4. 只有"正确性缺口"才阻塞合并；"只是没人看过"是待办，不是红灯理由。
 
+## 发布前必须做的两件事
+
+1. `npm run release:readings` —— 它跑一次重放基准（约 5 分钟，改写工作树，所以**不在**日常 CI 里）并把两项读数写进 `ci/release-readings.json`：命中率 `X of 20` 与契约闸看到的名字/世界/冲突数。
+2. 打 tag。`release.yml` 在 Trusted Publishing 之前跑 `npm run test:readings`：没有这一版读数、或读数不是按当前这把尺子取的（`tableSha` 变了）、或契约现读数和记录不符，发布就红。**没跑过重放就发不出去**，这是"每次发布报两项读数"的实现方式，不靠人记得。
+
+## 本轮瘦身实测过的两处"看着冗余"，结论是不动
+
+- `tests/support/` 的五枚探针：改名了，一枚都没退役。每一枚持有离线重放拿不到的现场读数（真宿主 boot、realm 边界、Windows ACL 链）。
+- `scripts/compatibility/`：目录总共 2,959 行，重复的 fixture-root 与清理只出现在 4 个文件（`WSL_COMPAT_ROOT` 4 次、`mkdtempSync` 6 次、`rmSync` 6 次），能抽掉的上限约 150 行；为此新增一个 builder 文件是把复杂度从"重复"换成"间接"，不划算。
+- `tests/parity/derive.mjs`：删掉的 218 行是**两边都证明不承重**的死推导（既无文件 import，也无文件内调用）：`offeredJobChannels`、`hostMentions`、`declaredInject`、`bareContextReads`、`CORDIS_API`。剩下的不是模板机器，是逐条 claim 的读取器——把它们换成硬编码结论就等于把"派生"退回"抄写"，那正是 #101 的 B 类缺陷。
+
 ## 红线：装置体积
 
-装置体积不得超过产品代码的 **2 倍**，且新增一道闸必须先有等量旧装置退役。`npm run test:apparatus-size` 在比值越线时红灯，并把当前比值与最重的十个文件打出来——**当前基线 2.03 倍**，即此刻起任何净增都必须先还体积；每减一处，余量就还给后来的闸。
+装置体积不得超过产品代码的 **2 倍**，且新增一道闸必须先有等量旧装置退役。`npm run test:apparatus-size` 在比值越线时红灯，并把当前比值与最重的十个文件打出来——**当前基线 2.02 倍**（本轮从 2.03 降下来：删掉的比新增的多，余量就还给后来的闸），即此刻起任何净增都必须先还体积；每减一处，余量就还给后来的闸。

@@ -2,9 +2,9 @@
   "note": "the size red line, written by `npm run test:apparatus-size -- --record`. Apparatus (`tests/` + `scripts/`) may not exceed `limitRatio` times `src/`; a new gate is paid for by retiring existing weight.",
   "recorded": "2026-10-21",
   "srcLines": 12606,
-  "apparatusLines": 25609,
-  "ratio": 2.03,
-  "limitRatio": 2.03,
+  "apparatusLines": 25416,
+  "ratio": 2.02,
+  "limitRatio": 2.02,
   "heaviest": [
     {
       "file": "scripts/compatibility/bash-session-real.mjs",
@@ -15,12 +15,8 @@
       "lines": 852
     },
     {
-      "file": "tests/support/w54-isolate-probe.mjs",
+      "file": "tests/support/realm-probe.mjs",
       "lines": 800
-    },
-    {
-      "file": "tests/parity/derive.mjs",
-      "lines": 721
     },
     {
       "file": "tests/variants.test.ts",
@@ -45,6 +41,10 @@
     {
       "file": "tests/route-envelope.mjs",
       "lines": 539
+    },
+    {
+      "file": "tests/parity/claims.mjs",
+      "lines": 518
     }
   ]
 }
