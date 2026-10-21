@@ -44,14 +44,14 @@ const SUITES = [
   // nobody runs is not a check: #54 and #78 sat for days with their cause already known and no gate
   // that could re-observe it. Both arms are required — a probe that only ever shows the red is exactly
   // the "instrument reporting its own absence" failure these files exist to prevent.
-  ['w54-isolate-probe (read_image: answers in a root-realm world, throws in the generated isolate world, mutation removes the token)',
-    ['--experimental-strip-types', 'tests/support/w54-isolate-probe.mjs']],
-  ['w78-confine-probe (run_code resolves the host ACL runner at the root realm; our no-op answers only inside wsl-world)',
-    ['--experimental-strip-types', 'tests/support/w78-confine-probe.mjs']],
+  ['realm-probe (read_image: answers in a root-realm world, throws in the generated isolate world, mutation removes the token)',
+    ['--experimental-strip-types', 'tests/support/realm-probe.mjs']],
+  ['confine-probe (run_code resolves the host ACL runner at the root realm; our no-op answers only inside wsl-world)',
+    ['--experimental-strip-types', 'tests/support/confine-probe.mjs']],
   // The five pairs #92's host bump derived and nobody had executed. They stay rows in
   // `docs/CONSUMER-COVERAGE.md` only as long as a probe calls them, so this is the arm that pays the ratchet.
-  ['w92-rc2-consumers (the five new consumers of 0.2.1-rc.2, mounted and called: working-directory, workspace-changes, tool-terminal, worktree at both mount levels)',
-    ['--experimental-strip-types', 'tests/support/w92-rc2-consumers.mjs']],
+  ['rc2-consumers (the five new consumers of 0.2.1-rc.2, mounted and called: working-directory, workspace-changes, tool-terminal, worktree at both mount levels)',
+    ['--experimental-strip-types', 'tests/support/rc2-consumers.mjs']],
 ]
 
 const legacy = process.argv.includes('--legacy')

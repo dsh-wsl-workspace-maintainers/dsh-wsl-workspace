@@ -18,7 +18,7 @@
 //
 // What it does NOT claim: it does not boot anything, so it cannot tell you a service answers correctly,
 // only that a name is declared where we ask for it and that no two rows in one world claim the same
-// tool. `tests/support/w54-isolate-probe.mjs` and `g5-session-probe.mjs` remain the devices for behaviour.
+// tool. `tests/support/realm-probe.mjs` and `g5-session-probe.mjs` remain the devices for behaviour.
 //
 // Floors, because an empty scan reads as a pass: every package we scan must yield at least one name,
 // every world must yield at least one row, and `--self-test` plants a collision we know is one.

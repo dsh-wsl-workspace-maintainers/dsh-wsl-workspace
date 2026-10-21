@@ -15,7 +15,7 @@
  *
  * The scan covers the suites `scripts/run-seams.mjs` actually runs, derived from that file rather than
  * listed here, so a probe added to the gate is covered the day it is wired in and a probe removed from it
- * stops being checked. `w51-probe` and `w51-command-census` are older manual probes that still mount rows by
+ * stops being checked. `host-probe` and `command-census` are older manual probes that still mount rows by
  * name; they are out of scope until they join the gate, and this test says so by not naming them.
  *
  * The checker carries its own positive control: a scan that can only ever say "clean" is the failure mode
@@ -23,17 +23,30 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, readdirSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const RUN_SEAMS = join(repoRoot, 'scripts', 'run-seams.mjs')
 
-/** Probe files the seam gate runs, read out of the runner itself. */
+/**
+ * Probe files the seam gate runs, read out of the manifests that run them.
+ *
+ * A probe is an **entry point `run-seams` actually runs**, not a file whose name carries an issue number.
+ * The previous pattern matched `w[\w-]+\.mjs` only, so the moment a probe was renamed to say what it
+ * measures instead of what ticket produced it, this scan looked at nothing and still printed "clean" —
+ * the exact vacuous green the floor below exists to catch. The governed set is unchanged: the suites the
+ * seam runner names. Shared helpers are imported, and `*.test.mjs` files are their own gate, so neither
+ * appears there.
+ */
 function gatedProbes () {
   const runner = readFileSync(RUN_SEAMS, 'utf8')
-  const names = [...new Set([...runner.matchAll(/tests\/support\/(w[\w-]+\.mjs)/g)].map(match => match[1]))]
+  const names = [...new Set(
+    [...runner.matchAll(/tests\/support\/([\w.-]+\.mjs)/g)]
+      .map(match => match[1])
+      .filter(name => !name.endsWith('.test.mjs')),
+  )]
   return names.map(name => ({ name, path: join(repoRoot, 'tests', 'support', name) }))
 }
 
@@ -50,6 +63,16 @@ const RULES = [
     hook: /^ {6}name: ['"]@deepseek-ai\//m,
   },
 ]
+
+test('a probe is named for what it measures, not for the ticket that produced it', () => {
+  // Stage 1 of the slimming round: `w51-…`, `w54-…`, `w78-…`, `w92-…` were file names that told a
+  // reader nothing unless they opened a tracker, and the enumeration rule above had grown to depend
+  // on that prefix — so the archaeology was load-bearing. The issue stays where it belongs: in the
+  // file's own header and in `docs/CHECK-CATALOG.md`.
+  const offenders = readdirSync(join(repoRoot, 'tests', 'support'))
+    .filter(name => /^w\d+-/.test(name))
+  assert.deepEqual(offenders, [], `tests/support carries issue-numbered file names: ${offenders.join(', ')}`)
+})
 
 test('the gate actually names probes, so a clean scan means something', () => {
   const probes = gatedProbes()

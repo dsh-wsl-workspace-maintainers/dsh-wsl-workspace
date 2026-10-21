@@ -31,7 +31,7 @@
  * rc 1, and the file was restored byte-for-byte afterwards). That last pair is the whole point: the
  * two shapes are distinguishable from the report alone, without reading the code.
  *
- *   node tests/support/w51-probe.mjs
+ *   node tests/support/host-probe.mjs
  */
 
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'

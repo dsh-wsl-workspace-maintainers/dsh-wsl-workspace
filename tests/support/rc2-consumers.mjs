@@ -1,6 +1,6 @@
 // The rc.2 consumers, called for real.
 //
-//   node --experimental-strip-types tests/support/w92-rc2-consumers.mjs
+//   node --experimental-strip-types tests/support/rc2-consumers.mjs
 //
 // #92 pinned the host at 0.2.1-rc.2 and the consumer-coverage gate derived five pairs we had never
 // carried. The rows said "our worlds do not mount this package" — the distinction this ledger exists to
@@ -74,7 +74,7 @@ function report () {
 }
 
 if (process.platform !== 'win32') {
-  console.error('SKIP: w92-rc2-consumers — the realm question is about `\\\\wsl.localhost\\…` spellings and the Windows fs provider; the ubuntu runner cannot answer it')
+  console.error('SKIP: rc2-consumers — the realm question is about `\\\\wsl.localhost\\…` spellings and the Windows fs provider; the ubuntu runner cannot answer it')
   console.log('W92-RC2-CONSUMERS PASSED (1 skipped — a skip is not a pass)')
   process.exit(0)
 }

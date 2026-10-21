@@ -49,10 +49,10 @@ const LEDGER = join(repoRoot, 'docs', 'CONSUMER-COVERAGE.md')
 /**
  * Rows that are not `已调用` as of 2026-10-20: 41 of 48. The seven covered pairs are `shell` x
  * `dsh-tool-bash` (`scripts/compatibility/bash-parity-real.mjs`), `fs` x `dsh-tool-fs`
- * (`tests/support/w54-isolate-probe.mjs`, the #54 arms), and all five pairs the 0.2.1-rc.2 bump
+ * (`tests/support/realm-probe.mjs`, the #54 arms), and all five pairs the 0.2.1-rc.2 bump
  * derived (`fs` x `dsh-experimental-worktree`, `fs` x `dsh-working-directory`, `fs` x
  * `dsh-workspace-changes`, `sandbox` x `dsh-experimental-worktree`, `terminals` x
- * `dsh-tool-terminal`), each answered by a call in `tests/support/w92-rc2-consumers.mjs`. The last one
+ * `dsh-tool-terminal`), each answered by a call in `tests/support/rc2-consumers.mjs`. The last one
  * needs its emitter (`dsh-tool-fs`) to load, which needs the peer `@deepseek-ai/dsh-attachment` that npm
  * skips under `legacy-peer-deps`; pinning that peer unmasked a real type mismatch in
  * `src/host/wsl-image-tool.ts` (the gate read 209 -> 210), so the mismatch was fixed first and the pin

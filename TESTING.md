@@ -239,7 +239,7 @@ What it found, and what the finding was judged against. **The standard is native
 | `alias …; zzz` on one line | `not found`, exit 127; the next call gets `ALIAS_OK` | `printf "alias zzz=…; zzz\n" \| bash -i` → the same `not found`, and the two-line form → `YYY_OK` | **native parity — not a bug**, and a census row now pins it |
 | `du -sh /mnt/c/Users` | hit the deadline the *model* asked for (600 000 ms, the tool's ceiling) with `ls`'s output kept and the reading printed (`du:D+ w=0`, not a keyboard wait) | in a plain `bash -lc` with no plugin layer in sight, still running at **9 min 23 s** and in process state `D` (uninterruptible) when the measurement was stopped; the harness's own `timeout 1500` would have bounded it at 25 min | **native parity — not ours to optimize** |
 
-What moved into the machine-run surface because of the pass: `scripts/compatibility/bash-session-real.mjs` gained five cells (the three shell-ending shapes, the call that follows them, and a deadline reached mid-command keeping the bytes it already printed), and `tests/support/w51-command-census.mjs` gained the rows above. Nothing in them asserts how long real work takes — only what the answer must contain when the deadline the caller chose arrives.
+What moved into the machine-run surface because of the pass: `scripts/compatibility/bash-session-real.mjs` gained five cells (the three shell-ending shapes, the call that follows them, and a deadline reached mid-command keeping the bytes it already printed), and `tests/support/command-census.mjs` gained the rows above. Nothing in them asserts how long real work takes — only what the answer must contain when the deadline the caller chose arrives.
 
 ## Release checklist
 

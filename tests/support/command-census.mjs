@@ -25,7 +25,7 @@
  * a tool": a missing binary is reported as `skipped`, never as a pass, so a green run is never a
  * machine that quietly had nothing installed.
  *
- * @module tests/support/w51-command-census.mjs
+ * @module tests/support/command-census.mjs
  */
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'

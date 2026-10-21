@@ -12,7 +12,7 @@
  * which means it can be read off a real host boot.
  *
  * What this probe does, in ONE real host profile boot (`runProfile`, the only harness that boots a
- * real host profile — see `tests/support/w51-probe.mjs`):
+ * real host profile — see `tests/support/host-probe.mjs`):
  *
  *   · mounts the host's own sandbox armature with the row names the shipped roster uses
  *     (`@deepseek-ai/dsh-base/cordis.patch.yml:226-230` provides `sandbox` and `sandbox-policy`,
@@ -38,9 +38,9 @@
  * branch — the only branch in this plugin that can reach `wsl.exe` — runs only when a preset roster
  * service is present (`src/index.ts:1050`), and row 1 asserts that it was not.
  *
- *   node tests/support/w78-confine-probe.mjs
+ *   node tests/support/confine-probe.mjs
  *
- * @module tests/support/w78-confine-probe
+ * @module tests/support/confine-probe
  */
 
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
@@ -63,7 +63,7 @@ const host = (name, file = 'lib/index.js') => hostFile(name, file === 'lib/index
 const at = canonicalUrl
 const hostModule = (m) => m.default ?? m
 
-/** A promise that is not allowed to hang the gate (the `tests/support/w51-probe.mjs` pattern). */
+/** A promise that is not allowed to hang the gate (the `tests/support/host-probe.mjs` pattern). */
 const within = (promise, ms, label) => {
   let timer
   const budget = new Promise((_, reject) => {
@@ -88,7 +88,7 @@ if (process.platform !== 'win32') {
   // vocabulary this repository's seam ledger reads. Exiting non-zero with no line to register used to
   // look like a pass to `run-seams` (frame 38350052793 was green over exactly that); a `SKIP:` is
   // counted and reported, which is the difference between "not measured here" and "not measured".
-  console.error(`SKIP: w78-confine-probe — platform cannot answer it here (${process.platform} has no `
+  console.error(`SKIP: confine-probe — platform cannot answer it here (${process.platform} has no `
     + 'Windows ACL runner, no `SetNamedSecurityInfoW` chain, and no `\\\\wsl.localhost\\…` spelling to feed it)')
   console.log('W78-CONFINE-PROBE PASSED (1 skipped — a skip is not a pass): the #78 ownership reading is a win32 measurement')
   process.exit(0)
@@ -98,9 +98,9 @@ if (process.platform !== 'win32') {
 // writes into, and the overlay are artifacts of a measurement, not files anybody should find in `lib/`.
 // It is `node:os`'s temp dir rather than a Windows literal because the ubuntu runner has no `D:` — a
 // literal there is not an error, it is a directory named `D:` created inside the checkout.
-const scratchRoot = process.env.W78_SCRATCH_DIR ?? join(tmpdir(), 'dsh-w78-confine-probe')
+const scratchRoot = process.env.W78_SCRATCH_DIR ?? join(tmpdir(), 'dsh-confine-probe')
 mkdirSync(scratchRoot, { recursive: true })
-const scratch = mkdtempSync(join(scratchRoot, 'w78-confine-probe-'))
+const scratch = mkdtempSync(join(scratchRoot, 'confine-probe-'))
 
 // A ref'd watchdog: every await below is bounded by an unref'd timer, which is exactly what lets the
 // loop drain while a promise is still pending — and a drained loop exits 0 silently. That is a probe
@@ -368,10 +368,10 @@ try {
   const arms = []
   for (const arm of [
     ['agentless (no sessionId)', { mode: 'workspace-write', workspaceRoot: UNC_ROOT }],
-    ['session (sessionId set)', { mode: 'workspace-write', workspaceRoot: UNC_ROOT, sessionId: 'w78-confine-probe' }],
-    ['read-only', { mode: 'read-only', workspaceRoot: UNC_ROOT, sessionId: 'w78-confine-probe-ro' }],
+    ['session (sessionId set)', { mode: 'workspace-write', workspaceRoot: UNC_ROOT, sessionId: 'confine-probe' }],
+    ['read-only', { mode: 'read-only', workspaceRoot: UNC_ROOT, sessionId: 'confine-probe-ro' }],
     ['session on a plain Windows root (control)', {
-      mode: 'workspace-write', workspaceRoot: process.env.SystemRoot ?? 'C:\\Windows', sessionId: 'w78-confine-probe-plain',
+      mode: 'workspace-write', workspaceRoot: process.env.SystemRoot ?? 'C:\\Windows', sessionId: 'confine-probe-plain',
     }],
   ]) {
     const [label, policy] = arm

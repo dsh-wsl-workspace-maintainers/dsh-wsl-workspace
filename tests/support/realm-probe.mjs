@@ -67,7 +67,7 @@
  *     ("session probe skipped, no subprocess service to probe with; mounted unverified") — the line is
  *     captured and printed in row 1 rather than assumed.
  *
- *   node tests/support/w54-isolate-probe.mjs
+ *   node tests/support/realm-probe.mjs
  */
 
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
@@ -81,7 +81,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 // Outside the worktree on every platform. A Windows path literal would not fail loudly on the ubuntu
 // runner — `mkdirSync('D:/Temp/…', { recursive: true })` happily creates a directory named `D:` inside
 // the checkout, which is the one thing this file's own comment promises will not happen.
-const SCRATCH = process.env.W54_SCRATCH_DIR ?? join(tmpdir(), 'dsh-w54-isolate-probe')
+const SCRATCH = process.env.W54_SCRATCH_DIR ?? join(tmpdir(), 'dsh-realm-probe')
 const REALM_ERROR = 'cannot get property "fs" without inject'
 const PNG_BYTES = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
@@ -89,7 +89,7 @@ const PNG_BYTES = Buffer.from(
 )
 
 /**
- * A promise that is not allowed to hang the gate (same discipline as `w51-probe.mjs`: the race bounds the
+ * A promise that is not allowed to hang the gate (same discipline as `host-probe.mjs`: the race bounds the
  * wait, the timer is unref'd so it is never the reason the process stays alive, and the probe still
  * exits explicitly at the end).
  * @param promise - the work to bound.
@@ -157,7 +157,7 @@ function ensureScratchClosure () {
   const scope = join(nm, '@deepseek-ai')
   // The shadow is rebuilt on every run. It used to be filled in-place — every link and copy below is
   // guarded by `existsSync` — so on 2026-10-19 the host bump left the *previous* release's copies sitting
-  // in `D:/Temp/dsh-w54-isolate-probe/w54-shadow`, and the boot reported four rows as
+  // in `D:/Temp/dsh-realm-probe/w54-shadow`, and the boot reported four rows as
   // `disabling profile plugin row "tool-fs": Plugin @deepseek-ai/dsh-tool-fs@0.2.0-rc.2 is incompatible
   // with dsh 0.2.1-rc.2` before dying with `Cannot read properties of undefined (reading 'get')`. A cache
   // that outlives the release it was built for does not measure that release; it measures the old one and
@@ -402,7 +402,7 @@ try {
   const execution = (() => {
     // A session the host can actually read: 0.2.1-rc.2's tool-fs walks the real session API and died on
     // `session.snapshotEvents is not a function` with the previous hand-forged literal (measured 2026-10-19,
-    // the same trap `w92-rc2-consumers` records for `workingDirectory.ensure`). `Session.create` is the host's
+    // the same trap `rc2-consumers` records for `workingDirectory.ensure`). `Session.create` is the host's
     // own detached constructor — no store, no disk — with exactly one method pinned: the image-route gate
     // reads `session.requestHeader().config`, and a fresh session has no `request/header` event to fold yet.
     const build = () => {
@@ -443,7 +443,7 @@ try {
       async resolveModel (provider, model) {
         return { provider, id: model, name: model, inputModalities: ['text', 'image'], context: { contextWindow: 128_000 } }
       },
-      async prepareCall () { throw new Error('w54-isolate-probe never streams a completion') },
+      async prepareCall () { throw new Error('realm-probe never streams a completion') },
       async * stream () {},
     })
     return llm.resolveModelInfo(route.provider, route.model, undefined)
@@ -774,7 +774,7 @@ try {
 } catch (error) {
   if (error?.code === 'E_CLOSURE_INCOMPLETE') {
     // Not measured **here**, said in the vocabulary the seam ledger counts, and not a pass.
-    console.error(`SKIP: w54-isolate-probe — the pinned closure cannot load the fs tool suite (${outOf(error).slice(0, 300)})`)
+    console.error(`SKIP: realm-probe — the pinned closure cannot load the fs tool suite (${outOf(error).slice(0, 300)})`)
     console.log(`W54-ISOLATE-PROBE PASSED (1 skipped — a skip is not a pass): #54's arms need @deepseek-ai/dsh-attachment, which is not in ci/pinned-deps.json`)
     process.exit(0)
   }
