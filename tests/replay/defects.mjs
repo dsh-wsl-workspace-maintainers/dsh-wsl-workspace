@@ -16,6 +16,25 @@
 //
 // `MEASURED` lines are readings, written by `node tests/replay/run.mjs` runs, not expectations. When a
 // reading goes stale the row below it is what needs re-running.
+//
+// MEASURED 2026-10-21, head 89e3162, Windows + pinned closure, 337 s:
+//
+//   replay: 18 of 20 caught — class-wide devices (strict): 5
+//
+//   Strict (a device that never saw this issue caught it): #20 client, #89 install, #12 win32,
+//     #25 win32, #50 node+unit.
+//   Half-misses, both named in the unit's own plants:
+//     #78 — the guard's predicate reddens, but `applyRunCodeGuard(ctx)` un-mounted reddens nothing:
+//       the mount itself has no lock.
+//     #99 — the render condition reddens, but dropping the `presetIssue ?? null` fold reddens nothing:
+//       only the truthiness check is holding the empty strip up.
+//   Extras: #95 caught (verify:lib-sync, generic — a stale bundle is a pipeline fact, not a case);
+//     #96 MISS (no test ever renders the rail shape, so nothing compares the glyph);
+//     #105 MISS (gates compare row **ids** and row counts, never the tool-name set the host rejects).
+//
+// What this number is not: it is not #101's 0 of 20. That measured the suite of the time; G1–G5 and the
+// per-issue regression locks landed after it, and 13 of these 18 are caught by a lock written for that
+// exact issue. The reading that answers "would the next one be caught" is the strict one, and it is 5.
 
 /** The six fast per-commit gates, in run order; a unit may add planes or override the list. */
 const FAST = ['unit', 'world', 'artifacts', 'install', 'client', 'docs']

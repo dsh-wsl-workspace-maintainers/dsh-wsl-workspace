@@ -90,9 +90,31 @@ function catchSource(issue, output) {
   return looked ? 'generic' : 'unknown'
 }
 
-/** @returns the last non-empty lines of a gate's output, for the row's detail. */
-function tail(output, count = 3) {
-  return output.trim().split('\n').filter(line => line.trim() !== '').slice(-count).join(' | ').slice(0, 220)
+/**
+ * Name the check that reddened.
+ *
+ * The reading has to say *which* assertion noticed the plant, not that a gate exited non-zero — a row
+ * that ends "test:unit failed" cannot be compared against the next run, and cannot be checked for the
+ * one thing that matters here: whether the catcher knows the class or only the case. `node --test`
+ * prints `✖ <name>`, the plain-assert suites print their `AssertionError` message.
+ * @param output - the red gate's own stdout+stderr.
+ * @returns up to two failing check names, or the last lines of output when nothing matched.
+ */
+function summarise(output) {
+  const names = []
+  for (const match of output.matchAll(/^\s*(?:✖|not ok \d+ -)\s+(.+?)(?:\s*\(\d+[^)]*\))?\s*$/gm)) {
+    const name = match[1].trim()
+    if (!names.includes(name)) names.push(name)
+    if (names.length === 2) break
+  }
+  if (names.length === 0) {
+    for (const match of output.matchAll(/(?:AssertionError|Error): ([^\n]{10,160})/g)) {
+      names.push(match[1].trim())
+      break
+    }
+  }
+  if (names.length > 0) return names.join(' / ').slice(0, 200)
+  return output.trim().split('\n').filter(line => line.trim() !== '').slice(-2).join(' | ').slice(0, 200)
 }
 
 const opts = options(process.argv.slice(2))
@@ -142,7 +164,7 @@ for (const unit of units) {
             verdict: 'caught',
             detail: `${gate}: ${plantSpec.note}`,
             source: gate === 'build' ? 'build' : catchSource(unit.issue, output),
-            tail: tail(output),
+            caughtAs: summarise(output),
           })
     } catch (error) {
       results.push({ verdict: 'ERROR', detail: String(error?.message ?? error) })
@@ -166,7 +188,7 @@ for (const unit of units) {
   })
   const label = verdict === 'caught' ? (rows.at(-1).strict ? 'OK  ' : 'ok  ') : verdict === 'INVALID' ? 'BAD ' : 'MISS'
   console.log(`${label} ${unit.id.padEnd(28)} #${String(unit.issue).padEnd(4)} ${verdict.padEnd(7)} ${caught.map(row => `${row.detail}${row.source === undefined ? '' : ` [${row.source}]`}`).join(' ; ') || missed.map(row => row.detail).join(' ; ') || invalid.map(row => row.detail).join(' ; ')}`)
-  for (const row of results) if (row.tail !== undefined && row.tail !== '') console.log(`       ↳ ${row.tail}`)
+  for (const row of results) if (row.caughtAs !== undefined) console.log(`       ↳ ${row.caughtAs}`)
 }
 
 const canonical = rows.filter(row => row.canonical)
