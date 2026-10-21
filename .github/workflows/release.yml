@@ -17,7 +17,9 @@ on:
         required: false
 
 permissions:
-  contents: read
+  # `contents: write` is for the Release object only — the package itself goes out through OIDC, and the
+  # workflow never touches a package token.
+  contents: write
   id-token: write
 
 concurrency:
@@ -71,3 +73,34 @@ jobs:
         # No NODE_AUTH_TOKEN: npm exchanges the workflow's OIDC identity for a short-lived publish grant,
         # and `--provenance` records which commit and workflow produced these bytes.
         run: npm publish --registry=https://registry.npmjs.org --access public --provenance
+
+      - name: publish the GitHub Release
+        # The tag and the npm version used to move while the Releases page stayed behind — measured
+        # 2026-10-21: `latest` on npm was 0.7.9 and the newest Release was 0.7.8, because nothing ever
+        # created one. A release is two records (the registry's and the repository's), so the job that
+        # publishes one now publishes the other from the same tag, with the CHANGELOG section as its notes.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          VERSION="$(node -p "require('./package.json').version")"
+          TAG="v$VERSION"
+          # The section for this version, from its heading to the next one. Empty is allowed: `gh` then falls
+          # back to the generated notes, and a Release with the commit list is still better than none.
+          node - "${VERSION}" <<'JS' > /tmp/release-notes.md
+          const fs = require('node:fs')
+          const version = process.argv[2]
+          const text = fs.readFileSync('CHANGELOG.md', 'utf8')
+          const heading = new RegExp('^## ' + version.replaceAll('.', '\\.') + ' — ', 'm')
+          const start = text.search(heading)
+          if (start === -1) { process.stdout.write(''); process.exit(0) }
+          const rest = text.slice(start)
+          const next = rest.slice(1).search(/^## /m)
+          process.stdout.write(next === -1 ? rest : rest.slice(0, next + 1))
+          JS
+          if [ -s /tmp/release-notes.md ]; then
+            gh release create "$TAG" --title "$TAG — $(sed -n '1s/^## [^ ]* — //p' /tmp/release-notes.md | head -1)" --notes-file /tmp/release-notes.md --verify-tag || \
+            gh release edit "$TAG" --notes-file /tmp/release-notes.md
+          else
+            gh release create "$TAG" --generate-notes --verify-tag || gh release edit "$TAG" --generate-notes
+          fi
