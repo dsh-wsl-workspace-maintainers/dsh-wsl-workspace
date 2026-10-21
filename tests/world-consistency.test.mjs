@@ -48,11 +48,10 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 // green on a maintainer machine and red on the runner, which is not a measurement).
 const home = mkdtempSync(join(tmpdir(), 'dsh-world-'))
 process.env.DSH_HOME = home
-const DRIVE_CWD = 'F:\\TechEnergy\\Code\\Scanner'
-const DRIVE_DISTRO = 'Ubuntu-G1'
-writeFileSync(join(home, 'wsl-workspaces.json'), JSON.stringify({
-  'f:\\techenergy\\code\\scanner': { distro: DRIVE_DISTRO, username: 'g1user' },
-}))
+// The shape list lives in one file (`tests/replay/shapes.mjs`) because two consumers have to agree on
+// it: this table, and the shortest-chain smoke driver that walks the same rows against a real share.
+const { DRIVE_CWD, DRIVE_DISTRO, PROVIDERS, WORKSPACE_SHAPES, workspaceStoreEntries } = await import('./replay/shapes.mjs')
+writeFileSync(join(home, 'wsl-workspaces.json'), JSON.stringify(workspaceStoreEntries()))
 
 const { resolveTarget } = await import('../src/host/wsl-search.ts')
 const { buildSessionSpec, PROBE_CONFIG } = await import('../src/host/wsl-bash-tool.ts')
@@ -149,59 +148,9 @@ const normalisePath = path => path.replaceAll('\\', '/').toLowerCase()
  * `sessionEnv` is the `DSH_WSL_DISTRO` a real session carries for that workspace shape (`src/index.ts`
  * contributes it for both UNC and drive cwds), and `configured` is the world's own `distro` setting.
  */
-const SHAPES = [
-  {
-    id: 'wsl-unc',
-    cwd: '\\\\wsl.localhost\\Ubuntu-24.04\\home\\u\\proj',
-    sessionEnv: { DSH_WSL_DISTRO: 'Ubuntu-24.04' },
-    world: { distro: 'Ubuntu-24.04', linuxCwd: '/home/u/proj' },
-    expect: { search: 'world', bash: 'world', terminal: 'world', skills: 'world' },
-  },
-  {
-    id: 'linux-absolute',
-    cwd: '/home/u/proj',
-    configured: 'Ubuntu-24.04',
-    sessionEnv: { DSH_WSL_DISTRO: 'Ubuntu-24.04' },
-    world: { distro: 'Ubuntu-24.04', linuxCwd: '/home/u/proj' },
-    // Two different contracts, both honest. Search and bash answer a *tool argument* and can serve a
-    // bare Linux path from the configured distribution; the keyboard door takes a *session path* that
-    // a Windows process has to start in, so a Linux session cwd has nothing to translate through and
-    // it refuses out loud. No workspace shape produces a bare Linux cwd — the dialog registers a UNC
-    // path or a drive path and nothing else — so the refusal is a contract, not a hole.
-    // `skills` is the same: UNC-only, and recorded rather than assumed.
-    expect: { search: 'world', bash: 'world', terminal: 'refused', skills: 'quiet' },
-  },
-  {
-    id: 'linux-mnt',
-    cwd: '/mnt/f/proj',
-    configured: 'Ubuntu-24.04',
-    sessionEnv: { DSH_WSL_DISTRO: 'Ubuntu-24.04' },
-    world: { distro: 'Ubuntu-24.04', linuxCwd: '/mnt/f/proj' },
-    expect: { search: 'world', bash: 'world', terminal: 'refused', skills: 'quiet' },
-  },
-  {
-    id: 'drive-workspace',
-    cwd: DRIVE_CWD,
-    sessionEnv: { DSH_WSL_DISTRO: DRIVE_DISTRO },
-    world: { distro: DRIVE_DISTRO, linuxCwd: '/mnt/f/TechEnergy/Code/Scanner' },
-    // #86's shape: the one where six providers had a branch and the seventh did not.
-    expect: { search: 'world', bash: 'world', terminal: 'world', skills: 'world' },
-  },
-  {
-    id: 'relative',
-    cwd: 'proj/src',
-    sessionEnv: {},
-    world: undefined,
-    expect: { search: 'refused', bash: 'refused', terminal: 'refused', skills: 'quiet' },
-  },
-  {
-    id: 'absent',
-    cwd: undefined,
-    sessionEnv: {},
-    world: undefined,
-    expect: { search: 'refused', bash: 'refused', terminal: 'refused', skills: 'quiet' },
-  },
-]
+// The table itself is in `tests/replay/shapes.mjs`; `world` is what every provider that serves the
+// shape must derive, and `expect` names, per provider, whether this shape is its business.
+const SHAPES = WORKSPACE_SHAPES
 
 /**
  * Cells that disagree with the table today, with the reason and the owner.
@@ -218,8 +167,7 @@ const REGISTERED_GAPS = new Map([
 
 
 
-/** The providers the table drives, in the order a failure is reported. */
-const PROVIDERS = ['search', 'bash', 'terminal', 'skills']
+
 
 /** Run one cell against one provider, with that shape's env in place. */
 async function run(shape, provider) {
@@ -328,8 +276,14 @@ test('the drive registration the session env reads is the one the store holds', 
   // the session carried no distro at all — and `resolveDistro` would silently fall back to the
   // registry default.
   const stored = JSON.parse(readFileSync(join(home, 'wsl-workspaces.json'), 'utf8'))
-  assert.deepEqual(Object.keys(stored), ['f:\\techenergy\\code\\scanner'])
-  assert.equal(stored['f:\\techenergy\\code\\scanner'].distro, DRIVE_DISTRO)
+  // The keys are the table's drive rows in the store's canonical spelling (a lowercase drive path),
+  // derived rather than written out a second time: a hand-copied list is what goes stale the day a
+  // shape is added, and the property worth keeping is "the session env reads the entry the store holds".
+  const driveRows = WORKSPACE_SHAPES.filter(shape => typeof shape.cwd === 'string' && /^[A-Za-z]:[\\]/.test(shape.cwd))
+  assert.deepEqual(Object.keys(stored).sort(), driveRows.map(shape => shape.cwd.toLowerCase()).sort())
+  for (const row of driveRows) {
+    assert.equal(stored[row.cwd.toLowerCase()].distro, row.sessionEnv.DSH_WSL_DISTRO)
+  }
 })
 
 test('the client half agrees with the tool half about the same session', async () => {

@@ -11,10 +11,12 @@
 //
 // What a row means. Each unit plants the smallest edit that puts its defect's class back into the tree,
 // runs the gates in cost order, and reverts. A unit is `caught` only when **every** plant reddens a
-// gate: one plant surviving is the half of the defect with no apparatus. `source` says whether the
-// gate that reddened names the issue itself (`issue-named` — a targeted regression lock) or found it
-// without knowing where it came from (`generic` — a class-wide device). Only the second kind generalises,
-// so `--strict` counts generic-only catches: that is the number to watch, and the one #101 was about.
+// gate: one plant surviving is the half of the defect with no apparatus. `source` reads the failing
+// check's own name — `issue-named` when the check says which report it was written for, `generic` when
+// it reddened without naming one. Only the second kind would have stopped the original report, so
+// `replay: X of 20` is reported with the strict number beside it, and the strict number is the one to
+// watch. A device may well have been *born* from an issue and still be class-wide; the label is about
+// what it asserts, not about why it was written.
 //
 // Nothing here asserts a target. The table in `defects.mjs` carries no expectation, so a rise in the
 // count can only come from a gate that actually reddens.
@@ -63,42 +65,25 @@ function checkPlants(units) {
 }
 
 /**
- * Decide whether the gate that reddened knows the defect it caught.
+ * Decide whether the check that reddened was written for the class or for the case.
  *
- * A test file named in the failing output is read back and searched for the issue marker. `generic`
- * means a device caught the shape without ever having been written for this issue — which is the only
- * kind of catch that would have stopped the original report.
+ * The label reads the failing **check's own name**: a check whose name carries `#<issue>` was written
+ * because that report arrived, and it says nothing about the next one. A check that reddened without
+ * naming the issue is the kind that generalises — which is what #101 was really measuring. The file's
+ * comments are deliberately not the signal: a class-wide device is often *born* from an issue, and the
+ * whole point is whether it would still fire on a different instance.
  * @param issue - the defect number the plant replays.
- * @param output - the red gate's own stdout+stderr.
- * @returns `'issue-named'`, `'generic'` or `'unknown'`.
+ * @param names - the failing check names read out of the red gate's output.
+ * @returns `'issue-named'` or `'generic'`.
  */
-function catchSource(issue, output) {
-  const marker = `#${issue}`
-  const normalised = output.replace(/\\/g, '/')
-  if (normalised.includes(marker)) return 'issue-named'
-  const files = new Set()
-  for (const match of normalised.matchAll(/(?:tests|scripts)\/[A-Za-z0-9._/-]+\.(?:mjs|ts|tsx)/g)) {
-    files.add(match[0])
-  }
-  let looked = false
-  for (const file of files) {
-    try {
-      looked = true
-      if (readFileSync(join(repoRoot, file), 'utf8').includes(marker)) return 'issue-named'
-    } catch { /* the token was not a real path */ }
-  }
-  return looked ? 'generic' : 'unknown'
+function catchSource(issue, names) {
+  return names.some(name => name.includes(`#${issue}`)) ? 'issue-named' : 'generic'
 }
 
 /**
- * Name the check that reddened.
- *
- * The reading has to say *which* assertion noticed the plant, not that a gate exited non-zero — a row
- * that ends "test:unit failed" cannot be compared against the next run, and cannot be checked for the
- * one thing that matters here: whether the catcher knows the class or only the case. `node --test`
- * prints `✖ <name>`, the plain-assert suites print their `AssertionError` message.
+ * The checks that reddened, as the runner said them.
  * @param output - the red gate's own stdout+stderr.
- * @returns up to two failing check names, or the last lines of output when nothing matched.
+ * @returns the failing check names (up to two), or the closing lines when nothing matched.
  */
 function summarise(output) {
   const names = []
@@ -115,8 +100,8 @@ function summarise(output) {
       break
     }
   }
-  if (names.length > 0) return names.join(' / ').slice(0, 200)
-  return output.trim().split('\n').filter(line => line.trim() !== '').slice(-2).join(' | ').slice(0, 200)
+  if (names.length > 0) return names
+  return [output.trim().split('\n').filter(line => line.trim() !== '').slice(-2).join(' | ').slice(0, 200)]
 }
 
 const opts = options(process.argv.slice(2))
@@ -160,14 +145,17 @@ for (const unit of units) {
     }
     try {
       const { gate, output } = firstRed(gatesFor(unit), plantSpec.build === true)
-      results.push(gate === null
-        ? { verdict: 'MISS', detail: `${plantSpec.note} — no gate reddened` }
-        : {
-            verdict: 'caught',
-            detail: `${gate}: ${plantSpec.note}`,
-            source: gate === 'build' ? 'build' : catchSource(unit.issue, output),
-            caughtAs: summarise(output),
-          })
+      if (gate === null) {
+        results.push({ verdict: 'MISS', detail: `${plantSpec.note} — no gate reddened` })
+        continue
+      }
+      const names = summarise(output)
+      results.push({
+        verdict: 'caught',
+        detail: `${gate}: ${plantSpec.note}`,
+        source: gate === 'build' ? 'build' : catchSource(unit.issue, names),
+        caughtAs: names.join(' / ').slice(0, 200),
+      })
     } catch (error) {
       results.push({ verdict: 'ERROR', detail: String(error?.message ?? error) })
     } finally {
