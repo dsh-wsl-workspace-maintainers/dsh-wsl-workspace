@@ -57,6 +57,9 @@ jobs:
         run: node scripts/verify-artifact-identity.mjs
       - name: documentation parity (declared README sections, shared facts, link graph)
         run: npm run test:docs
+      # The size red line: apparatus (tests/ + scripts/) may not outgrow the product it defends.
+      - name: apparatus stays within its size ceiling
+        run: npm run test:apparatus-size
       - name: release behaviour matrix shape (rows, verdicts, ledger lines)
         # The document a version is gated on, read by code: its rows, its verdicts and the ledger line
         # a DEFECT owes. `--self-test` re-runs the audit over four mutated copies every frame, so the

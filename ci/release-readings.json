@@ -1,0 +1,26 @@
+{
+  "note": "the two readings a release carries, written by `npm run release:readings`; `npm run test:readings` (and the publish job) refuse a version without them. Do not hand-edit.",
+  "versions": {
+    "0.7.9": {
+      "takenAt": "2026-10-21 1358",
+      "head": "b1cd385",
+      "tableSha": "1952ac4240e4",
+      "replay": {
+        "caught": 20,
+        "total": 20,
+        "strict": 17,
+        "misses": [],
+        "extras": [
+          "#95 caught",
+          "#96 caught",
+          "#105 caught"
+        ]
+      },
+      "contract": {
+        "services": 21,
+        "worlds": 8,
+        "collisions": 0
+      }
+    }
+  }
+}

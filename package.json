@@ -35,6 +35,7 @@
     "test:replay": "node tests/replay/run.mjs",
     "test:contract": "node scripts/check-host-contract.mjs --check",
     "test:readings": "node scripts/release-readings.mjs --check",
+    "test:apparatus-size": "node scripts/check-apparatus-size.mjs",
     "release:readings": "node scripts/release-readings.mjs --record",
     "test:shapes": "node --experimental-strip-types scripts/smoke-shapes.mjs",
     "test:matrix": "node scripts/check-release-matrix.mjs",
