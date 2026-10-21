@@ -164,10 +164,11 @@ export function ownerOf(jobs: JobsFace, agent: ToolExecution['agent']): { owner?
 
 /**
  * Turn one finished background process into the registry's outcome shape.
- * @param process - the settled shell process handle.
+ * @param process - the settled state of the shell process handle: the status,
+ *   exit code and signal, which is all an outcome is derived from.
  * @returns the job outcome with a kind-specific detail line.
  */
-export function outcomeOf(process: ShellProcessFace): { status: 'completed' | 'killed' | 'failed'; detail?: string } {
+export function outcomeOf(process: Pick<ShellProcessFace, 'status' | 'exitCode' | 'signal'>): { status: 'completed' | 'killed' | 'failed'; detail?: string } {
   const detail = process.signal !== null
     ? `signal: ${process.signal}`
     : process.exitCode !== null ? `exit code: ${process.exitCode}` : undefined

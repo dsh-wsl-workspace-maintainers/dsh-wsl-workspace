@@ -11,8 +11,17 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { apply, outcomeOf, renderRead, TOOL_NAME } from '../src/host/wsl-jobs.ts'
+import { fakeContext } from './support/fake-context.ts'
 
 const CONFIG = { timeoutMs: 15_000 }
+
+/** One incremental output read, as the shell provider and the registry both define it. */
+interface ReadResult {
+  delta: string
+  lossy: boolean
+  stdoutSpillPath?: string
+  stderrSpillPath?: string
+}
 
 /** A fake captured-stream reader, matching the `observed` shape the producer hands the 0.2.x registry. */
 interface FakeReader {
@@ -25,11 +34,67 @@ function makeReader(chunks: string[]): FakeReader {
   return { readFrom: (from: number) => ({ text: full.slice(from), nextOffset: full.length, lossy: false }) }
 }
 
+/** The background process the fake shell hands back, as the producer's hooks bridge uses it. */
+interface FakeProcess {
+  status: 'running' | 'completed' | 'killed'
+  exitCode: number | null
+  signal: NodeJS.Signals | null
+  done: Promise<void>
+  readOutput(): ReadResult
+  kill(): boolean
+  observed: { stdout: FakeReader; stderr: FakeReader }
+}
+
+/** The request {@link startBackgroundJob} builds and the fake shell records. */
+interface ResolveRequest {
+  command: string
+  workdir?: string
+  stdin?: string
+  dshEnv?: Record<string, string>
+  onExpiry?: string
+}
+
+/** The hooks the registry calls on a started job. */
+interface FakeHooks {
+  cancel(reason?: string): void
+  done: Promise<{ status: string; detail?: string }>
+  readOutput?(): string
+}
+
+/** The spec this producer hands `jobs.start`. */
+interface JobSpec {
+  kind: string
+  label: string
+  owner?: unknown
+  output?: Array<{ channel?: string; read(from: number): ReturnType<FakeReader['readFrom']> }>
+  /** The 0.2.x registry calls `run()` with an argument of its own; the producer takes none. */
+  run(arg?: unknown): FakeHooks
+}
+
+/** The tool object `defineTool` builds, read through what these tests assert on. */
+interface FakeTool {
+  name: string
+  description: string
+  timeoutMs: number
+  parameters: { required: string[]; properties: Record<string, unknown> }
+  output: { render(args: unknown, value: unknown): Array<{ type: string; text: string }> }
+  execute(args: { command: string; workdir?: string }, exec: unknown): Promise<{ jobId: string }>
+}
+
+/** What one test may replace: any of the three services, or the process they hand back. */
+interface HarnessOverrides {
+  process?: Partial<FakeProcess>
+  shell?: { resolve?: (request: ResolveRequest) => unknown; start?: ((spec: unknown) => FakeProcess) | undefined }
+  jobs?: { resolveOwner?: unknown; start?: (spec: JobSpec) => unknown }
+  noShell?: boolean
+  noJobs?: boolean
+}
+
 /** A fake `ctx` carrying the three services the tool reads. */
-function harness(overrides = {}) {
-  const registered = new Map()
-  const calls = { started: [], resolved: [], started_: [] }
-  const process = {
+function harness(overrides: HarnessOverrides = {}) {
+  const registered = new Map<string, FakeTool>()
+  const calls: { started: JobSpec[]; resolved: ResolveRequest[]; started_: unknown[] } = { started: [], resolved: [], started_: [] }
+  const process: FakeProcess = {
     status: 'completed',
     exitCode: 0,
     signal: null,
@@ -40,34 +105,33 @@ function harness(overrides = {}) {
     ...overrides.process,
   }
   const shell = {
-    resolve: request => {
+    resolve: (request: ResolveRequest) => {
       calls.resolved.push(request)
       return { spec: request }
     },
-    start: spec => {
+    start: (spec: unknown) => {
       calls.started_.push(spec)
       return process
     },
     ...overrides.shell,
   }
   const jobs = {
-    start: spec => {
+    start: (spec: JobSpec) => {
       calls.started.push(spec)
       return 'bash-7'
     },
     ...overrides.jobs,
   }
-  const ctx = {
-    get: name => {
-      if (name === 'tools') return { register: tool => registered.set(tool.name, tool) }
-      if (name === 'shell') return overrides.noShell === true ? undefined : shell
-      if (name === 'jobs') return overrides.noJobs === true ? undefined : jobs
-      if (name === 'shellEnv') return { collect: () => ({ DSH_SESSION_ID: 's' }) }
-      return undefined
-    },
-  }
+  const ctx = fakeContext({
+    tools: { register: (tool: FakeTool) => registered.set(tool.name, tool) },
+    shell: overrides.noShell === true ? undefined : shell,
+    jobs: overrides.noJobs === true ? undefined : jobs,
+    shellEnv: { collect: () => ({ DSH_SESSION_ID: 's' }) },
+  })
   apply(ctx, CONFIG)
-  return { tool: registered.get(TOOL_NAME), calls, process, registered }
+  const tool = registered.get(TOOL_NAME)
+  assert.ok(tool !== undefined, 'the producer registered its own tool')
+  return { tool, calls, process, registered }
 }
 
 const EXEC = { agent: { id: 'session-7f2c', session: { header: { cwd: '\\\\wsl.localhost\\Ubuntu\\home\\mille\\ws' } } } }
@@ -89,12 +153,14 @@ test('starts a tracked job and returns its id', async () => {
   const value = await tool.execute({ command: 'sleep 30' }, EXEC)
   assert.deepEqual(value, { jobId: 'bash-7' })
   assert.equal(calls.started.length, 1)
-  const spec = calls.started[0]
+  const [spec] = calls.started
+  assert.ok(spec !== undefined, 'the registry was handed one spec')
   assert.equal(spec.kind, 'bash', 'the id namespace the host tools expect')
   assert.equal(spec.label, 'sleep 30')
   assert.equal(spec.owner, EXEC.agent,
     'through 0.1.5-rc.2 the registry takes the agent itself (it reads owner.id and owner.ctx)')
-  assert.equal(tool.output.render({ command: 'sleep 30' }, value)[0].text, 'started background job bash-7')
+  const [rendered] = tool.output.render({ command: 'sleep 30' }, value)
+  assert.equal(rendered?.text, 'started background job bash-7')
 })
 
 test('a registry that resolves an owner takes the session id instead (0.1.7+)', async () => {
@@ -104,7 +170,7 @@ test('a registry that resolves an owner takes the session id instead (0.1.7+)', 
   // the presence of `resolveOwner` is what tells the two apart.
   const { tool, calls } = harness({ jobs: { resolveOwner: (session: string) => ({ id: session }) } })
   await tool.execute({ command: 'sleep 30' }, EXEC)
-  const spec = calls.started[0] as { owner?: unknown } | undefined
+  const [spec] = calls.started
   assert.equal(spec?.owner, 'session-7f2c', 'the newer registry takes the session id')
 })
 
@@ -112,7 +178,7 @@ test('a call with no agent produces an unowned job rather than a wrong owner', a
   for (const jobs of [{}, { resolveOwner: (session: string) => ({ id: session }) }]) {
     const { tool, calls } = harness({ jobs })
     await tool.execute({ command: 'sleep 30' }, {})
-    const spec = calls.started[0] as { owner?: unknown } | undefined
+    const [spec] = calls.started
     assert.equal(spec !== undefined && 'owner' in spec, false, 'no agent means no owner entry at all')
   }
 })
@@ -120,22 +186,22 @@ test('a call with no agent produces an unowned job rather than a wrong owner', a
 test('the producer runs through this world\u2019s shell, with the caller\u2019s workdir', async () => {
   const { tool, calls } = harness()
   await tool.execute({ command: 'pwd', workdir: '/tmp' }, EXEC)
-  const hooks = calls.started[0].run()
+  const [started] = calls.started
+  assert.ok(started !== undefined, 'the registry was handed one spec')
+  const hooks = started.run()
   assert.equal(typeof hooks.cancel, 'function')
   assert.equal(calls.resolved.length, 1)
-  assert.equal(calls.resolved[0].command, 'pwd')
-  assert.equal(calls.resolved[0].workdir, '/tmp')
-  assert.deepEqual(calls.resolved[0].dshEnv, { DSH_SESSION_ID: 's' }, 'managed DSH_* facts ride along')
+  const [request] = calls.resolved
+  assert.ok(request !== undefined, 'the shell was asked to resolve one request')
+  assert.equal(request.command, 'pwd')
+  assert.equal(request.workdir, '/tmp')
+  assert.deepEqual(request.dshEnv, { DSH_SESSION_ID: 's' }, 'managed DSH_* facts ride along')
   // The shell executor honours `timeoutMs` unless the spec says otherwise
   // (`src/shell.ts`'s `spawnExecution` arms a deadline for every policy but
   // `'none'`). Before issue #51 the background path ignored timeouts entirely;
   // this is the fact that replaces that behaviour, so a dropped `'none'` would
   // kill every `job_*` at the executor's 120 s foreground timeout.
-  // Read through a cast rather than `resolved[0].onExpiry`: the harness types
-  // `resolved` as an empty array literal, so a plain access would add a 211th
-  // typecheck error to a file that already carries 38 of the baseline's own.
-  const [firstRequest] = calls.resolved as Array<{ onExpiry?: string }>
-  assert.equal(firstRequest?.onExpiry, 'none', 'a job outlives one command timeout by policy, not accident')
+  assert.equal(request.onExpiry, 'none', 'a job outlives one command timeout by policy, not accident')
   assert.equal(calls.started_.length, 1, 'run() starts exactly one process')
 })
 
@@ -146,19 +212,28 @@ test('defaults the workdir to the session workspace, not the host process', asyn
   // workspace, so a background job must too.
   const { tool, calls } = harness()
   await tool.execute({ command: 'pwd' }, EXEC)
-  calls.started[0].run()
-  assert.equal(calls.resolved[0].workdir, EXEC.agent.session.header.cwd)
+  const [started] = calls.started
+  assert.ok(started !== undefined, 'the registry was handed one spec')
+  started.run()
+  const [request] = calls.resolved
+  assert.ok(request !== undefined, 'the shell was asked to resolve one request')
+  assert.equal(request.workdir, EXEC.agent.session.header.cwd)
   const bare = harness()
   await bare.tool.execute({ command: 'pwd' }, {})
-  bare.calls.started[0].run()
-  assert.equal('workdir' in bare.calls.resolved[0], false, 'no cwd anywhere: let the provider decide')
+  const [bareStarted] = bare.calls.started
+  assert.ok(bareStarted !== undefined, 'the registry was handed one spec')
+  bareStarted.run()
+  const [bareRequest] = bare.calls.resolved
+  assert.ok(bareRequest !== undefined, 'the shell was asked to resolve one request')
+  assert.equal('workdir' in bareRequest, false, 'no cwd anywhere: let the provider decide')
 })
 
 test('refuses an aborted call before starting anything', async () => {
   const { tool, calls } = harness()
   const controller = new AbortController()
   controller.abort()
-  await assert.rejects(tool.execute({ command: 'x' }, { ...EXEC, signal: controller.signal }), error => error.name === 'AbortError')
+  await assert.rejects(tool.execute({ command: 'x' }, { ...EXEC, signal: controller.signal }),
+    error => (error as Error).name === 'AbortError')
   assert.equal(calls.started.length, 0, 'nothing was registered')
 })
 
@@ -174,11 +249,13 @@ test('the hooks bridge cancel, done and readOutput to the registry', async () =>
     },
   })
   await tool.execute({ command: 'sleep 30' }, EXEC)
-  const hooks = calls.started[0].run()
+  const [started] = calls.started
+  assert.ok(started !== undefined, 'the registry was handed one spec')
+  const hooks = started.run()
   hooks.cancel()
   assert.equal(killed, 1)
   assert.deepEqual(await hooks.done, { status: 'killed', detail: 'signal: SIGTERM' })
-  assert.equal(hooks.readOutput(), 'partial\n\n[output truncated: unread bytes were dropped]\n[full stdout: /tmp/spill]')
+  assert.equal(hooks.readOutput?.(), 'partial\n\n[output truncated: unread bytes were dropped]\n[full stdout: /tmp/spill]')
 })
 
 test('a finished job reports its exit code, and a live one is not an outcome', () => {
@@ -204,7 +281,7 @@ test('refuses clearly when the deployment cannot track jobs', async () => {
 })
 
 test('does nothing when the tools registry is absent', () => {
-  assert.doesNotThrow(() => apply({ get: () => undefined }, CONFIG))
+  assert.doesNotThrow(() => apply(fakeContext({}), CONFIG))
 })
 
 test('mounts with schema defaults when the row carries no config at all', () => {
@@ -212,13 +289,15 @@ test('mounts with schema defaults when the row carries no config at all', () => 
   // wsl-search entry failed a whole world on exactly that, and this entry then
   // repeated the mistake until a live session caught it
   // (`Cannot read properties of undefined (reading 'timeoutMs')`).
-  const registered = new Map()
-  const ctx = { get: name => name === 'tools' ? { register: tool => registered.set(tool.name, tool) } : undefined }
+  const registered = new Map<string, FakeTool>()
+  const ctx = fakeContext({ tools: { register: (tool: FakeTool) => registered.set(tool.name, tool) } })
   assert.doesNotThrow(() => apply(ctx, undefined))
   assert.deepEqual([...registered.keys()], [TOOL_NAME])
-  assert.equal(registered.get(TOOL_NAME).timeoutMs, CONFIG.timeoutMs)
-  const empty = new Map()
-  apply({ get: name => name === 'tools' ? { register: tool => empty.set(tool.name, tool) } : undefined }, {})
+  const tool = registered.get(TOOL_NAME)
+  assert.ok(tool !== undefined, 'the producer registered its own tool')
+  assert.equal(tool.timeoutMs, CONFIG.timeoutMs)
+  const empty = new Map<string, FakeTool>()
+  apply(fakeContext({ tools: { register: (registeredTool: FakeTool) => empty.set(registeredTool.name, registeredTool) } }), {})
   assert.deepEqual([...empty.keys()], [TOOL_NAME])
 })
 
@@ -228,7 +307,7 @@ test('feeds 0.2.x pull-source output so job_output is not empty (issue #56)', as
   // so a producer that set only `readOutput` (the pre-fix shape) would surface
   // here as an empty ring instead of the bytes the command wrote — exactly the
   // `job_output` → `(no new output)` failure on DSH 0.2.0-rc.2.
-  const captured = { output: undefined as unknown }
+  const captured: { output?: JobSpec['output'] } = {}
   const { tool } = harness({
     process: {
       status: 'completed',
@@ -243,22 +322,20 @@ test('feeds 0.2.x pull-source output so job_output is not empty (issue #56)', as
       kill: () => true,
     },
     jobs: {
-      start: (spec: { output?: unknown; run?: (arg: unknown) => unknown }) => {
+      start: (spec: JobSpec) => {
         captured.output = spec.output
         // Mirror the 0.2.x pump: start() calls run() to register the process
         // (assigning the producer's closure capture) before any source is read.
-        spec.run?.({})
+        spec.run({})
         return 'bash-7'
       },
     },
   })
   await tool.execute({ command: 'echo' }, EXEC)
-  const sources = captured.output as Array<{ channel?: string; read(from: number): { text: string; nextOffset: number; lossy: boolean; spillPath?: string } }>
-  // The array is asserted before it is indexed rather than type-asserted and trusted: `assert.ok`
+  const sources = captured.output
+  // The array is asserted before it is indexed rather than assumed from a cast: `assert.ok`
   // narrows in TypeScript, so the length and the element type are both established by the check
-  // instead of by a cast that would be wrong the moment the producer's shape changes. This file's
-  // other fakes are untyped on purpose (they are the recorded typecheck baseline), so adding
-  // annotations here would have meant moving the goalposts rather than keeping them.
+  // instead of by an assertion that would be wrong the moment the producer's shape changes.
   assert.ok(Array.isArray(sources) && sources.length === 2, 'producer exposes stdout + stderr pull sources')
   const [stdout, stderr] = sources
   assert.ok(stdout !== undefined && stderr !== undefined, 'both pull sources are present')

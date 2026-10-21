@@ -85,12 +85,15 @@ async function main(): Promise<void> {
   console.log('fileUrl OK')
 
   // ── shell execution inside WSL ─────────────────────────────────────────────
-  const spec = root.shell.resolve({
+  // The face this smoke drives is the provider it just mounted, not the host's
+  // abstract `ShellExecutor`: `run` and `start` are what this class adds.
+  const shell = root.shell as unknown as WslShellExecutor
+  const spec = shell.resolve({
     command: 'pwd && uname -s && printf "DSH=%s\\n" "$DSH_SESSION_ID" && printf "HOME=%s\\n" "$HOME"',
     workdir: unc,
     dshEnv: { DSH_SESSION_ID: 'smoke-1' } as never,
   })
-  const result = await root.shell.run(spec)
+  const result = await shell.run(spec)
   console.log('shell exit:', result.exitCode, '| stdout:', JSON.stringify(result.stdout.text))
   if (result.exitCode !== 0) throw new Error(`shell failed: ${result.stderr.text}`)
   const text = result.stdout.text
@@ -107,12 +110,12 @@ async function main(): Promise<void> {
   // Mirrors the reported failure: the model passes a plain Linux workdir and
   // the managed env carries DSH_WSL_DISTRO (contributed by the host half from
   // the session's UNC cwd).
-  const linuxSpec = root.shell.resolve({
+  const linuxSpec = shell.resolve({
     command: 'pwd && printf "DISTRO=%s\\n" "$DSH_WSL_DISTRO"',
     workdir: '/tmp',
     dshEnv: { DSH_SESSION_ID: 'smoke-2', DSH_WSL_DISTRO: distro } as never,
   })
-  const linuxResult = await root.shell.run(linuxSpec)
+  const linuxResult = await shell.run(linuxSpec)
   if (linuxResult.exitCode !== 0) throw new Error(`linux-workdir shell failed: ${linuxResult.stderr.text}`)
   if (!linuxResult.stdout.text.includes('/tmp') || !linuxResult.stdout.text.includes(`DISTRO=${distro}`)) {
     throw new Error(`linux-workdir output mismatch: ${JSON.stringify(linuxResult.stdout.text)}`)
@@ -137,12 +140,12 @@ async function main(): Promise<void> {
   console.log('dual access OK (Windows files via /mnt/<drive>)')
 
   // ── stdin + background ─────────────────────────────────────────────────────
-  const echoSpec = root.shell.resolve({ command: 'cat', workdir: unc, stdin: 'from-stdin\n' })
-  const echoResult = await root.shell.run(echoSpec)
+  const echoSpec = shell.resolve({ command: 'cat', workdir: unc, stdin: 'from-stdin\n' })
+  const echoResult = await shell.run(echoSpec)
   if (!echoResult.stdout.text.includes('from-stdin')) throw new Error('stdin was not relayed into WSL')
   console.log('stdin OK')
 
-  const bg = root.shell.start(root.shell.resolve({ command: 'sleep 0.3 && echo background-done', workdir: unc }))
+  const bg = shell.start(shell.resolve({ command: 'sleep 0.3 && echo background-done', workdir: unc }))
   await bg.done
   const bgOut = bg.readOutput().delta
   if (!bgOut.includes('background-done')) throw new Error(`background output mismatch: ${JSON.stringify(bgOut)}`)

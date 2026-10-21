@@ -38,6 +38,8 @@ import { FsError } from '@deepseek-ai/dsh-fs'
 import type { FsEditOutcome, FsEditRequest, FsPathInfo, FsTarget, FsVersion, FsWriteIntent, FsWriteOutcome } from '@deepseek-ai/dsh-fs'
 import { LocalFileSystem } from '@deepseek-ai/dsh-fs-local'
 import { canonicalPath, writableRoots } from '@deepseek-ai/dsh-sandbox'
+import type { SandboxMode } from '@deepseek-ai/dsh-sandbox'
+import type { ToolDispatchExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import { resolveLinuxSymlink } from './shared/links.ts'
 import {
   isAbsoluteLinuxPath,
@@ -67,7 +69,7 @@ export interface SandboxPolicyLike {
 /** The `ctx.sandboxPolicy` face this backend fences its writes with (optional service). */
 export interface SandboxPolicyFace {
   /** Deployment default mode, mirrored as this backend's `sandboxMode`. */
-  defaultMode?: string
+  defaultMode?: SandboxMode
   /** Per-call (or session-resolved) policy. */
   resolve(): SandboxPolicyLike
 }
@@ -79,10 +81,6 @@ interface Translated {
   input: string
   /** Absolute Windows-side base for relative inputs (UNC or Windows drive). */
   cwd: string
-}
-
-interface ToolExecution {
-  agent?: { session: { header: { cwd?: string } } }
 }
 
 /**
@@ -105,7 +103,7 @@ export class WslFileSystem extends LocalFileSystem {
     // `diffBasisMaxBytes` and stores the resolved shape.
     super(ctx, config)
     this.distro = config.distro
-    ctx.on('tools/execute', (exec: ToolExecution, next: () => unknown) => (
+    ctx.on('tools/execute', (exec: ToolDispatchExecution, next: () => Promise<ToolExecutionResult>) => (
       this.executionCwd.run(exec.agent?.session.header.cwd, next)
     ))
     // The 9P/drvfs substrate has no hard links and no Win32 security semantics:
@@ -307,7 +305,7 @@ export class WslFileSystem extends LocalFileSystem {
    * The deployment's default sandbox mode — the capability fact the file tool
    * reads to advertise escalation, mirrored from `SandboxedFileSystem`.
    */
-  get sandboxMode(): string | undefined {
+  override get sandboxMode(): SandboxMode | undefined {
     const mode = this.sandboxPolicyService()?.defaultMode
     return typeof mode === 'string' ? mode : undefined
   }

@@ -34,7 +34,7 @@ export class WslSandboxProvider extends SandboxProvider {
    * @param argv - the command the caller wants to run.
    * @returns the same argv, with the world's honest enforcement claim.
    */
-  override confine(argv: readonly string[]): ConfinedArgv {
+  override async confine(argv: readonly string[]): Promise<ConfinedArgv> {
     return {
       argv: [...argv],
       enforcement: 'partial',

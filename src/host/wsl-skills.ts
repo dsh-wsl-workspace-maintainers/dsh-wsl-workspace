@@ -36,7 +36,7 @@
 import { readdir, readFile, stat } from 'node:fs/promises'
 import type { Dirent } from 'node:fs'
 import { join as joinWindowsPath, posix } from 'node:path'
-import { isAbsoluteLinuxPath, joinUnc, mntToWindowsPath, parseWslUnc, uncToLinux, windowsToMntPath } from '../shared/paths.ts'
+import { joinUnc, mntToWindowsPath, parseWslUnc, uncToLinux, windowsToMntPath } from '../shared/paths.ts'
 import { resolveLinuxSymlinks } from '../shared/links.ts'
 import { getWindowsWorkspace } from '../shared/wsl-credentials.ts'
 import { defaultDistroSync } from '../shared/wsl.ts'
@@ -168,7 +168,8 @@ export interface WslSkillDefinition extends WslSkillCandidate {
 
 /** Lookup options the registry passes to `list`/`get`. */
 export interface WslSkillLookupOptions {
-  readonly cwd?: string
+  /** Absent or explicitly `undefined` both read as "no session workspace". */
+  readonly cwd?: string | undefined
   readonly signal?: AbortSignal
 }
 
@@ -491,7 +492,7 @@ async function readSkill(path: string, io: WslSkillIo, signal?: AbortSignal): Pr
     return undefined
   }
   signal?.throwIfAborted()
-  return parseSkillFrontmatter(raw, path)
+  return parseSkillFrontmatter(raw)
 }
 
 /**
@@ -502,7 +503,7 @@ async function readSkill(path: string, io: WslSkillIo, signal?: AbortSignal): Pr
  * matching the shipped provider's leniency: a bad file must not fail
  * the catalog.
  */
-function parseSkillFrontmatter(raw: string, path: string): ParsedSkill | undefined {
+function parseSkillFrontmatter(raw: string): ParsedSkill | undefined {
   // Windows editors save UTF-8 with a BOM; a leading BOM must not make the
   // opening `---` line unmatchable and silently drop the skill.
   if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1)
@@ -576,8 +577,10 @@ function parseBlockScalar(
       index -= 1
       break
     }
-    indent ??= indented[1]
-    collected.push(indented[1]?.startsWith(indent) === true ? indented[2] : indented[1].replace(/^[ \t]+/, '') + indented[2])
+    const lead = indented[1] ?? ''
+    const rest = indented[2] ?? ''
+    indent ??= lead
+    collected.push(lead.startsWith(indent) ? rest : lead.replace(/^[ \t]+/, '') + rest)
   }
   while (collected.length > 0 && collected[collected.length - 1] === '') collected.pop()
   const text = (folded ? collected.filter(line => line !== '').join(' ') : collected.join('\n')).trim()
@@ -816,7 +819,7 @@ export class WslSkillsProvider {
       const walk = detector.polls % this.walkEveryPolls === 0
       let signature: string
       try {
-        signature = await this.shape(distro, walk ? await discoverSkillRoots(distro, scanRoot, this.io) : detector.roots)
+        signature = await this.shape(walk ? await discoverSkillRoots(distro, scanRoot, this.io) : detector.roots)
       } catch {
         // A transient read failure keeps the last known shape and retries.
         return
@@ -831,7 +834,7 @@ export class WslSkillsProvider {
   }
 
   /** The shape of one root set: paths, entry names, kinds and file stamps. */
-  private async shape(distro: string, roots: readonly SkillRoot[]): Promise<string> {
+  private async shape(roots: readonly SkillRoot[]): Promise<string> {
     const parts: string[] = []
     for (const root of roots) {
       parts.push(await shapeOfRoot(root, await listSkillEntries(root, this.io), this.io))

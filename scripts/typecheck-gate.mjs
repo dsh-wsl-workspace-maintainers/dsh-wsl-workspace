@@ -52,7 +52,7 @@ if (process.argv.includes('--self-test')) {
 
 const tsc = spawnSync(process.execPath, [
   join(repoRoot, 'node_modules', 'typescript', 'bin', 'tsc'),
-  '-p', join(repoRoot, 'tsconfig.json'), '--noEmit',
+  '-p', join(repoRoot, 'tsconfig.json'), '--noEmit', '--diagnostics',
 ], { encoding: 'utf8' })
 const output = `${tsc.stdout ?? ''}${tsc.stderr ?? ''}`
 
@@ -63,6 +63,10 @@ const output = `${tsc.stdout ?? ''}${tsc.stderr ?? ''}`
 // back therefore read "zero errors, below baseline" and exited 0 for a run that
 // typechecked nothing. So the gate asks whether the compiler was reachable at all, and
 // refuses an empty capture that produced no measurement.
+// `--diagnostics` belongs to the measurement, not to the report: a tree with no type
+// errors prints no error lines at all, so without the compiler's own stats table there
+// would be nothing to tell "zero errors" apart from "nothing was typechecked". The error
+// count stays exactly the counted `error TS` lines.
 if (tsc.error !== undefined && tsc.error !== null) {
   console.error(`typecheck-gate: RED — tsc could not be run (${String(tsc.error)}); `
     + 'install build dependencies (`npm ci`) before running this gate')
@@ -86,8 +90,8 @@ if (errorLines.length === 0 && /Synopses|Usage:|Options:/i.test(output)) {
   process.exit(1)
 }
 if (errorLines.length === 0 && output.trim() === '') {
-  console.error('typecheck-gate: RED — tsc produced no output at all; a genuinely clean tree '
-    + 'still reports its exit status here, so counting zero would pass an unmeasured run')
+  console.error('typecheck-gate: RED — tsc produced no output at all; every real run prints its own '
+    + 'stats table under `--diagnostics`, clean tree included, so an empty capture is not a measurement')
   process.exit(1)
 }
 

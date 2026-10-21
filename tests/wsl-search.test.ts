@@ -42,6 +42,7 @@ import {
   retainMatches,
   retainPaths,
 } from '../src/host/wsl-search.ts'
+import { fakeContext } from './support/fake-context.ts'
 
 /** The resolved plugin config (schemastery fills these in a real mount). */
 const CONFIG = {
@@ -288,7 +289,8 @@ describe('search-card metadata', () => {
 
   it('narrows back into a search view through the host suite\u2019s own reader', () => {
     const meta = grepSearchMeta(retainMatches(matches, 250, 2000), 65536)
-    const view = presentGrepResult({ pattern: 'x' }, { meta })
+    const result = { content: [], isError: false, meta }
+    const view = presentGrepResult({ pattern: 'x' }, result)
     assert.deepEqual(view, {
       card: 'search',
       shape: 'matches',
@@ -299,11 +301,11 @@ describe('search-card metadata', () => {
       truncated: false,
       total: 3,
     })
-    assert.equal(presentGrepResult({ pattern: 'x' }, { meta: { shape: 'nope' } }), undefined)
+    assert.equal(presentGrepResult({ pattern: 'x' }, { ...result, meta: { shape: 'nope' } }), undefined)
   })
 
   it('projects a glob card the host suite\u2019s reader accepts', () => {
-    const view = presentGlobResult({ pattern: 'x' }, { meta: globSearchMeta(retainPaths(['a', 'b'], 1), 65536) })
+    const view = presentGlobResult({ pattern: 'x' }, { content: [], isError: false, meta: globSearchMeta(retainPaths(['a', 'b'], 1), 65536) })
     assert.deepEqual(view, { card: 'search', shape: 'paths', paths: ['a'], truncated: true, total: 2 })
   })
 
@@ -312,8 +314,10 @@ describe('search-card metadata', () => {
     const meta = grepSearchMeta(retainMatches([long, long, long], 250, 2000), 500)
     assert.equal(meta.truncated, true)
     assert.equal(meta.total, 3)
+    assert.ok('files' in meta, 'a matches-shaped meta carries its groups')
     assert.equal(meta.files.length, 1)
     const single = capMetaBytes({ shape: 'paths', paths: ['x'.repeat(500)], truncated: false, total: 1 }, 10)
+    assert.ok('paths' in single, 'a paths-shaped meta carries its paths')
     assert.equal(single.paths.length, 1, 'one oversized item survives rather than emptying the card')
   })
 })
@@ -401,24 +405,61 @@ describe('target and argv resolution', () => {
 })
 
 describe('apply', () => {
-  /** A minimal registry stand-in. */
+  /** One JSON-Schema node, read through what these tests assert on. */
+  interface SchemaNode {
+    type?: string
+    additionalProperties?: boolean
+    required?: string[] | boolean
+    properties?: Record<string, SchemaNode>
+    items?: SchemaNode
+  }
+
+  /** A registered tool, read through what these tests assert on. */
+  interface FakeTool {
+    name: string
+    description: string
+    timeoutMs: number
+    parameters: { required?: string[]; properties?: Record<string, { description?: string }> }
+    output: {
+      schema: SchemaNode
+      render(args: unknown, value: unknown): Array<{ type: string; text: string }>
+      presentationMeta?(args: unknown, value: unknown): unknown
+    }
+    presentCall(args: unknown): { title?: string }
+    execute(args: unknown, exec: unknown): Promise<unknown>
+  }
+
+  /** A registry stand-in: the tools it captured, and the `ctx` to hand `apply`. */
   function registry() {
-    const tools = new Map()
-    return { tools, get: name => name === 'tools' ? { register: tool => tools.set(tool.name, tool) } : name === 'spillStore' ? undefined : undefined }
+    const tools = new Map<string, FakeTool>()
+    return {
+      tools,
+      ctx: fakeContext({
+        tools: { register: (tool: FakeTool) => tools.set(tool.name, tool) },
+        spillStore: undefined,
+      }),
+    }
+  }
+
+  /** The captured tool, named in the failure when a registration went missing. */
+  function mustGet(tools: Map<string, FakeTool>, name: string): FakeTool {
+    const tool = tools.get(name)
+    assert.ok(tool !== undefined, `${name} was not registered`)
+    return tool
   }
 
   it('registers exactly the grep and glob tools with WSL-honest descriptions', () => {
-    const ctx = registry()
+    const { ctx, tools } = registry()
     apply(ctx, CONFIG)
-    assert.deepEqual([...ctx.tools.keys()], ['grep', 'glob'])
-    const grep = ctx.tools.get('grep')
+    assert.deepEqual([...tools.keys()], ['grep', 'glob'])
+    const grep = mustGet(tools, 'grep')
     assert.deepEqual(grep.parameters.required, ['pattern'])
-    assert.deepEqual(Object.keys(grep.parameters.properties), ['pattern', 'path', 'include'])
-    assert.equal(grep.parameters.properties.pattern.description.includes('GNU grep -E'), true)
-    assert.equal(grep.parameters.properties.include.description.includes('relative to the search root'), true)
+    assert.deepEqual(Object.keys(grep.parameters.properties ?? {}), ['pattern', 'path', 'include'])
+    assert.equal(grep.parameters.properties?.pattern?.description?.includes('GNU grep -E'), true)
+    assert.equal(grep.parameters.properties?.include?.description?.includes('relative to the search root'), true)
     assert.equal(grep.description.includes('GNU grep extended regular expression'), true)
     assert.equal(grep.timeoutMs, CONFIG.timeoutMs)
-    const glob = ctx.tools.get('glob')
+    const glob = mustGet(tools, 'glob')
     assert.deepEqual(glob.parameters.required, ['pattern'])
     assert.equal(glob.description.includes('oldest first'), true)
     assert.equal(typeof grep.presentCall, 'function')
@@ -428,7 +469,7 @@ describe('apply', () => {
   })
 
   it('does nothing when the tools registry is absent', () => {
-    assert.doesNotThrow(() => apply({ get: () => undefined }, CONFIG))
+    assert.doesNotThrow(() => apply(fakeContext({}), CONFIG))
   })
 
   it('does not refuse a drive-letter session cwd (issue #86)', async () => {
@@ -438,16 +479,15 @@ describe('apply', () => {
     // is observable without a distribution — and the assertion is about the refusal sentence, not
     // about search results.
     return withStore({ 'f:\\techenergy\\code\\scanner': { distro: 'Ubuntu-24.04' } }, async () => {
-      const ctx = registry()
-      // Cast at the use site rather than re-typing `registry()`: the six existing `apply(ctx, …)`
-      // calls in this file each already carry a baseline type error for the same reason, and
-      // re-typing the shared fake rippled into 23 new ones (measured 2026-10-19).
-      apply(ctx as unknown as Parameters<typeof apply>[0], { ...CONFIG, wslPath: 'dsh-issue-86-no-such-command' })
+      const { ctx, tools } = registry()
+      // A command that cannot start is the point: the tools must reach the spawn
+      // instead of refusing the session, so no distribution is needed here.
+      apply(ctx, { ...CONFIG, wslPath: 'dsh-issue-86-no-such-command' })
       const exec = { agent: { session: { header: { cwd: 'F:\\TechEnergy\\Code\\Scanner' } } }, signal: undefined }
       for (const name of ['grep', 'glob']) {
         let message = 'the call returned without reaching the spawn'
         try {
-          await ctx.tools.get(name).execute({ pattern: 'x' }, exec)
+          await mustGet(tools, name).execute({ pattern: 'x' }, exec)
           message = ''
         } catch (error) {
           message = (error as Error).message
@@ -462,13 +502,13 @@ describe('apply', () => {
     // A world row with no `config:` block hands apply an undefined config; a real
     // session failed the whole world on exactly that (`Cannot read properties of
     // undefined (reading 'grepMaxMatches')`).
-    const ctx = registry()
+    const { ctx, tools } = registry()
     assert.doesNotThrow(() => apply(ctx, undefined))
-    assert.deepEqual([...ctx.tools.keys()], ['grep', 'glob'])
-    assert.equal(ctx.tools.get('grep').timeoutMs, CONFIG.timeoutMs)
-    assert.deepEqual(ctx.tools.get('grep').parameters.required, ['pattern'])
+    assert.deepEqual([...tools.keys()], ['grep', 'glob'])
+    assert.equal(mustGet(tools, 'grep').timeoutMs, CONFIG.timeoutMs)
+    assert.deepEqual(mustGet(tools, 'grep').parameters.required, ['pattern'])
     const run = registry()
-    apply(run, {})
+    apply(run.ctx, {})
     assert.deepEqual([...run.tools.keys()], ['grep', 'glob'])
   })
 
@@ -476,13 +516,14 @@ describe('apply', () => {
     // The canonical value is validated against `output.schema`, and the spill
     // backend's `SpillRef` is `{locator, bytes, retrievalHint}` — a closed object
     // would fail the tool's own result.
-    const ctx = registry()
+    const { ctx, tools } = registry()
     apply(ctx, CONFIG)
     for (const name of ['grep', 'glob']) {
-      const spill = ctx.tools.get(name).output.schema.properties.spill
+      const spill = mustGet(tools, name).output.schema.properties?.spill
+      assert.ok(spill !== undefined, `${name} declares a spill field`)
       assert.equal(spill.type, 'object')
       assert.equal(spill.additionalProperties, true)
-      assert.deepEqual(Object.keys(spill.properties).sort(), ['locator', 'retrievalHint'])
+      assert.deepEqual(Object.keys(spill.properties ?? {}).sort(), ['locator', 'retrievalHint'])
     }
     assert.deepEqual(
       normalizeSpill({ locator: 'spill://x', bytes: 12, retrievalHint: 'read it' }),
@@ -490,13 +531,13 @@ describe('apply', () => {
     )
     assert.equal(normalizeSpill(undefined), undefined)
     assert.equal(normalizeSpill({ bytes: 1 }), undefined, 'a reference with no locator is not renderable')
-    assert.deepEqual(normalizeSpill({ locator: 'spill://x' }).retrievalHint, '')
+    assert.deepEqual(normalizeSpill({ locator: 'spill://x' })?.retrievalHint, '')
   })
 
   it('renders a capped result through a spill reference the backend supplied', () => {
-    const ctx = registry()
+    const { ctx, tools } = registry()
     apply(ctx, CONFIG)
-    const grep = ctx.tools.get('grep')
+    const grep = mustGet(tools, 'grep')
     const matches = Array.from({ length: 300 }, (_, index) => ({ path: 'a.ts', lineNumber: index + 1, line: 'x' }))
     const spill = { locator: 'spill://session/grep-results.txt', bytes: 10, retrievalHint: 'Read it with the read tool.' }
     const rendered = grep.output.render({ pattern: 'x' }, { matches, spill }).map(part => part.text).join('\n')

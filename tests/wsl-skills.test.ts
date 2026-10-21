@@ -142,6 +142,15 @@ function createIo(
         isDirectory: () => child.directory && child.symlink !== true,
         isFile: () => !child.directory,
         isSymbolicLink: () => child.symlink === true,
+        // The directory that was listed, in both spellings `fs.Dirent` carries.
+        // Nothing in the provider reads either, and this fixture's tree has no
+        // block devices, character devices, FIFOs or sockets — hence the four noes.
+        parentPath: path,
+        path,
+        isBlockDevice: () => false,
+        isCharacterDevice: () => false,
+        isFIFO: () => false,
+        isSocket: () => false,
       }))
     },
     readFile: async (path) => {
@@ -802,8 +811,7 @@ test('a slow poll never stacks up behind itself', async () => {
   const base = createIo(root)
   let reads = 0
   let stalling = false
-  let release
-  const gate = new Promise(resolve => { release = resolve })
+  const gate = Promise.withResolvers<void>()
   const io: WslSkillIo = {
     ...base,
     readdir: async (path, options) => {
@@ -811,7 +819,7 @@ test('a slow poll never stacks up behind itself', async () => {
         reads += 1
         // The first poll stalls far past the interval: a second pass must not
         // start on top of it.
-        if (reads === 1) await gate
+        if (reads === 1) await gate.promise
       }
       return base.readdir(path, options)
     },
@@ -821,7 +829,7 @@ test('a slow poll never stacks up behind itself', async () => {
   stalling = true
   await delay(80)
   const duringStall = reads
-  release()
+  gate.resolve()
   await delay(40)
   // Without the guard the interval would have started several overlapping walks
   // while the first was still awaiting; with it, one pass at a time.

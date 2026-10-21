@@ -44,7 +44,7 @@ import { execFile } from 'node:child_process'
 import { posix } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { defineTool } from '@deepseek-ai/dsh-tools'
+import { defineTool, type InferValue } from '@deepseek-ai/dsh-tools'
 import type { GrepMatch } from '@deepseek-ai/dsh-tool-fs-search'
 import {
   GLOB_MAX_RESULTS,
@@ -301,7 +301,7 @@ interface ToolsRegistryFace {
 
 /** The `ctx.systemPrompt` face, read defensively (older releases may differ). */
 interface SystemPromptFace {
-  section(section: { name: string; order?: number; text: (scope: unknown) => string }): void
+  section(section: { name: string; order?: number | undefined; text: (scope: unknown) => string }): void
   getSectionOrder?(name: string): number
 }
 
@@ -644,12 +644,20 @@ function formatGlobPage(items: readonly string[], seen: number, spillRef: SpillR
  * @param spill - the backend's reference, as returned into the canonical value.
  * @returns a render-ready reference, or undefined when there is nothing to name.
  */
-export function normalizeSpill(spill: SpillRef | undefined | null): SpillRef | undefined {
+export function normalizeSpill(spill: SpillValue | undefined | null): SpillRef | undefined {
   if (spill === undefined || spill === null) return undefined
   const locator = (spill as { locator?: unknown }).locator
   if (typeof locator !== 'string' || locator === '') return undefined
   const retrievalHint = (spill as { retrievalHint?: unknown }).retrievalHint
-  return { ...spill, locator, retrievalHint: typeof retrievalHint === 'string' ? retrievalHint : '' }
+  // The spread keeps whatever the backend carried beyond the schema's two fields
+  // (`bytes` on every measured backend), which is why the footers can still hand
+  // the host's `formatGrepOutput`/`formatGlobOutput` a `SpillRef`; the schema's
+  // open object simply cannot state it in the value type it declares.
+  return {
+    ...spill,
+    locator: locator as SpillRef['locator'],
+    retrievalHint: typeof retrievalHint === 'string' ? retrievalHint : '',
+  } as SpillRef
 }
 
 /**
@@ -666,6 +674,26 @@ const SPILL_SCHEMA = {
     retrievalHint: { type: 'string' },
   },
 } as const
+
+/**
+ * One spill reference as {@link SPILL_SCHEMA} declares it: the two fields the
+ * footer prints, plus whatever the backend carries. Derived from the schema the
+ * tools are registered with, so the value `render` receives and the value
+ * `execute` returns are checked against the same fact this file states once.
+ */
+type SpillValue = InferValue<typeof SPILL_SCHEMA>
+
+/**
+ * The backend's {@link SpillRef} in that shape. `SpillRef` is an interface, so
+ * TypeScript gives it no implicit index signature while the registry's value type
+ * is an open JSON object; the runtime object is the same either way, and the
+ * extra field (`bytes`) rides along — which is what the footer's schema test pins.
+ * @param spill - the reference the spill backend saved.
+ * @returns the same object, in the shape this tool's output schema declares.
+ */
+function asSpillValue(spill: SpillRef): SpillValue {
+  return spill as unknown as SpillValue
+}
 
 /**
  * Format one `glob` result exactly as the host suite's private `renderGlobPaths`
@@ -1012,7 +1040,7 @@ function registerGrep(ctx: Context, tools: ToolsRegistryFace, config: ResolvedCo
           spill: SPILL_SCHEMA,
         },
       },
-      render: (_args: unknown, value: { matches: GrepMatch[]; spill?: SpillRef }) => [{
+      render: (_args: unknown, value: { matches: GrepMatch[]; spill?: SpillValue }) => [{
         type: 'text',
         text: renderGrepText(value.matches, caps, normalizeSpill(value.spill)),
       }],
@@ -1064,7 +1092,7 @@ function registerGrep(ctx: Context, tools: ToolsRegistryFace, config: ResolvedCo
         'grep-results.txt',
         `Found ${matches.length} matches\n\n${formatGrepMatches(previewed)}`,
       )
-      return spill === undefined ? { matches } : { matches, spill }
+      return spill === undefined ? { matches } : { matches, spill: asSpillValue(spill) }
     },
     presentCall: presentGrepCall,
     presentResult: presentGrepResult,
@@ -1108,7 +1136,7 @@ function registerGlob(ctx: Context, tools: ToolsRegistryFace, config: ResolvedCo
           spill: SPILL_SCHEMA,
         },
       },
-      render: (_args: unknown, value: { root: string; paths: string[]; spill?: SpillRef }) => [{
+      render: (_args: unknown, value: { root: string; paths: string[]; spill?: SpillValue }) => [{
         type: 'text',
         text: renderGlobText(value.paths, caps, value.root, normalizeSpill(value.spill)),
       }],
@@ -1155,7 +1183,7 @@ function registerGlob(ctx: Context, tools: ToolsRegistryFace, config: ResolvedCo
         'glob-results.txt',
         paths.join('\n'),
       )
-      return spill === undefined ? { root, paths } : { root, paths, spill }
+      return spill === undefined ? { root, paths } : { root, paths, spill: asSpillValue(spill) }
     },
     presentCall: presentGlobCall,
     presentResult: presentGlobResult,
