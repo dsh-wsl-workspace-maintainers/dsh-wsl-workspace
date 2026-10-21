@@ -196,6 +196,11 @@ console.log(`replay: ${caughtOf(canonical)} of ${denominator}${denominator === C
   + ` | extras (${caughtOf(extras)}/${extras.length})`
   + ` | ${((Date.now() - started) / 1000).toFixed(0)}s`)
 if (skipped) console.log('note: `win32` gate rows were skipped on this platform; those units were judged without it.')
+const skippedByFlag = (process.env.DSH_REPLAY_SKIP_GATES ?? '').split(',').map(id => id.trim()).filter(Boolean)
+if (skippedByFlag.length > 0) {
+  console.log(`ADJUDICATION RUN, not the headline: gates removed by DSH_REPLAY_SKIP_GATES=${skippedByFlag.join(',')}.` +
+    ' A unit that still reddened was caught by something else; a unit that went MISS names a gate that was load-bearing.')
+}
 if (broken > 0) console.error(`replay: ${broken} unit(s) could not be measured — a plant that does not apply is not a reading.`)
 
 if (opts.json) {
@@ -207,6 +212,7 @@ if (opts.json) {
     total: CANONICAL.length,
     strict: strictOf(canonical),
     gates: idsInScope,
+    skippedGates: (process.env.DSH_REPLAY_SKIP_GATES ?? '').split(',').filter(entry => entry !== ''),
     rows,
   }, null, 2)}\n`, 'utf8')
   console.log(`replay: wrote ${relative(repoRoot, path)}`)

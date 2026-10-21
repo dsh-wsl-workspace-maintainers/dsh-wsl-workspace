@@ -74,9 +74,18 @@ export function gateById(id) {
   return gate
 }
 
-/** @returns the gate ids runnable on this platform, extras included (off-Windows skips `win32`). */
+/**
+ * @returns the gate ids runnable on this platform, extras included (off-Windows skips `win32`).
+ *
+ * `DSH_REPLAY_SKIP_GATES=artifacts,docs` also removes named gates. It exists for one question —
+ * *is this gate load-bearing?* — because a run stops at the first red, so a gate late in the order
+ * can read "caught nothing" while every plant it would have caught was already caught upstream.
+ * Removing it from the run is the only way to tell that apart from genuinely dead weight, and the
+ * deletion decision in stage 5 is taken on that reading rather than on the ordering artefact.
+ */
 export function runnableIds(ids) {
-  return ids.filter(id => !(id === 'win32' && process.platform !== 'win32'))
+  const skipped = (process.env.DSH_REPLAY_SKIP_GATES ?? '').split(',').map(id => id.trim()).filter(Boolean)
+  return ids.filter(id => !(id === 'win32' && process.platform !== 'win32') && !skipped.includes(id))
 }
 
 /** A clean tree is a precondition: the engine reverts with `git checkout -- <file>`. */
