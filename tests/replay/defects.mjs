@@ -17,24 +17,29 @@
 // `MEASURED` lines are readings, written by `node tests/replay/run.mjs` runs, not expectations. When a
 // reading goes stale the row below it is what needs re-running.
 //
-// MEASURED 2026-10-21, head 89e3162, Windows + pinned closure, 337 s:
+// MEASURED 2026-10-21, head ff342c8, Windows + pinned closure + jsdom/react reified, 301 s:
 //
-//   replay: 18 of 20 caught — class-wide devices (strict): 5
+//   replay: 20 of 20 caught - 17 by a check whose own name does not cite the issue
 //
-//   Strict (a device that never saw this issue caught it): #20 client, #89 install, #12 win32,
-//     #25 win32, #50 node+unit.
-//   Half-misses, both named in the unit's own plants:
-//     #78 — the guard's predicate reddens, but `applyRunCodeGuard(ctx)` un-mounted reddens nothing:
-//       the mount itself has no lock.
-//     #99 — the render condition reddens, but dropping the `presetIssue ?? null` fold reddens nothing:
-//       only the truthiness check is holding the empty strip up.
-//   Extras: #95 caught (verify:lib-sync, generic — a stale bundle is a pipeline fact, not a case);
-//     #96 MISS (no test ever renders the rail shape, so nothing compares the glyph);
-//     #105 MISS (gates compare row **ids** and row counts, never the tool-name set the host rejects).
+// The three the name rule calls case-specific: #47 (install shapes), #56 (the jobs pull-source), #78
+// (the mount cell in `host-materialize`, whose label says "(#78)"). Seventeen is NOT the same
+// measurement as the "strict 5" printed on the first run: that judged a catch by whether the *file*
+// mentioned the issue, which punished a class-wide device for documenting its origin. The rule now
+// reads the failing check's name - a weaker claim than "class-wide", stated at that strength on
+// purpose. Both readings of the same idea: 5 under the old rule, 17 under this one.
 //
-// What this number is not: it is not #101's 0 of 20. That measured the suite of the time; G1–G5 and the
-// per-issue regression locks landed after it, and 13 of these 18 are caught by a lock written for that
-// exact issue. The reading that answers "would the next one be caught" is the strict one, and it is 5.
+// The caught rate, in order, all on this table:
+//   0 of 20  - what #101 measured, against the suite as it stood before G1-G5 existed.
+//   18 of 20 - this ruler's first run (head 89e3162). The two half-misses: #78, whose guard mount had
+//              no lock, and #99, whose second plant turned out to have no observable effect at all.
+//   20 of 20 - after stage 2's contract gate (#105's class) and stage 4's rendered-text cases (#96's
+//              rail shape), plus the #99 plant rewritten as the defect actually shipped.
+// Extras #95, #96, #105 are all caught. #105 by `test:contract`, which also still reports the live
+// collision as a registered gap, because the product fix has not been made.
+//
+// What the number is not: it does not say the suite catches the next defect. It says every defect this
+// repository has suffered can be re-planted and is noticed. The residual risk is the classes with no
+// row here at all - which is why the table only grows from a real report.
 
 /** The six fast per-commit gates, in run order; a unit may add planes or override the list. */
 const FAST = ['unit', 'world', 'artifacts', 'install', 'client', 'docs']
