@@ -85,6 +85,11 @@ jobs:
       # distribution and Linux directory a session is in. Needs the pinned host tree (schemastery).
       - name: world-consistency table
         run: npm run test:world
+      # The host-interface contract: the names this plugin asks the host to honour, diffed against what
+      # the pinned host actually declares. TypeScript covers the typed half; a service string or a tool
+      # name two rows claim is invisible to it, and four of the 20 replayed defects are that shape.
+      - name: host-interface contract
+        run: npm run test:contract
       # The artifact we hand the host, against the host's own rules (#101, G3), and the install
       # shapes it is loaded from (#101, G4). Both read the pinned closure; neither boots anything.
       - name: artifact semantics of the generated variants

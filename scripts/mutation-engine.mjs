@@ -61,6 +61,7 @@ export const EXTRA_GATES = [
   { id: 'node', script: 'test:node' },
   { id: 'win32', script: 'test:win32' },
   { id: 'libsync', script: 'verify:lib-sync' },
+  { id: 'contract', script: 'test:contract' },
 ]
 
 /** Gates that answer from the built bundle: a `src/` edit is invisible to them until `lib/` is rebuilt. */

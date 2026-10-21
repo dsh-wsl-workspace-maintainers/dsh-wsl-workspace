@@ -69,6 +69,13 @@ jobs:
           fi
       - name: a plain npm install of this tree works
         run: node scripts/verify-install.mjs
+      - name: the host contract the artifact stands on is the recorded one
+        # A release is the moment a drifted host name reaches users. `dshReleases` in the manifest is a
+        # table someone types and nothing verifies; this reads the pinned host tree and refuses an
+        # unrecorded collision or a moved name, and points at the replay unit that measures the class.
+        run: |
+          node ci/install-pinned.mjs
+          npm run test:contract
       - name: publish through Trusted Publishing
         # No NODE_AUTH_TOKEN: npm exchanges the workflow's OIDC identity for a short-lived publish grant,
         # and `--provenance` records which commit and workflow produced these bytes.

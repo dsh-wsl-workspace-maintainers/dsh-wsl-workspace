@@ -1,0 +1,650 @@
+{
+  "note": "derived by `node scripts/check-host-contract.mjs --update`; the contract this plugin stands on, as the pinned host carried it. Do not hand-edit.",
+  "host": "dsh@0.2.1-rc.2",
+  "contract": {
+    "host": "dsh@0.2.1-rc.2",
+    "services": [
+      "agentPresets",
+      "attachments",
+      "connection",
+      "fs",
+      "jobs",
+      "llm",
+      "logger",
+      "remote.agentPresets",
+      "sandboxPolicy",
+      "sessions",
+      "shell",
+      "shellEnv",
+      "sidebarRight",
+      "skills",
+      "subprocess",
+      "systemPrompt",
+      "terminals",
+      "tools",
+      "uiWorkspace",
+      "webServer",
+      "workspaces"
+    ],
+    "toolNamesByOwnFile": {
+      "lib/wsl-bash-tool.js": [
+        "bash"
+      ],
+      "lib/wsl-image-tool.js": [
+        "read_image"
+      ],
+      "lib/wsl-jobs.js": [
+        "bash_background"
+      ],
+      "lib/wsl-search.js": [
+        "glob",
+        "grep"
+      ],
+      "lib/wsl-terminal-tool.js": [
+        "wsl_terminal"
+      ]
+    },
+    "worlds": [
+      {
+        "key": "cordis/session/wsl-world",
+        "rows": [
+          {
+            "id": "shell-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/shell.js",
+            "claims": null
+          },
+          {
+            "id": "fs-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/fs.js",
+            "claims": null
+          },
+          {
+            "id": "sandbox-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-sandbox.js",
+            "claims": null
+          },
+          {
+            "id": "tool-fs",
+            "name": "@deepseek-ai/dsh-tool-fs",
+            "claims": [
+              "edit",
+              "read",
+              "read_image",
+              "write"
+            ]
+          },
+          {
+            "id": "read-image-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-image-tool.js",
+            "claims": [
+              "read_image"
+            ]
+          },
+          {
+            "id": "search-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-search.js",
+            "claims": [
+              "glob",
+              "grep"
+            ]
+          },
+          {
+            "id": "jobs-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-jobs.js",
+            "claims": [
+              "bash_background"
+            ]
+          },
+          {
+            "id": "bash-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-bash-tool.js",
+            "claims": [
+              "bash"
+            ]
+          },
+          {
+            "id": "terminal-door",
+            "name": "cordis:group",
+            "claims": null
+          },
+          {
+            "id": "pty",
+            "name": "@deepseek-ai/dsh-terminal",
+            "claims": []
+          },
+          {
+            "id": "terminal-wsl",
+            "name": "@deepseek-ai/dsh-terminal-bash",
+            "claims": []
+          },
+          {
+            "id": "terminal-door-tool",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-terminal-tool.js",
+            "claims": [
+              "wsl_terminal"
+            ]
+          }
+        ]
+      },
+      {
+        "key": "cordis/pty/wsl-world",
+        "rows": [
+          {
+            "id": "shell-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/shell.js",
+            "claims": null
+          },
+          {
+            "id": "fs-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/fs.js",
+            "claims": null
+          },
+          {
+            "id": "sandbox-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-sandbox.js",
+            "claims": null
+          },
+          {
+            "id": "tool-fs",
+            "name": "@deepseek-ai/dsh-tool-fs",
+            "claims": [
+              "edit",
+              "read",
+              "read_image",
+              "write"
+            ]
+          },
+          {
+            "id": "read-image-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-image-tool.js",
+            "claims": [
+              "read_image"
+            ]
+          },
+          {
+            "id": "search-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-search.js",
+            "claims": [
+              "glob",
+              "grep"
+            ]
+          },
+          {
+            "id": "jobs-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-jobs.js",
+            "claims": [
+              "bash_background"
+            ]
+          },
+          {
+            "id": "persistent-shell",
+            "name": "cordis:group",
+            "claims": null
+          },
+          {
+            "id": "pty",
+            "name": "@deepseek-ai/dsh-terminal",
+            "claims": []
+          },
+          {
+            "id": "terminal-wsl",
+            "name": "@deepseek-ai/dsh-terminal-bash",
+            "claims": []
+          },
+          {
+            "id": "persistent-bash",
+            "name": "@deepseek-ai/dsh-tool-bash-persistent",
+            "claims": [
+              "bash"
+            ]
+          }
+        ]
+      },
+      {
+        "key": "minimal/session/wsl-world",
+        "rows": [
+          {
+            "id": "shell-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/shell.js",
+            "claims": null
+          },
+          {
+            "id": "fs-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/fs.js",
+            "claims": null
+          },
+          {
+            "id": "sandbox-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-sandbox.js",
+            "claims": null
+          },
+          {
+            "id": "tool-fs",
+            "name": "@deepseek-ai/dsh-tool-fs",
+            "claims": [
+              "edit",
+              "read",
+              "read_image",
+              "write"
+            ]
+          },
+          {
+            "id": "read-image-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-image-tool.js",
+            "claims": [
+              "read_image"
+            ]
+          },
+          {
+            "id": "bash-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-bash-tool.js",
+            "claims": [
+              "bash"
+            ]
+          },
+          {
+            "id": "terminal-door",
+            "name": "cordis:group",
+            "claims": null
+          },
+          {
+            "id": "pty",
+            "name": "@deepseek-ai/dsh-terminal",
+            "claims": []
+          },
+          {
+            "id": "terminal-wsl",
+            "name": "@deepseek-ai/dsh-terminal-bash",
+            "claims": []
+          },
+          {
+            "id": "terminal-door-tool",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-terminal-tool.js",
+            "claims": [
+              "wsl_terminal"
+            ]
+          }
+        ]
+      },
+      {
+        "key": "minimal/pty/wsl-world",
+        "rows": [
+          {
+            "id": "shell-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/shell.js",
+            "claims": null
+          },
+          {
+            "id": "fs-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/fs.js",
+            "claims": null
+          },
+          {
+            "id": "sandbox-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-sandbox.js",
+            "claims": null
+          },
+          {
+            "id": "tool-fs",
+            "name": "@deepseek-ai/dsh-tool-fs",
+            "claims": [
+              "edit",
+              "read",
+              "read_image",
+              "write"
+            ]
+          },
+          {
+            "id": "read-image-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-image-tool.js",
+            "claims": [
+              "read_image"
+            ]
+          },
+          {
+            "id": "persistent-shell",
+            "name": "cordis:group",
+            "claims": null
+          },
+          {
+            "id": "pty",
+            "name": "@deepseek-ai/dsh-terminal",
+            "claims": []
+          },
+          {
+            "id": "terminal-wsl",
+            "name": "@deepseek-ai/dsh-terminal-bash",
+            "claims": []
+          },
+          {
+            "id": "persistent-bash",
+            "name": "@deepseek-ai/dsh-tool-bash-persistent",
+            "claims": [
+              "bash"
+            ]
+          }
+        ]
+      },
+      {
+        "key": "ptc/session/wsl-world",
+        "rows": [
+          {
+            "id": "shell-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/shell.js",
+            "claims": null
+          },
+          {
+            "id": "fs-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/fs.js",
+            "claims": null
+          },
+          {
+            "id": "sandbox-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-sandbox.js",
+            "claims": null
+          },
+          {
+            "id": "tool-fs",
+            "name": "@deepseek-ai/dsh-tool-fs",
+            "claims": [
+              "edit",
+              "read",
+              "read_image",
+              "write"
+            ]
+          },
+          {
+            "id": "read-image-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-image-tool.js",
+            "claims": [
+              "read_image"
+            ]
+          },
+          {
+            "id": "search-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-search.js",
+            "claims": [
+              "glob",
+              "grep"
+            ]
+          },
+          {
+            "id": "jobs-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-jobs.js",
+            "claims": [
+              "bash_background"
+            ]
+          },
+          {
+            "id": "bash-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-bash-tool.js",
+            "claims": [
+              "bash"
+            ]
+          },
+          {
+            "id": "terminal-door",
+            "name": "cordis:group",
+            "claims": null
+          },
+          {
+            "id": "pty",
+            "name": "@deepseek-ai/dsh-terminal",
+            "claims": []
+          },
+          {
+            "id": "terminal-wsl",
+            "name": "@deepseek-ai/dsh-terminal-bash",
+            "claims": []
+          },
+          {
+            "id": "terminal-door-tool",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-terminal-tool.js",
+            "claims": [
+              "wsl_terminal"
+            ]
+          }
+        ]
+      },
+      {
+        "key": "ptc/pty/wsl-world",
+        "rows": [
+          {
+            "id": "shell-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/shell.js",
+            "claims": null
+          },
+          {
+            "id": "fs-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/fs.js",
+            "claims": null
+          },
+          {
+            "id": "sandbox-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-sandbox.js",
+            "claims": null
+          },
+          {
+            "id": "tool-fs",
+            "name": "@deepseek-ai/dsh-tool-fs",
+            "claims": [
+              "edit",
+              "read",
+              "read_image",
+              "write"
+            ]
+          },
+          {
+            "id": "read-image-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-image-tool.js",
+            "claims": [
+              "read_image"
+            ]
+          },
+          {
+            "id": "search-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-search.js",
+            "claims": [
+              "glob",
+              "grep"
+            ]
+          },
+          {
+            "id": "jobs-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-jobs.js",
+            "claims": [
+              "bash_background"
+            ]
+          },
+          {
+            "id": "persistent-shell",
+            "name": "cordis:group",
+            "claims": null
+          },
+          {
+            "id": "pty",
+            "name": "@deepseek-ai/dsh-terminal",
+            "claims": []
+          },
+          {
+            "id": "terminal-wsl",
+            "name": "@deepseek-ai/dsh-terminal-bash",
+            "claims": []
+          },
+          {
+            "id": "persistent-bash",
+            "name": "@deepseek-ai/dsh-tool-bash-persistent",
+            "claims": [
+              "bash"
+            ]
+          }
+        ]
+      },
+      {
+        "key": "standard/session/wsl-world",
+        "rows": [
+          {
+            "id": "shell-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/shell.js",
+            "claims": null
+          },
+          {
+            "id": "fs-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/fs.js",
+            "claims": null
+          },
+          {
+            "id": "sandbox-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-sandbox.js",
+            "claims": null
+          },
+          {
+            "id": "tool-fs",
+            "name": "@deepseek-ai/dsh-tool-fs",
+            "claims": [
+              "edit",
+              "read",
+              "read_image",
+              "write"
+            ]
+          },
+          {
+            "id": "read-image-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-image-tool.js",
+            "claims": [
+              "read_image"
+            ]
+          },
+          {
+            "id": "search-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-search.js",
+            "claims": [
+              "glob",
+              "grep"
+            ]
+          },
+          {
+            "id": "jobs-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-jobs.js",
+            "claims": [
+              "bash_background"
+            ]
+          },
+          {
+            "id": "bash-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-bash-tool.js",
+            "claims": [
+              "bash"
+            ]
+          },
+          {
+            "id": "terminal-door",
+            "name": "cordis:group",
+            "claims": null
+          },
+          {
+            "id": "pty",
+            "name": "@deepseek-ai/dsh-terminal",
+            "claims": []
+          },
+          {
+            "id": "terminal-wsl",
+            "name": "@deepseek-ai/dsh-terminal-bash",
+            "claims": []
+          },
+          {
+            "id": "terminal-door-tool",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-terminal-tool.js",
+            "claims": [
+              "wsl_terminal"
+            ]
+          }
+        ]
+      },
+      {
+        "key": "standard/pty/wsl-world",
+        "rows": [
+          {
+            "id": "shell-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/shell.js",
+            "claims": null
+          },
+          {
+            "id": "fs-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/fs.js",
+            "claims": null
+          },
+          {
+            "id": "sandbox-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-sandbox.js",
+            "claims": null
+          },
+          {
+            "id": "tool-fs",
+            "name": "@deepseek-ai/dsh-tool-fs",
+            "claims": [
+              "edit",
+              "read",
+              "read_image",
+              "write"
+            ]
+          },
+          {
+            "id": "read-image-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-image-tool.js",
+            "claims": [
+              "read_image"
+            ]
+          },
+          {
+            "id": "search-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-search.js",
+            "claims": [
+              "glob",
+              "grep"
+            ]
+          },
+          {
+            "id": "jobs-wsl",
+            "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-jobs.js",
+            "claims": [
+              "bash_background"
+            ]
+          },
+          {
+            "id": "persistent-shell",
+            "name": "cordis:group",
+            "claims": null
+          },
+          {
+            "id": "pty",
+            "name": "@deepseek-ai/dsh-terminal",
+            "claims": []
+          },
+          {
+            "id": "terminal-wsl",
+            "name": "@deepseek-ai/dsh-terminal-bash",
+            "claims": []
+          },
+          {
+            "id": "persistent-bash",
+            "name": "@deepseek-ai/dsh-tool-bash-persistent",
+            "claims": [
+              "bash"
+            ]
+          }
+        ]
+      }
+    ],
+    "collisions": [
+      "cordis/pty/wsl-world read_image read-image-wsl+tool-fs",
+      "cordis/session/wsl-world read_image read-image-wsl+tool-fs",
+      "minimal/pty/wsl-world read_image read-image-wsl+tool-fs",
+      "minimal/session/wsl-world read_image read-image-wsl+tool-fs",
+      "ptc/pty/wsl-world read_image read-image-wsl+tool-fs",
+      "ptc/session/wsl-world read_image read-image-wsl+tool-fs",
+      "standard/pty/wsl-world read_image read-image-wsl+tool-fs",
+      "standard/session/wsl-world read_image read-image-wsl+tool-fs"
+    ]
+  }
+}
