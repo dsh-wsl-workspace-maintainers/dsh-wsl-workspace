@@ -331,6 +331,7 @@ export const UNITS = [
         file: 'src/index.ts',
         find: '  applyRunCodeGuard(ctx)',
         replace: '  // planted: the guard is no longer mounted',
+        build: true,
         gates: [...FAST, 'node'],
         note: 'the guard exists but nothing installs it — the whole surface, not one branch',
       },
