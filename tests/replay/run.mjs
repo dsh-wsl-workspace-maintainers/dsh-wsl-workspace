@@ -104,6 +104,8 @@ function summarise(output) {
   const names = []
   for (const match of output.matchAll(/^\s*(?:✖|not ok \d+ -)\s+(.+?)(?:\s*\(\d+[^)]*\))?\s*$/gm)) {
     const name = match[1].trim()
+    // The runner repeats a header before its summary; it is not the name of a check.
+    if (name === '' || name === 'failing tests:') continue
     if (!names.includes(name)) names.push(name)
     if (names.length === 2) break
   }
@@ -199,7 +201,9 @@ const broken = rows.filter(row => row.verdict === 'INVALID').length
 const skipped = runnableIds(idsInScope).length !== idsInScope.length
 
 console.log('')
-console.log(`replay: ${caughtOf(canonical)} of ${CANONICAL.length} caught`
+// A `--only` run must not read like the headline: the denominator says which units were actually run.
+const denominator = opts.only === undefined ? CANONICAL.length : canonical.length
+console.log(`replay: ${caughtOf(canonical)} of ${denominator}${denominator === CANONICAL.length ? '' : ' (selected)'} caught`
   + ` — class-wide devices (strict): ${strictOf(canonical)}`
   + ` | extras (${caughtOf(extras)}/${extras.length})`
   + ` | ${((Date.now() - started) / 1000).toFixed(0)}s`)

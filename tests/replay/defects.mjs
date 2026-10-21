@@ -103,12 +103,23 @@ export const UNITS = [
     symptom: '`未找到健康的 wsl preset`: zero `wsl-*` variants generated on Desktop',
     trigger: 'a sibling plugin hoists an incompatible major over this package’s `*` range for js-yaml',
     // Class property: a parse-critical dependency left to whatever the install tree hoists.
-    plants: [{
-      file: 'package.json',
-      find: '    "js-yaml": "^4.1.0"',
-      replace: '    "js-yaml": "*"  ',
-      note: 'the pinned 4.x range becomes whatever the hoisted tree happens to carry',
-    }],
+    plants: [
+      {
+        file: 'package.json',
+        find: '    "js-yaml": "^4.1.0"',
+        replace: '    "js-yaml": "*"  ',
+        note: 'the pinned 4.x range becomes whatever the hoisted tree happens to carry',
+      },
+      {
+        // Ported from `scripts/mutation-sweep.mjs:manifest-drop-dep`, which carried no issue number;
+        // #47 is the report that made the range load-bearing (a hoisted 5.x `load()` against a 4.x
+        // schema is the second half of that issue).
+        file: 'package.json',
+        find: '    "js-yaml": "^4.1.0"',
+        replace: '    "js-yaml": "^5.0.0"',
+        note: 'the range drifts to the major whose API does not take the 4.x schema',
+      },
+    ],
   },
   {
     id: 'jobs-pull-sources',
@@ -335,13 +346,34 @@ export const UNITS = [
     trigger: 'a session cwd that is a registered Windows drive path (`F:\\TechEnergy\\Code\\Scanner`)',
     // Class property: a provider that knows only the UNC and absolute-Linux cwd shapes, refusing the
     // drive shape instead of reading the distribution from the registration.
-    plants: [{
-      file: 'src/host/wsl-search.ts',
-      find: '  const mnt = windowsToMntPath(cwd)',
-      replace: '  const mnt = null as unknown as ReturnType<typeof windowsToMntPath>',
-      gates: [...FAST, 'node'],
-      note: 'the drive branch disappears, so a drive cwd names no world',
-    }],
+    plants: [
+      {
+        file: 'src/host/wsl-search.ts',
+        find: '  const mnt = windowsToMntPath(cwd)',
+        replace: '  const mnt = null as unknown as ReturnType<typeof windowsToMntPath>',
+        gates: [...FAST, 'node'],
+        note: 'the drive branch disappears, so a drive cwd names no world',
+      },
+      {
+        // Ported from `scripts/mutation-sweep.mjs:paths-drive-case` (2026-10-20), where it was planted
+        // without a defect number attached to it. #86 is that number: the same `/mnt/<drive>` key,
+        // reached through the case-fold instead of the branch.
+        file: 'src/shared/paths.ts',
+        find: "return `/mnt/${(match[1] ?? '').toLowerCase()}",
+        replace: "return `/mnt/${(match[1] ?? '')}",
+        gates: [...FAST, 'node'],
+        note: 'a drive letter stops being case-folded, so the same directory carries two keys',
+      },
+      {
+        // Ported from `scripts/mutation-sweep.mjs:skills-read-share`. #86's mirror, never reported:
+        // a drive workspace reads its skills through the 9P share again, which cannot serve drvfs.
+        file: 'src/host/wsl-skills.ts',
+        find: 'return mntToWindowsPath(linuxPath) ?? joinUnc(distro, linuxPath)',
+        replace: 'return joinUnc(distro, linuxPath)',
+        gates: [...FAST, 'win32'],
+        note: 'a drive workspace reads its skill catalog through a share that cannot serve it',
+      },
+    ],
   },
   {
     id: 'empty-error-strip',
@@ -383,12 +415,23 @@ export const UNITS = [
     symptom: 'the distribution picker is empty / reports WSL2 missing while `wsl.exe -l -q` works in a terminal',
     trigger: "a host `PATH` that omits `System32`, so the bare `wsl.exe` name is unstartable",
     // Class property: spawning a PATH name with no absolute fallback.
-    plants: [{
-      file: 'src/shared/wsl.ts',
-      find: '  return [wslPath, absolute]',
-      replace: '  return [wslPath]',
-      note: 'the absolute candidate is dropped from the list',
-    }],
+    plants: [
+      {
+        file: 'src/shared/wsl.ts',
+        find: '  return [wslPath, absolute]',
+        replace: '  return [wslPath]',
+        note: 'the absolute candidate is dropped from the list',
+      },
+      {
+        // Ported from `scripts/mutation-sweep.mjs:decode-utf8-always`. Reported as #36 by its symptom —
+        // an empty picker with nothing thrown — which is exactly what a mis-decoded UTF-16LE answer
+        // produces: the names arrive as mojibake and every comparison misses.
+        file: 'src/shared/wsl.ts',
+        find: "return looksUtf16Le(buffer) ? buffer.toString('utf16le') : buffer.toString('utf8')",
+        replace: "return buffer.toString('utf8')",
+        note: 'the UTF-16LE sniff is dropped, so every distribution name arrives as mojibake',
+      },
+    ],
   },
   {
     id: 'fallback-interpreter-demotes',
@@ -495,9 +538,20 @@ export const UNITS = [
         return [...lines.slice(0, index + 2), ...twin, ...lines.slice(index + 2)].join('\n')
       },
       build: true,
-      gates: [...FAST, 'node'],
-      note: 'a second row mounts the same tool name under a different id',
-    }],
+        gates: [...FAST, 'node'],
+        note: 'a second row mounts the same tool name under a different id',
+      },
+      {
+        // Ported from `scripts/mutation-sweep.mjs:variants-world-twice`. The sweep planted it as a
+        // copy/paste with no defect behind it; #105 is the report that says what the loader does when
+        // the world declares one thing twice — it refuses the whole variant.
+        file: 'src/host/variants.ts',
+        find: '  result.push(wslWorldGroup(shellPath, fsPath, sawEditor, persistent, sawSearch ? searchPath : undefined, jobsPath, sawJobs, imagePath))',
+        replace: '  result.push(wslWorldGroup(shellPath, fsPath, sawEditor, persistent, sawSearch ? searchPath : undefined, jobsPath, sawJobs, imagePath))\n  result.push(wslWorldGroup(shellPath, fsPath, sawEditor, persistent, sawSearch ? searchPath : undefined, jobsPath, sawJobs, imagePath))',
+        gates: [...FAST, 'node'],
+        note: 'the world group is pushed twice, so every row id it carries appears twice',
+      },
+    ],
   },
 ]
 
