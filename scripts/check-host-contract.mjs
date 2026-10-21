@@ -57,18 +57,16 @@ function hostVersion() {
   return 'unknown'
 }
 
-/** A collision we already know about and have not yet been allowed to fix. */
-const REGISTERED_GAPS = [
-  {
-    tool: 'read_image',
-    rows: ['tool-fs', 'read-image-wsl'],
-    issue: 105,
-    reason: 'the host registers `read_image` from `dsh-tool-fs` with `readImage` defaulting to true, and '
-      + 'the world mounts its own realm-safe answer beside it. #54 forced that second row; #105 is the '
-      + 'scope semantics that stopped tolerating it. The product fix is one config line on the host row '
-      + 'and is not a test change, so it is registered rather than silently waved.',
-  },
-]
+/**
+ * Collisions the world is knowingly shipping, each with the defect that owns it.
+ *
+ * Empty, and it stays empty unless a gap is earned: the loop below reddens when a registered collision
+ * **stops** happening, so an entry cannot outlive its defect, and an unregistered one reddens the gate.
+ * #105 sat here from the gate's first run until the product stopped mounting two rows that claim
+ * `read_image` — the host's fs row now carries `readImage: false` and the world's own realm-safe answer
+ * is the single owner of that name.
+ */
+const REGISTERED_GAPS = []
 
 /** Which replay unit a name is about, so a drift report can point at the measurement. */
 const NAME_UNITS = {
@@ -150,19 +148,6 @@ function worlds(ownClaims) {
     throw new Error(`host-contract: ${presets.length} shipped presets under ${PRESET_DIR} — the closure is not the one the tests were written against`)
   }
   const libPath = file => join(repoRoot, 'lib', file).replaceAll('\\', '/')
-  const rowsOf = text => {
-    const lines = text.split('\n')
-    const rows = []
-    for (let index = 0; index < lines.length; index += 1) {
-      const id = /^[ ]*- id: ([A-Za-z0-9._-]+)\s*$/.exec(lines[index] ?? '')
-      if (id === null) continue
-      const named = /^[ ]*name: '?([^'\n]+?)'?\s*$/.exec(lines[index + 1] ?? '')
-      if (named === null) continue
-      rows.push({ id: id[1], name: named[1] })
-    }
-    if (rows.length < 4) throw new Error(`host-contract: a generated world carried ${rows.length} rows — the row reader is blind`)
-    return rows
-  }
   const variants = []
   for (const preset of presets) {
     for (const mode of ['session', 'pty']) {
@@ -188,10 +173,16 @@ function worlds(ownClaims) {
           preset: preset.replace(/\.patch\.yml$/, ''),
           mode,
           id: variant.id,
-          rows: variant.rows.map(row => ({
-            ...row,
-            claims: claimsOf(row.name, ownClaims),
-          })),
+          rows: variant.rows.map(row => {
+            const claims = claimsOf(row.name, ownClaims)
+            const off = toolOff(row.config ?? {})
+            const all = claims.names ?? []
+            return {
+              ...row,
+              claims: { ...claims, names: all.filter(tool => !off.has(tool)) },
+              suppressed: all.filter(tool => off.has(tool)),
+            }
+          }),
         })
       }
     }
@@ -242,10 +233,52 @@ function rowsFrom(body) {
     if (id === null) continue
     const named = /^[ ]*name: '?([^'\n]+?)'?\s*$/.exec(lines[index + 1] ?? '')
     if (named === null) continue
-    rows.push({ id: id[1], name: named[1] })
+    rows.push({ id: id[1], name: named[1], config: scalarConfigOf(lines, index + 2) })
   }
   if (rows.length < 4) throw new Error(`host-contract: a generated world carried ${rows.length} rows — the row reader is blind`)
   return rows
+}
+
+/**
+ * The scalar `config:` entries a row carries, read from the lines that follow it.
+ *
+ * A tool the author switched off is not a claim: `readImage: false` on the host's fs row is what keeps
+ * `read_image` single-registered (#105), and a checker that counted package claims without the row's own
+ * config would report a collision the world does not have.
+ */
+function scalarConfigOf(lines, from) {
+  const config = {}
+  let configIndent = -1
+  for (let index = from; index < lines.length; index += 1) {
+    const line = lines[index] ?? ''
+    if (line.trim() === '' || /^[ ]*- id: /.test(line)) break
+    const indent = (/^(\s*)/.exec(line) ?? [''])[0].length
+    if (/^[ ]*config:[ ]*$/.test(line)) {
+      configIndent = indent
+      continue
+    }
+    if (configIndent < 0) continue
+    if (indent <= configIndent) {
+      configIndent = -1
+      continue
+    }
+    const entry = /^([A-Za-z0-9_]+):[ ]*(\S.*)$/.exec(line.trim())
+    if (entry !== null) config[entry[1]] = entry[2]
+  }
+  return config
+}
+
+/**
+ * The tool names a row's config turns off.
+ *
+ * The host spells its toggles in camelCase and its tools in snake_case (`readImage` → `read_image`).
+ * That convention is asserted in `--self-test`: a checker that quietly stopped suppressing anything
+ * would report zero collisions for exactly the wrong reason.
+ */
+function toolOff(config) {
+  return new Set(Object.entries(config)
+    .filter(([, value]) => value === 'false')
+    .map(([key]) => key.replace(/[A-Z0-9]/g, letter => `_${letter.toLowerCase()}`)))
 }
 
 /** What a row's `name:` claims: a host package, or one of our files. */
@@ -287,22 +320,33 @@ export function findCollisions(variants) {
   return found
 }
 
-/** A planted collision, used to prove the detector is not reading an empty room. */
+/** A planted collision, and the one config line that excuses it — both asserted, or the rule is a wish. */
 function selfTest() {
-  const fixture = [{
+  const rows = (config, second) => [{
     preset: 'fixture',
     mode: 'session',
     id: 'wsl-standard',
     rows: [
-      { id: 'tool-fs', name: '@deepseek-ai/dsh-tool-fs', claims: { names: ['read', 'read_image'] } },
-      { id: 'read-image-wsl', name: 'file:lib/wsl-image-tool.js', claims: { names: ['read_image'] } },
+      { id: 'tool-fs', name: '@deepseek-ai/dsh-tool-fs', config, claims: { names: ['read', 'read_image'] } },
+      { id: 'read-image-wsl', name: 'file:lib/wsl-image-tool.js', claims: { names: second } },
     ],
   }]
-  const hits = findCollisions(fixture)
-  const fired = hits.some(hit => hit.tool === 'read_image' && hit.rows.join(',') === 'read-image-wsl,tool-fs')
-  console.log(`host-contract: self-test ${fired ? 'PLANTED COLLISION DETECTED' : 'DID NOT FIRE'} (${JSON.stringify(hits)})`)
-  if (!fired) process.exit(1)
-  process.exit(0)
+  const apply = variant => {
+    variant.rows = variant.rows.map(row => {
+      const off = toolOff(row.config ?? {})
+      return { ...row, claims: { names: (row.claims.names ?? []).filter(tool => !off.has(tool)) } }
+    })
+    return variant
+  }
+  const withBoth = rows({}, ['read_image'])
+  const fired = findCollisions(withBoth).some(hit => hit.tool === 'read_image' && hit.rows.join(',') === 'read-image-wsl,tool-fs')
+  // The config text is parsed the way a generated world's is, so the control exercises the reader too.
+  const configured = scalarConfigOf(['      config:', '        readImage: false', ''], 0)
+  const excused = findCollisions([apply(rows(configured, ['read_image'])[0])])
+  const spelling = toolOff(configured).has('read_image')
+  const ok = fired && excused.length === 0 && spelling
+  console.log(`host-contract: self-test collision-fires=${fired} config-excused=${excused.length === 0} camel-to-snake=${spelling}`)
+  process.exit(ok ? 0 : 1)
 }
 
 if (flag('--self-test')) selfTest()
@@ -339,7 +383,14 @@ const observed = {
   toolNamesByOwnFile,
   worlds: variants.map(variant => ({
     key: `${variant.preset}/${variant.mode}/${variant.id}`,
-    rows: variant.rows.map(row => ({ id: row.id, name: row.name, claims: row.claims.names })),
+    rows: variant.rows.map(row => ({
+      id: row.id,
+      name: row.name,
+      claims: row.claims.names,
+      // Named, so a config line that switched off nothing is visible in the record instead of reading
+      // as "no collision anywhere".
+      ...(row.suppressed.length === 0 ? {} : { suppressed: row.suppressed }),
+    })),
   })),
   collisions: collisions.map(hit => `${hit.variant} ${hit.tool} ${hit.rows.join('+')}`).sort(),
 }

@@ -51,17 +51,17 @@
           {
             "id": "shell-wsl",
             "name": "D:/MyProject/dsh-wsl-workspace/lib/shell.js",
-            "claims": null
+            "claims": []
           },
           {
             "id": "fs-wsl",
             "name": "D:/MyProject/dsh-wsl-workspace/lib/fs.js",
-            "claims": null
+            "claims": []
           },
           {
             "id": "sandbox-wsl",
             "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-sandbox.js",
-            "claims": null
+            "claims": []
           },
           {
             "id": "tool-fs",
@@ -69,8 +69,10 @@
             "claims": [
               "edit",
               "read",
-              "read_image",
               "write"
+            ],
+            "suppressed": [
+              "read_image"
             ]
           },
           {
@@ -105,7 +107,7 @@
           {
             "id": "terminal-door",
             "name": "cordis:group",
-            "claims": null
+            "claims": []
           },
           {
             "id": "pty",
@@ -132,17 +134,17 @@
           {
             "id": "shell-wsl",
             "name": "D:/MyProject/dsh-wsl-workspace/lib/shell.js",
-            "claims": null
+            "claims": []
           },
           {
             "id": "fs-wsl",
             "name": "D:/MyProject/dsh-wsl-workspace/lib/fs.js",
-            "claims": null
+            "claims": []
           },
           {
             "id": "sandbox-wsl",
             "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-sandbox.js",
-            "claims": null
+            "claims": []
           },
           {
             "id": "tool-fs",
@@ -150,8 +152,10 @@
             "claims": [
               "edit",
               "read",
-              "read_image",
               "write"
+            ],
+            "suppressed": [
+              "read_image"
             ]
           },
           {
@@ -179,7 +183,7 @@
           {
             "id": "persistent-shell",
             "name": "cordis:group",
-            "claims": null
+            "claims": []
           },
           {
             "id": "pty",
@@ -206,17 +210,17 @@
           {
             "id": "shell-wsl",
             "name": "D:/MyProject/dsh-wsl-workspace/lib/shell.js",
-            "claims": null
+            "claims": []
           },
           {
             "id": "fs-wsl",
             "name": "D:/MyProject/dsh-wsl-workspace/lib/fs.js",
-            "claims": null
+            "claims": []
           },
           {
             "id": "sandbox-wsl",
             "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-sandbox.js",
-            "claims": null
+            "claims": []
           },
           {
             "id": "tool-fs",
@@ -224,8 +228,10 @@
             "claims": [
               "edit",
               "read",
-              "read_image",
               "write"
+            ],
+            "suppressed": [
+              "read_image"
             ]
           },
           {
@@ -245,7 +251,7 @@
           {
             "id": "terminal-door",
             "name": "cordis:group",
-            "claims": null
+            "claims": []
           },
           {
             "id": "pty",
@@ -272,17 +278,17 @@
           {
             "id": "shell-wsl",
             "name": "D:/MyProject/dsh-wsl-workspace/lib/shell.js",
-            "claims": null
+            "claims": []
           },
           {
             "id": "fs-wsl",
             "name": "D:/MyProject/dsh-wsl-workspace/lib/fs.js",
-            "claims": null
+            "claims": []
           },
           {
             "id": "sandbox-wsl",
             "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-sandbox.js",
-            "claims": null
+            "claims": []
           },
           {
             "id": "tool-fs",
@@ -290,8 +296,10 @@
             "claims": [
               "edit",
               "read",
-              "read_image",
               "write"
+            ],
+            "suppressed": [
+              "read_image"
             ]
           },
           {
@@ -304,7 +312,7 @@
           {
             "id": "persistent-shell",
             "name": "cordis:group",
-            "claims": null
+            "claims": []
           },
           {
             "id": "pty",
@@ -331,17 +339,17 @@
           {
             "id": "shell-wsl",
             "name": "D:/MyProject/dsh-wsl-workspace/lib/shell.js",
-            "claims": null
+            "claims": []
           },
           {
             "id": "fs-wsl",
             "name": "D:/MyProject/dsh-wsl-workspace/lib/fs.js",
-            "claims": null
+            "claims": []
           },
           {
             "id": "sandbox-wsl",
             "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-sandbox.js",
-            "claims": null
+            "claims": []
           },
           {
             "id": "tool-fs",
@@ -349,8 +357,10 @@
             "claims": [
               "edit",
               "read",
-              "read_image",
               "write"
+            ],
+            "suppressed": [
+              "read_image"
             ]
           },
           {
@@ -385,7 +395,7 @@
           {
             "id": "terminal-door",
             "name": "cordis:group",
-            "claims": null
+            "claims": []
           },
           {
             "id": "pty",
@@ -412,17 +422,17 @@
           {
             "id": "shell-wsl",
             "name": "D:/MyProject/dsh-wsl-workspace/lib/shell.js",
-            "claims": null
+            "claims": []
           },
           {
             "id": "fs-wsl",
             "name": "D:/MyProject/dsh-wsl-workspace/lib/fs.js",
-            "claims": null
+            "claims": []
           },
           {
             "id": "sandbox-wsl",
             "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-sandbox.js",
-            "claims": null
+            "claims": []
           },
           {
             "id": "tool-fs",
@@ -430,8 +440,10 @@
             "claims": [
               "edit",
               "read",
-              "read_image",
               "write"
+            ],
+            "suppressed": [
+              "read_image"
             ]
           },
           {
@@ -459,7 +471,7 @@
           {
             "id": "persistent-shell",
             "name": "cordis:group",
-            "claims": null
+            "claims": []
           },
           {
             "id": "pty",
@@ -486,17 +498,17 @@
           {
             "id": "shell-wsl",
             "name": "D:/MyProject/dsh-wsl-workspace/lib/shell.js",
-            "claims": null
+            "claims": []
           },
           {
             "id": "fs-wsl",
             "name": "D:/MyProject/dsh-wsl-workspace/lib/fs.js",
-            "claims": null
+            "claims": []
           },
           {
             "id": "sandbox-wsl",
             "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-sandbox.js",
-            "claims": null
+            "claims": []
           },
           {
             "id": "tool-fs",
@@ -504,8 +516,10 @@
             "claims": [
               "edit",
               "read",
-              "read_image",
               "write"
+            ],
+            "suppressed": [
+              "read_image"
             ]
           },
           {
@@ -540,7 +554,7 @@
           {
             "id": "terminal-door",
             "name": "cordis:group",
-            "claims": null
+            "claims": []
           },
           {
             "id": "pty",
@@ -567,17 +581,17 @@
           {
             "id": "shell-wsl",
             "name": "D:/MyProject/dsh-wsl-workspace/lib/shell.js",
-            "claims": null
+            "claims": []
           },
           {
             "id": "fs-wsl",
             "name": "D:/MyProject/dsh-wsl-workspace/lib/fs.js",
-            "claims": null
+            "claims": []
           },
           {
             "id": "sandbox-wsl",
             "name": "D:/MyProject/dsh-wsl-workspace/lib/wsl-sandbox.js",
-            "claims": null
+            "claims": []
           },
           {
             "id": "tool-fs",
@@ -585,8 +599,10 @@
             "claims": [
               "edit",
               "read",
-              "read_image",
               "write"
+            ],
+            "suppressed": [
+              "read_image"
             ]
           },
           {
@@ -614,7 +630,7 @@
           {
             "id": "persistent-shell",
             "name": "cordis:group",
-            "claims": null
+            "claims": []
           },
           {
             "id": "pty",
@@ -636,15 +652,6 @@
         ]
       }
     ],
-    "collisions": [
-      "cordis/pty/wsl-world read_image read-image-wsl+tool-fs",
-      "cordis/session/wsl-world read_image read-image-wsl+tool-fs",
-      "minimal/pty/wsl-world read_image read-image-wsl+tool-fs",
-      "minimal/session/wsl-world read_image read-image-wsl+tool-fs",
-      "ptc/pty/wsl-world read_image read-image-wsl+tool-fs",
-      "ptc/session/wsl-world read_image read-image-wsl+tool-fs",
-      "standard/pty/wsl-world read_image read-image-wsl+tool-fs",
-      "standard/session/wsl-world read_image read-image-wsl+tool-fs"
-    ]
+    "collisions": []
   }
 }

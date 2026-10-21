@@ -252,6 +252,11 @@ function wslWorldGroup(
       : []),
     '    - id: tool-fs',
     "      name: '@deepseek-ai/dsh-tool-fs'",
+    // #105: `dsh-tool-fs` registers `read_image` unless `readImage` is turned off, and from 0.2.1 the
+    // tool layer no longer lets two rows claim one name — the variant simply refuses to mount. The
+    // world's own realm-safe row below is the one that stays, so the host's is switched off here.
+    '      config:',
+    '        readImage: false',
     // The world's answer for `read_image`, mounted beside the row whose registration of it cannot
     // reach this realm. See `src/host/wsl-image-tool.ts` for what it takes over and why the
     // isolation above stays.
