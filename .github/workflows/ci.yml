@@ -151,6 +151,13 @@ jobs:
       matrix:
         wslVersion: [1, 2]
         plane: [src, lib]
+        exclude:
+          # The src plane is the comparison arm (#44 §1: `lib/` is what ships). WSL2 runs both planes, so the
+          # arm still exists where a difference would be cheapest to diagnose; on WSL1 it cost a whole job
+          # (6 m 36 s of runner time, one more distribution import) to re-run the same drivers against a tree
+          # that ships nowhere. Measured 2026-10-21: 232 s of gates + 75 s of provisioning.
+          - wslVersion: 1
+            plane: src
     defaults:
       run:
         shell: bash
@@ -175,7 +182,11 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - run: npm ci
+      # No `npm ci` here on purpose. These jobs need the host closure (`ci/deps`, installed below) and the
+      # committed `lib/`; nothing they run imports a root dependency — the compatibility drivers use only
+      # `node:` builtins, and `test:win32` / `test:session` load `src/` or `ci/deps`. The root tree cost 10-21 s
+      # per job and was needed only by the build below, which lint-build already performs *and* verifies
+      # byte-for-byte against this same committed `lib/` (measured 2026-10-21).
       - name: install pinned @deepseek-ai host packages
         run: node ci/install-pinned.mjs
       - name: provision WSL${{ matrix.wslVersion }} Ubuntu
@@ -212,8 +223,13 @@ jobs:
             wsl.exe -d Ubuntu-24.04 -- bash -c 'grep --version | head -1; find --version | head -1; whoami'; } | tr -d '\0' > logs/preflight-wsl.log 2>&1 || true
           node -e 'const fs=require("node:fs");for(const p of ["\\\\wsl.localhost\\Ubuntu-24.04\\tmp","\\\\wsl.localhost\\Ubuntu-24.04\\tmp\\dsh-wsl-relay-ws"])console.log(p, fs.existsSync(p)?"present":"ABSENT")' > logs/preflight-unc.log 2>&1 || true
           cat logs/preflight-wsl.log logs/preflight-unc.log
-      - name: build (smoke-built / shell-extra / client consume lib/)
-        run: npm run build
+      - name: the committed lib is what the gates load
+        # Not a build: the drivers consume `lib/` exactly as checked in, and lint-build's
+        # rebuild-vs-committed step is what proves that is a faithful build of this source tree. Building here
+        # again would run tsdown once per cell and could not disagree with that step without reddening it first.
+        run: |
+          test -f lib/index.js || { echo "RED — lib/index.js is missing from the checkout"; exit 1; }
+          node -e "const fs=require('node:fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));const missing=(p.files??[]).filter(f=>!fs.existsSync(f));if(missing.length){console.error('RED — files[] names ' + missing.join(', ') + ' which the checkout does not have');process.exit(1)}console.log('lib present; files[] entries all exist')"
       - name: win32-semantics unit files (wsl-skills + fs-policy assume drive-shaped cwd)
         run: npm run test:win32
       # The session gate (#101, G5): a real host, the product's own generated world, and six tool calls
