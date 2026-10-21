@@ -17,7 +17,9 @@
  *     about the realm.
  *   · **2 — the isolate arm.** The world our own `src/host/variants.ts` generates (`wslWorldGroup` emits
  *     `isolate: { shell: true, fs: true }`), written to a temp file and mounted by the Loader. Expected:
- *     the exact #54 string.
+ *     the exact #54 string. The host fs row's `readImage` switch is re-armed in the fixture text for
+ *     this arm and its mutation control — the product turned it off for #105, and the realm failure is
+ *     about a registration that is no longer mounted by default.
  *   · **3 — mechanism.** Which realm key `fs` carries on each side, and where an implementation exists —
  *     so the verdict says *why* the lookup failed, not only that it failed.
  *   · **4 — mutation control.** One token of the generated text removed in memory (`    fs: true`), arm 2
@@ -571,7 +573,19 @@ try {
   }
 
   // ── 2, 3, 5: the generated isolate world ──────────────────────────────────────────────────
-  const bootB = await boot({ profile: 'w54world', home, environment, runProfile, rows: isolateWorldRows() })
+  // Since #105 the world's host fs row carries `readImage: false`, so the host's own `read_image` is no
+  // longer in the world at all. Arms 2/5/4 measure what that registration does across the realm
+  // boundary, so the switch is re-armed in the fixture text — and the re-arm asserts it found the token,
+  // so these arms cannot quietly become a boot where the host row never existed.
+  const hostRowOn = lines => {
+    const hits = lines.filter(line => line.trim() === 'readImage: false').length
+    if (hits !== 1) {
+      throw new Error(`the generated world carries ${hits} "readImage: false" line(s), expected 1 — `
+        + 'either #105 is unfixed or the row moved, and this probe would be measuring nothing')
+    }
+    return lines.map(line => (line.trim() === 'readImage: false' ? line.replace('false', 'true') : line))
+  }
+  const bootB = await boot({ profile: 'w54world', home, environment, runProfile, rows: isolateWorldRows(hostRowOn) })
   let realmAnswer = null
   let absentAnswer = null
   try {
@@ -639,7 +653,7 @@ try {
     if (index < 0) throw new Error('the generated world no longer carries the `    fs: true` line to remove')
     return [...lines.slice(0, index), ...lines.slice(index + 1)]
   }
-  const bootC = await boot({ profile: 'w54mutant', home, environment, runProfile, rows: isolateWorldRows(withoutFsRow) })
+  const bootC = await boot({ profile: 'w54mutant', home, environment, runProfile, rows: isolateWorldRows(lines => withoutFsRow(hostRowOn(lines))) })
   try {
     const ctx = bootC.ctx
     await declareRoute(ctx)
@@ -744,8 +758,9 @@ try {
         + ` inside the generated isolate world, and the string disappears when the single "fs: true" token is`
         + ` removed from that text — so that token, not the machine, causes the failure (see row 3 for which`
         + ` realm key carries fs on each side). Row 6: in that same isolate world the dispatcher's read_image`
-        + ` is this plugin's own read and it answers with the image, while the host's registration still`
-        + ` answers the realm string — the fix is a second answer, not a repaired lookup`
+        + ` is this plugin's own read and it answers with the image; the host's registration is either absent`
+        + ` (the world switches it off, #105) or still answers the realm string — either way the name has one`
+        + ` working answer, which is what makes row 6 a fix rather than a repaired lookup`
       : `W54-REALM-CONFIRMED BUT THIS PLUGIN'S OWN READ DOES NOT ANSWER — rows 0/2/4 still measure the realm`
         + ` defect, row 6 is red: ${worldReadRow === undefined ? 'the generator mounted no read-image-wsl row' : worldReadRow.detail}`
     : controlOk && !reproduced
