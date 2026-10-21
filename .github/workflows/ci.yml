@@ -182,11 +182,14 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      # No `npm ci` here on purpose. These jobs need the host closure (`ci/deps`, installed below) and the
-      # committed `lib/`; nothing they run imports a root dependency — the compatibility drivers use only
-      # `node:` builtins, and `test:win32` / `test:session` load `src/` or `ci/deps`. The root tree cost 10-21 s
-      # per job and was needed only by the build below, which lint-build already performs *and* verifies
-      # byte-for-byte against this same committed `lib/` (measured 2026-10-21).
+      # `npm ci` stays, and the reason is a measurement rather than caution: `scripts/verify-plane-log.mjs`
+      # derives the legal entry list by importing `tsdown.config.ts`, which imports `tsdown`, so a job without
+      # the dev tree fails its plane-evidence step with "install build dependencies before running entry-count
+      # gates" (measured 2026-10-21: all three cells red). What the dev tree is *not* needed for any more is
+      # the build below — the gates read the committed `lib/`, which lint-build already rebuilds and compares
+      # byte-for-byte. Removing that dependency from the verification script (a static entry list read by both
+      # sides) is what would let this step go; it is its own change.
+      - run: npm ci
       - name: install pinned @deepseek-ai host packages
         run: node ci/install-pinned.mjs
       - name: provision WSL${{ matrix.wslVersion }} Ubuntu
