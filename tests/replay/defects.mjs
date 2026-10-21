@@ -37,6 +37,14 @@
 // Extras #95, #96, #105 are all caught. #105 by `test:contract`, which also still reports the live
 // collision as a registered gap, because the product fix has not been made.
 //
+// ADJUDICATION (same table, gates removed rather than first-red counted): running with
+// `DSH_REPLAY_SKIP_GATES=artifacts,docs` still reads 20 of 20. So neither G3 (`artifact-semantics`)
+// nor the docs gate is load-bearing **for these 20 defects** - their plants were caught upstream by
+// unit / world / install / client / contract. That is not the same as deletable: G3 also asserts that
+// every path a generated world mounts exists in the package, and the docs gate holds the ten-locale
+// README parity that no replay plant touches. Deletion is therefore a coverage decision for the user,
+// not a measurement this ruler can make on its own; the reading is recorded so the decision has it.
+//
 // What the number is not: it does not say the suite catches the next defect. It says every defect this
 // repository has suffered can be re-planted and is noticed. The residual risk is the classes with no
 // row here at all - which is why the table only grows from a real report.
