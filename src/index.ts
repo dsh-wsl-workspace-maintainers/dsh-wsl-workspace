@@ -41,7 +41,7 @@ import { probePersistentShellReadiness } from './host/pty-readiness.ts'
 import { applyRunCodeGuard } from './host/wsl-run-code-guard.ts'
 import { PROBE_CONFIG, buildSessionSpec } from './host/wsl-bash-tool.ts'
 import { probeWslBashSession, type WslBashSpawnHost } from './host/wsl-bash-session.ts'
-import { isWslVariantId, transformPresetForWsl, unquoteScalar, variantIdFor } from './host/variants.ts'
+import { hostLacksSubagentGate, isWslVariantId, transformPresetForWsl, unquoteScalar, variantIdFor } from './host/variants.ts'
 import { WslSkillsProvider, type WslSkillsRegistryFace } from './host/wsl-skills.ts'
 
 /** The HTTP route this plugin serves (a relative, same-origin path). */
@@ -588,6 +588,37 @@ function describeResolvedCopy(specifier: string): string {
 }
 
 /**
+ * The host family's release, when it can be named.
+ *
+ * The variant generator needs the *family* release, and `dsh-tools` is a peer whose release
+ * moves in lockstep with the umbrella, so its manifest is the family's. Same walk as
+ * {@link describeResolvedCopy}: resolve the entry, then read the manifest above it — a manifest
+ * at the package root names the package, and the walk stops there rather than trusting whatever
+ * a hoisted parent claims.
+ * @returns the version string, or undefined when nothing resolvable names itself.
+ */
+function hostFamilyVersion(): string | undefined {
+  const resolve = (import.meta as ImportMeta & { resolve?: (specifier: string) => string }).resolve
+  if (typeof resolve !== 'function') return undefined
+  try {
+    let dir = dirname(fileURLToPath(resolve.call(import.meta, '@deepseek-ai/dsh-tools')))
+    for (let depth = 0; depth < 8; depth += 1) {
+      const manifestPath = join(dir, 'package.json')
+      if (existsSync(manifestPath)) {
+        const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as { name?: string; version?: string }
+        if (manifest.name === '@deepseek-ai/dsh-tools') return manifest.version
+      }
+      const parent = dirname(dir)
+      if (parent === dir) return undefined
+      dir = parent
+    }
+  } catch {
+    return undefined
+  }
+  return undefined
+}
+
+/**
  * Build the entry-list dialect from the engine namespace that will parse with it.
  *
  * `@deepseek-ai/cordis-plugin-include` exports an `entryListSchema` precisely so
@@ -863,10 +894,15 @@ async function materializeVariants(
   // A Map rather than a Set because the route has to name the failure and its cause:
   // the values carry both, and `.size`/`.has` mean the sweep below is unchanged.
   const retained = new Map<string, VariantFailure>()
+  // Issue #60: while the host family lacks the upstream `belongsToComposition` gate, every copied
+  // delegation row is one more live `tool-subagent` composition, and at six — the three shipped
+  // presets plus this generator's three variants — Desktop session creation fails outright. The
+  // flag is read once per boot: the family release does not move under a running plugin.
+  const dropSubagentDelegation = hostLacksSubagentGate(hostFamilyVersion())
   for (const preset of sources) {
     const variantId = variantIdFor(preset.id)
     try {
-      await materializeOne(agentPresets, preset, userRoot, paths, persistentShell, track, generated)
+      await materializeOne(agentPresets, preset, userRoot, paths, persistentShell, track, generated, dropSubagentDelegation)
       produced += 1
     } catch (error) {
       // Until #47 a single failing source aborted this loop: on a real profile that
@@ -931,6 +967,7 @@ async function materializeOne(
   persistentShell: boolean,
   track: (dispose: unknown) => void,
   generated: Set<string>,
+  dropSubagentDelegation: boolean,
 ): Promise<void> {
   const variantId = variantIdFor(preset.id)
   const composition = await readPresetComposition(agentPresets, preset)
@@ -941,7 +978,7 @@ async function materializeOne(
     bashPath: paths.bashTool,
     terminalTool: paths.terminalTool,
     mode: paths.shellMode,
-  } : undefined, paths.search, paths.jobs, paths.image)
+  } : undefined, paths.search, paths.jobs, paths.image, { dropSubagentDelegation })
   // 0.1.7-alpha.1+ publishes a variant as a declaration row (the composition is
   // already the exact entry-list dialect the declaration wants, so the only
   // conversion is YAML back to rows); earlier releases still discover one as

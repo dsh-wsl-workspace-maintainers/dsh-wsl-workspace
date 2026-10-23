@@ -6,7 +6,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { isWslVariantId, transformPresetForWsl, variantIdFor } from '../src/host/variants.ts'
+import { hostLacksSubagentGate, isWslVariantId, transformPresetForWsl, variantIdFor } from '../src/host/variants.ts'
 
 const SHELL = 'D:/plugin/lib/shell.js'
 const FS = 'D:/plugin/lib/fs.js'
@@ -645,4 +645,51 @@ test('the transform adds no reference occurrence the source did not carry', () =
   // what must not move is their count. Re-adding a group to PERSONA_APPEND turns this red by
   // one occurrence - the half the byte assertions cannot see, because they only know cwd.
   assert.deepEqual(promptGroups(out), promptGroups(STANDARD_LIKE), 'the variant carries exactly the references the source carried')
+})
+
+/** The standard-like source plus the delegation row every shipped mode carries (issue #60). */
+const STANDARD_LIKE_WITH_DELEGATION = `${STANDARD_LIKE}
+- id: subagent
+  name: '@deepseek-ai/dsh-tool-subagent'
+  modelSelectionSettings: true
+`
+
+test('the copied delegation row is kept verbatim when the transform is not told to drop it', () => {
+  const out = transformPresetForWsl(STANDARD_LIKE_WITH_DELEGATION, SHELL, FS)
+  assert.ok(out.includes("name: '@deepseek-ai/dsh-tool-subagent'"), 'the row vanished without the option, so the default behaviour changed')
+  assert.ok(out.includes('modelSelectionSettings: true'), 'the row was kept but mutilated')
+})
+
+test('on a gate-less host the delegation row is dropped instead of duplicated', () => {
+  const out = transformPresetForWsl(STANDARD_LIKE_WITH_DELEGATION, SHELL, FS, undefined, undefined, undefined, undefined, { dropSubagentDelegation: true })
+  assert.ok(!out.includes('dsh-tool-subagent'), 'the variant still mounts a second live tool-subagent composition')
+  // The drop takes the whole row and nothing else: the row's own config keys cannot survive as
+  // strays, and the rows around it keep their shapes.
+  assert.ok(!out.includes('modelSelectionSettings'), 'the dropped row left its config key behind as a stray')
+  assert.ok(out.includes("name: '@deepseek-ai/dsh-persona'"), 'the drop took a neighbouring row with it')
+  assert.ok(out.includes('- id: wsl-world'), 'the world group is gone')
+})
+
+test('a group that merely nests the package name is not mistaken for the delegation row', () => {
+  const source = `- id: some-group
+  name: cordis:group
+  group: true
+  config:
+      - id: nested
+        name: '@deepseek-ai/dsh-tool-subagent'
+
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: You are a coding agent.
+`
+  const out = transformPresetForWsl(source, SHELL, FS, undefined, undefined, undefined, undefined, { dropSubagentDelegation: true })
+  assert.ok(out.includes('- id: some-group'), 'a top-level group was dropped for a name nested deeper than a row key sits')
+})
+
+test('hostLacksSubagentGate covers the current compat window and fails closed', () => {
+  assert.equal(hostLacksSubagentGate('0.2.0-rc.1'), true)
+  assert.equal(hostLacksSubagentGate('0.2.1-rc.2'), true)
+  assert.equal(hostLacksSubagentGate(undefined), true, 'an unreadable host version must strip, not brick sessions')
+  assert.equal(hostLacksSubagentGate('0.3.0'), false, 'a future family with the gate keeps its delegation row')
 })
