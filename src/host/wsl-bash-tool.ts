@@ -115,7 +115,7 @@ interface BashArgs {
  */
 
 /** Environment facts that must reach the distribution. */
-const BRIDGED_KEYS = ['DSH_HOME', 'DSH_SESSION_ID', 'DSH_WSL_DISTRO', 'DSH_WSL_USER', 'DSH_WSL_SESSION', 'NO_COLOR', 'TERM', 'PAGER', 'GIT_PAGER']
+const BRIDGED_KEYS = ['DSH_HOME', 'DSH_SESSION_ID', 'DSH_SHELL', 'DSH_WSL_DISTRO', 'DSH_WSL_USER', 'DSH_WSL_SESSION', 'NO_COLOR', 'TERM', 'PAGER', 'GIT_PAGER']
 
 /** Model-friendly overrides, matching the one-shot executor's set. */
 const ENV_OVERRIDES: Record<string, string> = {
@@ -408,7 +408,7 @@ const STREAM_SCHEMA = {
  * @param headerCwd - the session's workspace path, UNC or Linux.
  * @returns the spec, or undefined when no distribution could be resolved.
  */
-export function buildSessionSpec(config: ResolvedConfig, headerCwd: string | undefined): WslBashSessionSpec | undefined {
+export function buildSessionSpec(config: ResolvedConfig, headerCwd: string | undefined, sessionId?: string): WslBashSessionSpec | undefined {
   const distro = resolveDistro(config, headerCwd)
   if (distro === '') return undefined
   const user = resolveUser(config, headerCwd)
@@ -433,6 +433,11 @@ export function buildSessionSpec(config: ResolvedConfig, headerCwd: string | und
     env: bridgeEnv(
       {
         ...ENV_OVERRIDES,
+        // Parity with the host's own persistent shell: @deepseek-ai/dsh-terminal-bash
+        // sets both facts in every PTY child's environment, so a shell that cannot say
+        // which session owns it is not the shell the host contracts for.
+        DSH_SHELL: '1',
+        ...(sessionId === undefined || sessionId === '' ? {} : { DSH_SESSION_ID: sessionId }),
         DSH_WSL_DISTRO: distro,
         DSH_WSL_SESSION: sessionToken,
         ...(user === undefined ? {} : { DSH_WSL_USER: user }),
@@ -576,7 +581,7 @@ export function apply(ctx: Context, config?: Config): void {
 
       let session = sessions.get(ownerKey)
       if (session === undefined) {
-        const spec = buildSessionSpec(resolved, headerCwd)
+        const spec = buildSessionSpec(resolved, headerCwd, exec.agent?.session?.id)
         if (spec === undefined) {
           throw new Error('wsl-bash: no WSL distribution could be resolved for this session')
         }
