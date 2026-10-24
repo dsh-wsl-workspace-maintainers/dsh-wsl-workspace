@@ -372,6 +372,33 @@ const STYLES = `
 }
 .dww-help-link { font-size: 12px; color: var(--dsw-alias-label-tertiary); text-decoration: underline; }
 .dww-help-link:hover { color: var(--dsw-alias-label-primary); }
+
+/* The footer row stays mounted in a wide sidebar because the header entry
+   discovers its seat from it; it is hidden, not removed, once that entry is
+   in place. (A class rule beats the UA's [hidden] display:none.) */
+.dww-action[hidden] { display: none !important; }
+
+/* The header entry: the add control's own class list carries the box, so this
+   seat only groups it with the strip. The strip caps at 60px for two 28px
+   controls, so one more control needs the cap widened; the search-expanded
+   state must still collapse it. */
+.dww-header-slot {
+  display: flex;
+  flex: none;
+  align-items: center;
+}
+[class*='_headerActions']:has(.dww-header-entry) { max-width: 92px; }
+[class*='_headerActions'][class*='_headerActionsHidden']:has(.dww-header-entry) { max-width: 0; }
+
+/* The mode menu is built and measured with every mode before this plugin trims
+   it; hold that untrimmed frame (and its backdrop) invisible so it cannot
+   flash above the anchor before the trimmed list has been placed. */
+[role='menu']:has([class*='_itemName']):not([data-dww-presets-ready]) {
+  visibility: hidden !important;
+}
+body[data-dww-presets-pending] [data-menu-backing] {
+  visibility: hidden !important;
+}
 `
 
 /**
