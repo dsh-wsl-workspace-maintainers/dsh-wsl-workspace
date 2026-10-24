@@ -262,7 +262,7 @@ assert(registrations.length === 1 && registrations[0].kind === 'exact' && regist
 // Read at boot, before anything else can register a guard: the plugin's answer for `run_code` has to be
 // reachable through the host's guard channel, and it has to say the sentence rather than let the worker
 // start and die.
-assert(guards.length === 1, `the boot installs exactly one tool guard (#78), got ${guards.length}`)
+assert(guards.length === 1, `the boot installs exactly one tool guard — the run_code refusal must travel with the world the host loads, got ${guards.length}`)
 {
   const refusal = guards[0]?.({ name: 'run_code', arguments: {}, agent: { session: {} } })
   assert(typeof refusal === 'string' && /GetNamedSecurityInfoW/.test(refusal),
