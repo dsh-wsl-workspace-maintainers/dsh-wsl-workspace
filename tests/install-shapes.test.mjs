@@ -96,12 +96,19 @@ test('every specifier src/ imports is declared in the manifest', () => {
     'a specifier resolves here but is not in the manifest — the tarball install would not have it')
 })
 
-test('the two holes #47 came through are named and closed', () => {
-  // 1. `js-yaml: "*"` was bound to whatever the dependency graph happened to carry (5.x in that profile).
-  const range = String(manifest.dependencies?.['js-yaml'] ?? '')
-  assert.match(range, new RegExp('^\\^?4\\.'), `js-yaml must be a dependencies entry on 4.x, found ${JSON.stringify(range)}`)
-  assert.equal(manifest.peerDependencies?.['js-yaml'], undefined,
-    'js-yaml must not be a peer: a peer lets the host choose a major this code cannot read')
+test('runtime dependencies are real, bounded and never peers; no host package is imported at call time', () => {
+  // 1. an open range or a peer entry binds the engine to whatever the dependency graph happens to
+  //    carry (the shape that reached a user as #47, when `js-yaml: "*"` resolved to 5.x in a
+  //    profile). Two properties, stated for every runtime dependency rather than for the one that
+  //    broke: bounded to a line, and never a peer. And where the code's dialect targets a known
+  //    line, that line is named — a drift to the next major is a schema break, not a range choice.
+  for (const [name, range] of Object.entries(manifest.dependencies ?? {})) {
+    assert.match(String(range), /^\^?\d+\./, `${name} must be pinned to a major, found ${JSON.stringify(String(range))}`)
+    assert.equal(manifest.peerDependencies?.[name], undefined,
+      `${name} must not be a peer: a peer lets the host choose a major this code cannot read`)
+  }
+  assert.match(String(manifest.dependencies?.['js-yaml'] ?? ''), /^\^?4\./,
+    'js-yaml must stay on the 4.x line the generated dialect is built against — the next major changed the schema API')
   // 2. a host package imported *at call time* is invisible to the manifest and to every offline check.
   const dynamicHostImports = []
   for (const file of sources()) {

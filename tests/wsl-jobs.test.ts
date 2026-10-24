@@ -301,12 +301,12 @@ test('mounts with schema defaults when the row carries no config at all', () => 
   assert.deepEqual([...empty.keys()], [TOOL_NAME])
 })
 
-test('feeds 0.2.x pull-source output so job_output is not empty (issue #56)', async () => {
+test('the produced job feeds the registry\'s pull-source output channel, so job_output is never silently empty', async () => {
   // The 0.2.x registry drains bytes only from `spec.output` pull-sources; it
   // never calls `run()`'s `readOutput`. The fake below mirrors that drain loop,
   // so a producer that set only `readOutput` (the pre-fix shape) would surface
   // here as an empty ring instead of the bytes the command wrote — exactly the
-  // `job_output` → `(no new output)` failure on DSH 0.2.0-rc.2.
+  // `job_output` → `(no new output)` failure on DSH 0.2.0-rc.2 (issue #56).
   const captured: { output?: JobSpec['output'] } = {}
   const { tool } = harness({
     process: {
