@@ -4,6 +4,16 @@
 
 本文件为中文记录（0.4.3 及更早为摘要）；英文原文见 [CHANGELOG.md](CHANGELOG.md)。
 
+## 0.7.10 — 2026-10-24
+
+**Desktop 会话在第六个组合上重新活过来，WSL shell 带上了脚本赖以分支的会话事实，世界也不再因 `read_image` 重名而拒绝挂载。** 三个面向用户的修复，一个更瘦的安装包，一套会自己盯上游的构建。
+
+- **Desktop 会话在第六个组合上创建失败已修（[#60](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/60)）。** 上游在每个 `agent/created` 事件上安装 `@deepseek-ai/dsh-tool-subagent` 且没有组合门（上游讨论 6751），于是每个保留顶层委托行的拷贝预设都会把该工具多注册一次——到第六个组合（三个出厂预设加本插件的三个变体）时，Desktop 创建会话当场失败：`tool "subagent" is already registered in this scope`。WSL 变换现在为没有组合门的宿主家族剥掉这一行（当前兼容窗口内逐版本核验过不存在；读不到版本也按同方向处理——代价不对称：少一个 subagent 工具对上少一个会话）。**代价写明：在上游补上门槛之前，WSL 会话没有 `subagent` / `list_subagent_models` 工具**；门槛出现时谓词自动收窄，本仓无需再发版。
+- **WSL shell 携带 `DSH_SHELL` 与 `DSH_SESSION_ID`（[#115](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/115)，社区贡献者 Bright000026）。** 宿主的持久 bash 在每个子进程里设这两个变量；WSL 持久 shell 此前列了键却从未设值，按它们分支的脚本悄悄走错路。现在两者都随调用进入发行版，`DSH_SHELL` 已列入 `WSLENV`。
+- **WSL 变体不再因 `read_image` 重名拒绝挂载（[#105](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/105)）。** 0.2.1 起宿主工具层拒绝两行注册同名工具；`dsh-tool-fs` 默认注册 `read_image`，而本世界加的那条 realm 安全的读取才是会话内真正应答的那条——于是用一行配置关掉宿主那份，世界正常挂载。
+- **安装包只带英文与中文。** 其余七种翻译 README 移到仓库 `docs/translations/`——保留（原作者的刻意选择），但不再随包分发：安装后的任何东西都不读它们，且自 docs-parity 闸退役后它们一直靠手工同步、无人看守。文件内所有互链已按新位置重写。
+- **维护者侧：** 每帧 CI 快了约一分钟（钉版宿主树跨运行缓存、未变化时不再重装——本机实测 42 s → 0.2 s，CI 每 job 22 s → 1 s）；每周上游漂移雷达盯 registry，首跑就抓到 `0.2.1-rc.3` 在 dist-tag 未动时已发布、且全部门禁对它绿——窗口随时可升；tag 现在只发布有绿色 `checks` 运行的 commit；会话 bash 的生命周期（发帧→结算、卡死命令恰好执行一次、死壳重放、abort 语义、串行化、dispose）有了离线回归测试 `tests/wsl-bash-session.test.ts`；重放尺子的类级得分站上 **20 of 20**。
+
 ## 0.7.9 — 2026-10-20
 
 **盘符路径的工作区终于能读到自己的技能，键盘门也能翻译那里的 Linux `cwd`。** 两处都是静默失败：注册在 Windows 盘符路径下的 `/mnt/<drive>` 工作区（9P 服务不了 drvfs）技能目录恒空且无报错；`wsl_terminal` 则以“发行版未知”拒绝 Linux `cwd`，尽管对话框早已把它存了下来。技能 provider 现在按其余 provider 的方式解析这个工作区，并把 `/mnt` 路径按**盘符拼写**读取；键盘门读同一份登记。这两条是**世界一致性表先发现、而不是用户先报**的——本仓第一次由闸领先于报告。

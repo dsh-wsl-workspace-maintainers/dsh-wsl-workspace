@@ -2,12 +2,12 @@
 
 [![dsh.so security](https://www.dsh.so/badge/dsh-wsl-workspace.svg)](https://www.dsh.so/artifact/dsh-wsl-workspace) [![dsh.so install](https://www.dsh.so/badge/install/dsh-wsl-workspace.svg)](https://www.dsh.so/artifact/dsh-wsl-workspace)
 
-[English](README.md) · [中文](README.zh.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Português](README.pt.md) · [Русский](README.ru.md)
+[English](../../README.md) · [中文](../../README.zh.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Português](README.pt.md) · [Русский](README.ru.md)
 
 ![alt text](https://raw.githubusercontent.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/HEAD/image-3.png)
 DeepSeek Harness Web GUI から WSL ワークスペースを追加し、エージェントセッション全体（bash コマンドとファイルの読み書き）をローカルの WSL ディストリビューション内で実行します。パスはすべて Linux 形式です。WSL 内への追加インストールは不要です。セッションから WSL と Windows の両方に同時にアクセスできます。bash コマンドは WSL ディストリビューション内で実行され、Windows のファイルは `/mnt/<drive>`（例：`/mnt/c/Users/...`）経由でいつでもアクセスできます。
 
-対応する DSH バージョンの一覧は [README.md](README.md) の Compatibility を参照してください。
+対応する DSH バージョンの一覧は [README.md](../../README.md) の Compatibility を参照してください。
 
 ## インストール
 
@@ -47,11 +47,11 @@ dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
 
 ## 変更履歴
 
-完全なリリース履歴（最新が最初）は [CHANGELOG.md](CHANGELOG.md) にあります（中国語: [CHANGELOG.zh.md](CHANGELOG.zh.md)）。この README が扱うのは上記の現時点の動作のみです。
+完全なリリース履歴（最新が最初）は [CHANGELOG.md](../../CHANGELOG.md) にあります（中国語: [CHANGELOG.zh.md](../../CHANGELOG.zh.md)）。この README が扱うのは上記の現時点の動作のみです。
 
 ## ドキュメント
 
-どの文書がどこに、どの言語で置かれ、どこがまだ最新かは [docs/README.md](docs/README.md)（英語の索引）を参照してください — [設計記録（zh）](docs/design.zh.md)、`dsh.compatibility.dshReleases` の宣言を支える[バージョン別互換性エビデンス](docs/compatibility-evidence.md)、そして置き換えられて [docs/archive/](docs/archive/) に退避済みの文書。変更・リリース前の検証手順は [TESTING.md](TESTING.md)。
+どの文書がどこに、どの言語で置かれ、どこがまだ最新かは [docs/README.md](../../docs/README.md)（英語の索引）を参照してください — [設計記録（zh）](../../docs/design.zh.md)、`dsh.compatibility.dshReleases` の宣言を支える[バージョン別互換性エビデンス](../../docs/compatibility-evidence.md)、そして置き換えられて [docs/archive/](../../docs/archive/) に退避済みの文書。変更・リリース前の検証手順は [TESTING.md](../../TESTING.md)。
 
 ## ライセンスとクレジット
 

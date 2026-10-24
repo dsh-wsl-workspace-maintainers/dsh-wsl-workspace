@@ -11,6 +11,7 @@ Where each document lives, what language it is in, and whether it still describe
 | [CHECK-CATALOG.md](./CHECK-CATALOG.md) | en | The single inventory of every test, gate and manual pass: command, prerequisites, CI home, and what still needs a human | Active — added by #41, and it lists this index's own gate in bucket A |
 | [GATE-MAP.md](./GATE-MAP.md) | zh | 门禁地图的阅读版：每道闸守哪类缺陷（A 宿主漂移 / B 不可能失败的断言 / C 输入形状与前端状态 / D 只在真机现形）、跑在哪台机器、红灯时按哪条线索归因；文末是装置体积红线（`test:apparatus-size`） | Active — 由阶段 0 的瘦身建立；改任何一道闸之前先在这里找它，找不到就说明它不守任何一类缺陷 |
 | [runbook.zh.md](./runbook.zh.md) | zh | **维护者回路手册**：按"现在要做什么"组织的入口——日常 / 合并前 / 发布三个回路、说不得台账、节奏与交接。不复抄数字与清单，权威在 TESTING/GATE-MAP/CHECK-CATALOG | Active — 叙述性文档，不被闸门读取 |
+| [translations/](./translations/) | 7 languages | The seven condensed translated READMEs (ja / ko / fr / de / es / pt / ru) — the original author's deliberate choice, kept in the repository. Since 0.7.10 they are **not installed**: the npm tarball carries English and Chinese only, and these seven are hand-kept with no gate watching (the docs-parity gate retired 2026-10-21) | Active |
 | [compatibility-evidence.md](./compatibility-evidence.md) | en | Per-release verification evidence, appended run by run | Active |
 | [issue-87-zh.md](./issue-87-zh.md) | zh | #87 的修复记录（外部贡献者 `nailongzhanshen666` 原文，逐字保留）：`{{cwd}}` 为什么在 0.2.x 是致命引用、为什么只有**三个**变体中招（`wsl-minimal` 带 `complete: true`，从不被追加）、以及这类"上游悄悄撤掉一个注册变量"的版本竞态该怎么复核 | Active — 叙述性记录，不被闸门当作判据读取。它文末提到的验证器 `verify-issue-87.mjs` 与 `asar-presets/` 留在贡献者本机、未随 PR 提交；本仓的等价装置已经落进 `tests/host-materialize.mjs`（见 CHECK-CATALOG 那一行），所以复跑不再需要仓外的东西 |
 | [tty-triage.md](./tty-triage.md) | en | Triage sheet for `bash` calls: which symptom belongs to the pipe, to the pseudo-terminal, or to the host's PTY tier, with the one re-run that settles each | Active — every line it names is asserted by a cell in `scripts/compatibility/bash-session-real.mjs` |
@@ -28,8 +29,7 @@ Where each document lives, what language it is in, and whether it still describe
 | Path | Language | What it is |
 |---|---|---|
 | [README.md](../README.md) | en | Canonical entry point: install, declared compatibility, usage, current behaviour |
-| [README.zh.md](../README.zh.md) | zh | Same content, Chinese |
-| [README.ja.md](../README.ja.md) · [README.ko.md](../README.ko.md) · [README.fr.md](../README.fr.md) · [README.de.md](../README.de.md) · [README.es.md](../README.es.md) · [README.pt.md](../README.pt.md) · [README.ru.md](../README.ru.md) | 7 languages | Condensed entry points: install, usage, current behaviour, licence. They point at the English `## Compatibility` section instead of repeating the release list, and they carry no release history of their own |
+| [README.zh.md](../README.zh.md) | zh | Same content, Chinese — the two languages the installed package carries; the seven other translations live in [translations/](./translations/) |
 | [CHANGELOG.md](../CHANGELOG.md) / [CHANGELOG.zh.md](../CHANGELOG.zh.md) | en / zh | Release history, newest first, every version |
 | [TESTING.md](../TESTING.md) | en | How to verify a change or a release, with the fast path CI runs; the per-check inventory is [CHECK-CATALOG.md](./CHECK-CATALOG.md). Shipped in the npm tarball (`package.json` `files`), so it stays at the repository root |
 | [LICENSE](../LICENSE) / [NOTICE](../NOTICE) | en | Licence text and the third-party attribution list |

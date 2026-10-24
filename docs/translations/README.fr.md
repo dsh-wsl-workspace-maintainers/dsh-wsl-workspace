@@ -2,12 +2,12 @@
 
 [![dsh.so security](https://www.dsh.so/badge/dsh-wsl-workspace.svg)](https://www.dsh.so/artifact/dsh-wsl-workspace) [![dsh.so install](https://www.dsh.so/badge/install/dsh-wsl-workspace.svg)](https://www.dsh.so/artifact/dsh-wsl-workspace)
 
-[English](README.md) · [中文](README.zh.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Português](README.pt.md) · [Русский](README.ru.md)
+[English](../../README.md) · [中文](../../README.zh.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Português](README.pt.md) · [Русский](README.ru.md)
 
 ![alt text](https://raw.githubusercontent.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/HEAD/image-3.png)
 Ajoutez un espace de travail WSL depuis l'interface web de DeepSeek Harness et exécutez toute la session de l'agent — commandes bash et lectures/écritures de fichiers — dans une distribution WSL locale avec des chemins au format Linux. Aucune installation supplémentaire n'est nécessaire dans WSL. La session peut accéder simultanément à WSL et à Windows : les commandes bash s'exécutent dans la distribution WSL, tandis que les fichiers Windows restent accessibles via `/mnt/<lecteur>` (par exemple `/mnt/c/Users/...`).
 
-La liste des versions DSH prises en charge se trouve dans la section Compatibility de [README.md](README.md).
+La liste des versions DSH prises en charge se trouve dans la section Compatibility de [README.md](../../README.md).
 
 ## Installation
 
@@ -47,11 +47,11 @@ Cliquez sur « Create & open » pour démarrer une nouvelle session dans l'espac
 
 ## Journal des modifications
 
-L'historique complet des versions, du plus récent au plus ancien, se trouve dans [CHANGELOG.md](CHANGELOG.md) (chinois : [CHANGELOG.zh.md](CHANGELOG.zh.md)) ; ce README ne garde que le comportement actuel décrit ci-dessus.
+L'historique complet des versions, du plus récent au plus ancien, se trouve dans [CHANGELOG.md](../../CHANGELOG.md) (chinois : [CHANGELOG.zh.md](../../CHANGELOG.zh.md)) ; ce README ne garde que le comportement actuel décrit ci-dessus.
 
 ## Documentation
 
-Quel document vit où, dans quelle langue, et lequel fait encore foi : [docs/README.md](docs/README.md) (index en anglais) — [la note de conception (zh)](docs/design.zh.md), [les preuves de compatibilité par version](docs/compatibility-evidence.md) qui soutiennent la déclaration `dsh.compatibility.dshReleases`, et les notes [archivées](docs/archive/) dont chaque bandeau nomme ce qui les a remplacées. Avant un changement ou une version, suivez [TESTING.md](TESTING.md).
+Quel document vit où, dans quelle langue, et lequel fait encore foi : [docs/README.md](../../docs/README.md) (index en anglais) — [la note de conception (zh)](../../docs/design.zh.md), [les preuves de compatibilité par version](../../docs/compatibility-evidence.md) qui soutiennent la déclaration `dsh.compatibility.dshReleases`, et les notes [archivées](../../docs/archive/) dont chaque bandeau nomme ce qui les a remplacées. Avant un changement ou une version, suivez [TESTING.md](../../TESTING.md).
 
 ## Licence et attribution
 

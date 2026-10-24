@@ -2,12 +2,12 @@
 
 [![dsh.so security](https://www.dsh.so/badge/dsh-wsl-workspace.svg)](https://www.dsh.so/artifact/dsh-wsl-workspace) [![dsh.so install](https://www.dsh.so/badge/install/dsh-wsl-workspace.svg)](https://www.dsh.so/artifact/dsh-wsl-workspace)
 
-[English](README.md) · [中文](README.zh.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Português](README.pt.md) · [Русский](README.ru.md)
+[English](../../README.md) · [中文](../../README.zh.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Português](README.pt.md) · [Русский](README.ru.md)
 
 ![alt text](https://raw.githubusercontent.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/HEAD/image-3.png)
 DeepSeek Harness Web GUI에서 WSL 워크스페이스를 추가하고 에이전트 세션 전체(bash 명령과 파일 읽기/쓰기)를 로컬 WSL 배포판 안에서 실행합니다. 모든 경로는 Linux 형식이며, WSL 내부에 별도로 설치할 것이 없습니다. 세션에서 WSL과 Windows 양쪽에 동시에 접근할 수 있습니다. bash 명령은 WSL 배포판 안에서 실행되고, Windows 파일은 `/mnt/<drive>`(예: `/mnt/c/Users/...`)로 언제든 접근할 수 있습니다.
 
-지원하는 DSH 버전 목록은 [README.md](README.md)의 Compatibility 섹션을 참고하세요.
+지원하는 DSH 버전 목록은 [README.md](../../README.md)의 Compatibility 섹션을 참고하세요.
 
 ## 설치
 
@@ -47,11 +47,11 @@ dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
 
 ## 변경 이력
 
-전체 릴리스 이력(최신순)은 [CHANGELOG.md](CHANGELOG.md)에 있습니다(중국어: [CHANGELOG.zh.md](CHANGELOG.zh.md)). 이 README는 위에 설명한 현재의 동작만 다룹니다.
+전체 릴리스 이력(최신순)은 [CHANGELOG.md](../../CHANGELOG.md)에 있습니다(중국어: [CHANGELOG.zh.md](../../CHANGELOG.zh.md)). 이 README는 위에 설명한 현재의 동작만 다룹니다.
 
 ## 문서
 
-어떤 문서가 어디에 어떤 언어로 놓였고 어디까지 최신인지의 목록은 [docs/README.md](docs/README.md)(영어 색인)에 있습니다 — [설계 기록(zh)](docs/design.zh.md), `dsh.compatibility.dshReleases` 선언을 뒷받침하는 [릴리스별 호환성 근거](docs/compatibility-evidence.md), 그리고 대체되어 [docs/archive/](docs/archive/)에 보존된 과거 결론. 변경·출시 전 검증 절차는 [TESTING.md](TESTING.md).
+어떤 문서가 어디에 어떤 언어로 놓였고 어디까지 최신인지의 목록은 [docs/README.md](../../docs/README.md)(영어 색인)에 있습니다 — [설계 기록(zh)](../../docs/design.zh.md), `dsh.compatibility.dshReleases` 선언을 뒷받침하는 [릴리스별 호환성 근거](../../docs/compatibility-evidence.md), 그리고 대체되어 [docs/archive/](../../docs/archive/)에 보존된 과거 결론. 변경·출시 전 검증 절차는 [TESTING.md](../../TESTING.md).
 
 ## 라이선스 및 출처
 

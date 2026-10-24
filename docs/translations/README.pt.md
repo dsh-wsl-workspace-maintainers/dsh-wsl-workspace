@@ -2,12 +2,12 @@
 
 [![dsh.so security](https://www.dsh.so/badge/dsh-wsl-workspace.svg)](https://www.dsh.so/artifact/dsh-wsl-workspace) [![dsh.so install](https://www.dsh.so/badge/install/dsh-wsl-workspace.svg)](https://www.dsh.so/artifact/dsh-wsl-workspace)
 
-[English](README.md) · [中文](README.zh.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Português](README.pt.md) · [Русский](README.ru.md)
+[English](../../README.md) · [中文](../../README.zh.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Português](README.pt.md) · [Русский](README.ru.md)
 
 ![alt text](https://raw.githubusercontent.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/HEAD/image-3.png)
 Adicione um espaço de trabalho WSL a partir da interface web do DeepSeek Harness e execute toda a sessão do agente — comandos bash e leitura/escrita de arquivos — dentro de uma distribuição WSL local com caminhos em formato Linux. Não é necessário instalar nada dentro do WSL. A sessão pode acessar WSL e Windows ao mesmo tempo: os comandos bash são executados dentro da distribuição WSL, enquanto os arquivos do Windows continuam acessíveis via `/mnt/<unidade>` (por exemplo `/mnt/c/Users/...`).
 
-A lista de versões do DSH suportadas está na secção Compatibility do [README.md](README.md).
+A lista de versões do DSH suportadas está na secção Compatibility do [README.md](../../README.md).
 
 ## Instalação
 
@@ -47,11 +47,11 @@ Clique em "Create & open" para iniciar uma nova sessão no espaço de trabalho. 
 
 ## Histórico de versões
 
-O histórico completo de versões (da mais recente à mais antiga) está em [CHANGELOG.md](CHANGELOG.md) (chinês: [CHANGELOG.zh.md](CHANGELOG.zh.md)); este README mantém apenas o comportamento atual descrito acima.
+O histórico completo de versões (da mais recente à mais antiga) está em [CHANGELOG.md](../../CHANGELOG.md) (chinês: [CHANGELOG.zh.md](../../CHANGELOG.zh.md)); este README mantém apenas o comportamento atual descrito acima.
 
 ## Documentação
 
-Onde cada documento mora, em qual idioma, e qual ainda vale: [docs/README.md](docs/README.md) (índice em inglês) — [a nota de design (zh)](docs/design.zh.md), as [evidências de compatibilidade por versão](docs/compatibility-evidence.md) que sustentam a declaração `dsh.compatibility.dshReleases`, e as notas [arquivadas](docs/archive/) cujo banner nomeia o que as substituiu. Antes de uma mudança ou de um lançamento, siga [TESTING.md](TESTING.md).
+Onde cada documento mora, em qual idioma, e qual ainda vale: [docs/README.md](../../docs/README.md) (índice em inglês) — [a nota de design (zh)](../../docs/design.zh.md), as [evidências de compatibilidade por versão](../../docs/compatibility-evidence.md) que sustentam a declaração `dsh.compatibility.dshReleases`, e as notas [arquivadas](../../docs/archive/) cujo banner nomeia o que as substituiu. Antes de uma mudança ou de um lançamento, siga [TESTING.md](../../TESTING.md).
 
 ## Licença e atribuição
 

@@ -2,12 +2,12 @@
 
 [![dsh.so security](https://www.dsh.so/badge/dsh-wsl-workspace.svg)](https://www.dsh.so/artifact/dsh-wsl-workspace) [![dsh.so install](https://www.dsh.so/badge/install/dsh-wsl-workspace.svg)](https://www.dsh.so/artifact/dsh-wsl-workspace)
 
-[English](README.md) · [中文](README.zh.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Português](README.pt.md) · [Русский](README.ru.md)
+[English](../../README.md) · [中文](../../README.zh.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Português](README.pt.md) · [Русский](README.ru.md)
 
 ![alt text](https://raw.githubusercontent.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/HEAD/image-3.png)
 Añade un espacio de trabajo WSL desde la interfaz web de DeepSeek Harness y ejecuta toda la sesión del agente — comandos bash y lectura/escritura de archivos — dentro de una distribución WSL local con rutas en formato Linux. No hay nada que instalar dentro de WSL. La sesión puede acceder a la vez a WSL y a Windows: los comandos bash se ejecutan dentro de la distribución WSL, mientras que los archivos de Windows siguen accesibles vía `/mnt/<unidad>` (por ejemplo `/mnt/c/Users/...`).
 
-La lista de versiones de DSH compatibles está en la sección Compatibility de [README.md](README.md).
+La lista de versiones de DSH compatibles está en la sección Compatibility de [README.md](../../README.md).
 
 ## Instalación
 
@@ -47,11 +47,11 @@ Haz clic en «Create & open» para iniciar una nueva sesión en el espacio de tr
 
 ## Historial de versiones
 
-El historial completo de versiones (del más reciente al más antiguo) está en [CHANGELOG.md](CHANGELOG.md) (chino: [CHANGELOG.zh.md](CHANGELOG.zh.md)); este README solo conserva el comportamiento actual descrito arriba.
+El historial completo de versiones (del más reciente al más antiguo) está en [CHANGELOG.md](../../CHANGELOG.md) (chino: [CHANGELOG.zh.md](../../CHANGELOG.zh.md)); este README solo conserva el comportamiento actual descrito arriba.
 
 ## Documentación
 
-Qué documento vive dónde, en qué idioma, y cuál sigue siendo la referencia: [docs/README.md](docs/README.md) (índice en inglés) — [la nota de diseño (zh)](docs/design.zh.md), las [pruebas de compatibilidad por versión](docs/compatibility-evidence.md) que respaldan la declaración `dsh.compatibility.dshReleases`, y las notas [archivadas](docs/archive/) cuyo banner nombra qué las reemplazó. Antes de un cambio o un release, siga [TESTING.md](TESTING.md).
+Qué documento vive dónde, en qué idioma, y cuál sigue siendo la referencia: [docs/README.md](../../docs/README.md) (índice en inglés) — [la nota de diseño (zh)](../../docs/design.zh.md), las [pruebas de compatibilidad por versión](../../docs/compatibility-evidence.md) que respaldan la declaración `dsh.compatibility.dshReleases`, y las notas [archivadas](../../docs/archive/) cuyo banner nombra qué las reemplazó. Antes de un cambio o un release, siga [TESTING.md](../../TESTING.md).
 
 ## Licencia y atribución
 
