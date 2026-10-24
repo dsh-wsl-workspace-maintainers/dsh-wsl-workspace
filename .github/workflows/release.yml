@@ -17,10 +17,12 @@ on:
         required: false
 
 permissions:
-  # `contents: write` is for the Release object only — the package itself goes out through OIDC, and the
-  # workflow never touches a package token.
+  # `contents: write` is for the Release object only — the package itself goes out through OIDC, and
+  # the workflow never touches a package token. `actions: read` is the tag-gate step below asking
+  # the API whether this commit ever went through `checks`.
   contents: write
   id-token: write
+  actions: read
 
 concurrency:
   group: release-${{ github.event.inputs.tag || github.ref_name }}
@@ -57,6 +59,25 @@ jobs:
           if [ "$WANT" != "$HAVE" ]; then
             echo "::error::tag says $WANT, package.json says $HAVE"; exit 1
           fi
+      - name: the tagged commit went through the checks workflow
+        # A tag is the whole release gesture, and nothing else in this file proves the commit it
+        # names was ever gated: `checks` runs on push to main, not on tag push, so tagging an
+        # unpushed or mid-branch commit would publish bytes CI has never seen. Ask the API for a
+        # successful `checks` push run at this SHA. Dispatch retries skip this step on purpose:
+        # the retry path exists to repair the records of an already-gated release, and months
+        # later GitHub may already have pruned the run this step would ask about.
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SHA="$(git rev-parse HEAD)"
+          COUNT="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SHA}&event=push&per_page=100" \
+            --jq '[.workflow_runs[] | select(.name == "checks" and .conclusion == "success")] | length')"
+          if [ "$COUNT" = "0" ]; then
+            echo "::error::no successful 'checks' push run for ${SHA:0:7} — tag a commit that went through CI on main (its run may also still be in progress; wait for green)"
+            exit 1
+          fi
+          echo "ok — ${COUNT} successful 'checks' push run(s) for ${SHA:0:7}"
       - name: committed lib/ is what HEAD says it is
         run: node scripts/verify-lib-sync.mjs --check-only
       - name: rebuild must reproduce the committed lib/ byte-for-byte

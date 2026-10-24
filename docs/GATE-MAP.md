@@ -8,7 +8,7 @@
 
 | 类别 | 闸（npm script） | 跑在哪 |
 | --- | --- | --- |
-| A 宿主漂移（契约、名字、注册） | `test:contract` `test:readings` `test:unit` `test:node` `verify:install` `test:compat` | ubuntu + pinned 闭包；compat 每周 windows |
+| A 宿主漂移（契约、名字、注册） | `test:contract` `test:readings` `test:unit` `test:node` `verify:install` `test:compat` `upstream-drift`（drift.yml，每周三） | ubuntu + pinned 闭包；compat 每周 windows；drift 每周 ubuntu |
 | B 断言不可能失败（空断言、假绿） | `test:replay`（尺子本身） `test:docs-claims` `deliberate-reds` 台账（`test:seams` 末尾） `typecheck:gate` | 维护者本地 / ubuntu |
 | C 输入形状（工作区路径、盘符、UNC） | `test:world` `test:shapes` `test:install` | ubuntu + pinned 闭包；`test:shapes` 真机臂本地 |
 | C 前端状态机（渲染出的文字） | `test:client` | ubuntu |
@@ -34,6 +34,7 @@
 | `npm run test:profile` | profile 形树里"调用时才 import 宿主包"的隔离后果 | ubuntu `runtime-tests` | 前提行 P1-P7 红了是装置问题 |
 | `npm run test:wsl`（`*-real` 驱动） | 真实发行版上的 fs/search/skills/relay/bash/ConPTY 现场 | windows `wsl-gate`，WSL1 与 WSL2 分别 | 每格自己声明断的是"读法起作用"还是"读法声明"；artifact `wsl-gate-logs-*` 里能看出是哪台 |
 | `npm run test:compat` | 指定宿主版本上装→起→探→卸→再探 | windows，每周 3 个版本窗口 | 只有 `PASS compatible` 算绿；八种判词大多数是环境问题，不是接口漂移 |
+| `upstream-drift`（drift.yml，每周三 03:37） | 上游**未声明**的漂移：registry 上越过 pinned 的最高版本（看 `versions` 而非 dist-tag——rc.3 比 latest 早到一天），锁步组改写后装上，跑 world/contract/node，一版一 issue（绿=窗口可升，红=有人要适配，FAMILY-INCOMPLETE=上游发一半下周再看） | ubuntu（ephemeral、无 pinned 缓存，故意的） | issue 正文带每道门禁的红名与 #56/#87/#60 的历史形态；探测脚本本身的状态机与"只动锁步组"的边界写在 `scripts/probe-upstream.mjs` 头注 |
 | `npm run test:replay` | 尺子：20 枚真实缺陷重放 | **不进 CI**（它改写工作树，约 5 分钟），发布前由 `release:readings` 跑一次 | 只信"植入后必须有闸红"；`--dry` 抓过时植点，`DSH_REPLAY_SKIP_GATES` 回答"这道闸承不承重" |
 | `npm run test:shapes` | 每个形状走最短一轮：登记→打开→列出→放下 | 本地/维护者；真机臂要 `DSH_SMOKE_REAL=1` | 控制格（默认发行版的 `/` 必须列得出）没过的话，整片"拒绝"读数不算数 |
 | 卫生层：`verify` / `verify:lib-sync` / `verify:artifact` / `verify:plane` / `test:matrix` / `lint:portability` / `typecheck:gate` | 产物同一性、构建可重现、提交产物与源码一致、平面日志、发布矩阵形状、可移植拼写、类型债不增长 | ubuntu `lint-build` / `runtime-tests` / 发布前 | 这些是已回本的地板，重放命中率不是它们的评价标准；要动它们请单独提审 |

@@ -1,0 +1,117 @@
+name: upstream-drift
+# One question a week: has the @deepseek-ai family published past the pinned release, and if it
+# has, do the everyday gates still hold against it? The biggest escape class in this repository's
+# history is the host moving underneath the plugin (#56, #87, #60), and until this workflow the
+# moved family was invisible until a maintainer bumped ci/pinned-deps.json by hand — 0.2.1-rc.3
+# sat on the registry a full day with nothing here able to see it.
+#
+# What it does NOT do: bump anything, keep anything green, or gate a merge. A drift that reddens a
+# gate is a finding for a human (an issue, below), not a blocker; a drift that stays green is the
+# window bump being ready at leisure. Wednesday 03:37 UTC, offset from compat-window's Monday.
+on:
+  schedule:
+    - cron: '37 3 * * 3'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Probe this @deepseek-ai/dsh version instead of the highest published (dry-run a window bump; the pinned one re-probes the current tree)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: upstream-drift-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: detect registry movement against the pinned family
+        id: detect
+        env:
+          PROBE_VERSION: ${{ github.event.inputs.version }}
+        run: node scripts/probe-upstream.mjs --version "$PROBE_VERSION"
+      # The pinned-tree cache is deliberately NOT used here: the whole point of this job is that
+      # ci/deps/node_modules ends up holding the MOVED family, and a restore keyed by the committed
+      # lock would only be wiped by the install below.
+      - name: install the moved family over the committed pins
+        if: steps.detect.outputs.state == 'READY'
+        run: |
+          if node ci/install-pinned.mjs > drift-install.log 2>&1; then
+            echo "install: green" > drift-summary.txt
+            echo "INSTALL_OK=1" >> "$GITHUB_ENV"
+          else
+            rc=$?
+            echo "install: RED (rc $rc) — the moved family did not even materialise" > drift-summary.txt
+            tail -15 drift-install.log >> drift-summary.txt
+            echo "INSTALL_OK=0" >> "$GITHUB_ENV"
+            echo "FAIL=1" >> "$GITHUB_ENV"
+          fi
+      - name: the everyday gates against the moved family
+        # world (every provider seam), contract (the names TypeScript cannot see), node (assembly,
+        # rank parity, prompt parity — the #92/#51 classes). Each of these is exactly-anchored to
+        # the pinned 0.2.1-rc.2 readings by design, so ANY movement reddens one of them; that is
+        # the detector working, and the issue below is where the triage happens.
+        if: steps.detect.outputs.state == 'READY' && env.INSTALL_OK == '1'
+        run: |
+          FAIL=0
+          for gate in test:world test:contract test:node; do
+            echo "::group::$gate"
+            if npm run "$gate" > "drift-$gate.log" 2>&1; then
+              echo "$gate: green" >> drift-summary.txt
+            else
+              FAIL=1
+              echo "$gate: RED" >> drift-summary.txt
+              grep -aE "^✖ |^not ok |# RED|LEDGER|NOT VERIFIED|FAILED" "drift-$gate.log" | head -15 >> drift-summary.txt || true
+            fi
+            tail -4 "drift-$gate.log" || true
+            echo "::endgroup::"
+          done
+          cat drift-summary.txt
+          if [ "$FAIL" = "1" ]; then echo "FAIL=1" >> "$GITHUB_ENV"; fi
+      - name: file or update the drift issue
+        # One issue per detected version, updated by each probe while it stays open, so waiting for
+        # a window bump does not resurface as a new issue every week. The job's own conclusion
+        # (below) is red exactly when a gate reddened; this step runs either way.
+        if: always() && steps.detect.outputs.state == 'READY'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TARGET='${{ steps.detect.outputs.target }}'
+          PINNED='${{ steps.detect.outputs.pinned }}'
+          TITLE="upstream drift: @deepseek-ai/dsh ${TARGET} vs pinned ${PINNED}"
+          {
+            echo "The weekly upstream-drift probe ran the everyday gates against \`@deepseek-ai/dsh@${TARGET}\` (pins hold \`${PINNED}\`; only the lockstep group was moved — cordis/schemastery/client-runtime stayed at their pins)."
+            echo
+            cat drift-summary.txt 2>/dev/null || echo "(no gate summary)"
+            echo
+            echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo
+            echo "Triage: **green** means the window bump is ready at leisure (update \`ci/pinned-deps.json\` + \`ci/compat-window.json\`, then re-record \`ci/host-contract.json\` and \`release-readings\`). **RED** names the seam that moved — expect the classes #56 (registry contract), #87 (prompt variables), #60 (tool rows) were; the failing check's name says which."
+          } > drift-issue.md
+          NUMBER="$(gh issue list --state open --limit 200 --json number,title --jq ".[] | select(.title == \"${TITLE}\") | .number" | head -1)"
+          if [ -n "$NUMBER" ]; then
+            gh issue comment "$NUMBER" --body-file drift-issue.md
+            echo "updated issue #${NUMBER}"
+          else
+            gh issue create --title "$TITLE" --body-file drift-issue.md
+          fi
+      - name: verdict
+        if: steps.detect.outputs.state == 'READY'
+        run: |
+          if [ "${FAIL:-0}" = "1" ]; then
+            echo "::error::drift detected — see the issue above and the drift-* logs in this run"
+            exit 1
+          fi
+          echo "drift probe: gates green against the moved family"
