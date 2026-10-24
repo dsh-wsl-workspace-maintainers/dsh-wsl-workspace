@@ -78,6 +78,15 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: cache the pinned host tree by its committed lock
+        # install-pinned skips npm entirely when the tree already carries every pin at its
+        # pinned version; this cache is what makes the skip reachable on an ephemeral runner.
+        # The key is ci/deps' own lock, so a pin move misses, reinstalls and resaves within
+        # the same frame (measured before: ~22 s of npm per job, five jobs a frame).
+        uses: actions/cache@v4
+        with:
+          path: ci/deps/node_modules
+          key: pinned-deps-${{ runner.os }}-${{ hashFiles('ci/deps/package-lock.json') }}
       - name: install pinned @deepseek-ai host packages
         run: node ci/install-pinned.mjs
       - name: node bucket (build + host-package tests + host pair + rank --strict)
@@ -199,6 +208,15 @@ jobs:
       # byte-for-byte. Removing that dependency from the verification script (a static entry list read by both
       # sides) is what would let this step go; it is its own change.
       - run: npm ci
+      - name: cache the pinned host tree by its committed lock
+        # install-pinned skips npm entirely when the tree already carries every pin at its
+        # pinned version; this cache is what makes the skip reachable on an ephemeral runner.
+        # The key is ci/deps' own lock, so a pin move misses, reinstalls and resaves within
+        # the same frame (measured before: ~22 s of npm per job, five jobs a frame).
+        uses: actions/cache@v4
+        with:
+          path: ci/deps/node_modules
+          key: pinned-deps-${{ runner.os }}-${{ hashFiles('ci/deps/package-lock.json') }}
       - name: install pinned @deepseek-ai host packages
         run: node ci/install-pinned.mjs
       - name: provision WSL${{ matrix.wslVersion }} Ubuntu
@@ -243,6 +261,11 @@ jobs:
           test -f lib/index.js || { echo "RED — lib/index.js is missing from the checkout"; exit 1; }
           node -e "const fs=require('node:fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));const missing=(p.files??[]).filter(f=>!fs.existsSync(f));if(missing.length){console.error('RED — files[] names ' + missing.join(', ') + ' which the checkout does not have');process.exit(1)}console.log('lib present; files[] entries all exist')"
       - name: win32-semantics unit files (wsl-skills + fs-policy assume drive-shaped cwd)
+        # These files answer Windows questions that do not change with the WSL kernel or the
+        # loaded plane — a fake wsl.exe, drive-letter cwds, interpreter lookup on this disk —
+        # so one cell carries them instead of all three. The kernel-dependent readings stay
+        # in the per-cell gates below.
+        if: matrix.wslVersion == 2 && matrix.plane == 'lib'
         run: npm run test:win32
       # The session gate (#101, G5): a real host, the product's own generated world, and six tool calls
       # inside one session — the reading `compatible` rests on. It boots a profile and drives a

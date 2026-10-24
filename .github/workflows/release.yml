@@ -69,6 +69,13 @@ jobs:
           fi
       - name: a plain npm install of this tree works
         run: node scripts/verify-install.mjs
+      - name: cache the pinned host tree by its committed lock
+        # Same key the checks workflow uses, so a release reuses the warmest entry the
+        # repository already carries; install-pinned turns a hit into "no npm run".
+        uses: actions/cache@v4
+        with:
+          path: ci/deps/node_modules
+          key: pinned-deps-${{ runner.os }}-${{ hashFiles('ci/deps/package-lock.json') }}
       - name: the host contract the artifact stands on is the recorded one
         # A release is the moment a drifted host name reaches users. `dshReleases` in the manifest is a
         # table someone types and nothing verifies; this reads the pinned host tree and refuses an
