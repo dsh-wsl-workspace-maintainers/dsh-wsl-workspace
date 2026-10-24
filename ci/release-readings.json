@@ -21,6 +21,27 @@
         "worlds": 8,
         "collisions": 0
       }
+    },
+    "0.7.10": {
+      "takenAt": "2026-10-24 0605",
+      "head": "a5653da",
+      "tableSha": "9c8f2536f1d8",
+      "replay": {
+        "caught": 20,
+        "total": 20,
+        "strict": 20,
+        "misses": [],
+        "extras": [
+          "#95 caught",
+          "#96 caught",
+          "#105 caught"
+        ]
+      },
+      "contract": {
+        "services": 21,
+        "worlds": 8,
+        "collisions": 0
+      }
     }
   }
 }

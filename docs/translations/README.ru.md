@@ -2,12 +2,12 @@
 
 [![dsh.so security](https://www.dsh.so/badge/dsh-wsl-workspace.svg)](https://www.dsh.so/artifact/dsh-wsl-workspace) [![dsh.so install](https://www.dsh.so/badge/install/dsh-wsl-workspace.svg)](https://www.dsh.so/artifact/dsh-wsl-workspace)
 
-[English](README.md) · [中文](README.zh.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Português](README.pt.md) · [Русский](README.ru.md)
+[English](../../README.md) · [中文](../../README.zh.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Português](README.pt.md) · [Русский](README.ru.md)
 
 ![alt text](https://raw.githubusercontent.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/HEAD/image-3.png)
 Добавьте рабочее пространство WSL из веб-интерфейса DeepSeek Harness и запустите всю сессию агента — команды bash и чтение/запись файлов — внутри локального дистрибутива WSL с путями в формате Linux. Ничего не нужно устанавливать внутри WSL. Сессия может одновременно обращаться и к WSL, и к Windows: команды bash выполняются внутри дистрибутива WSL, а файлы Windows остаются доступными через `/mnt/<диск>` (например `/mnt/c/Users/...`).
 
-Список поддерживаемых версий DSH — в разделе Compatibility файла [README.md](README.md).
+Список поддерживаемых версий DSH — в разделе Compatibility файла [README.md](../../README.md).
 
 ## Установка
 
@@ -47,11 +47,11 @@ dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
 
 ## Журнал изменений
 
-Полная история релизов (от новых к старым) лежит в [CHANGELOG.md](CHANGELOG.md) (китайская версия: [CHANGELOG.zh.md](CHANGELOG.zh.md)); этот README хранит только описанное выше текущее поведение.
+Полная история релизов (от новых к старым) лежит в [CHANGELOG.md](../../CHANGELOG.md) (китайская версия: [CHANGELOG.zh.md](../../CHANGELOG.zh.md)); этот README хранит только описанное выше текущее поведение.
 
 ## Документация
 
-Где лежит каждый документ, на каком языке и что ещё актуально: [docs/README.md](docs/README.md) (указатель на английском) — [записка о дизайне (zh)](docs/design.zh.md), [доказательства по каждой версии совместимости](docs/compatibility-evidence.md), которые подпирают объявление `dsh.compatibility.dshReleases`, и [архивированные](docs/archive/) заметки, в каждой из которых баннер называет то, что её заменило. Перед правкой или релизом следуйте [TESTING.md](TESTING.md).
+Где лежит каждый документ, на каком языке и что ещё актуально: [docs/README.md](../../docs/README.md) (указатель на английском) — [записка о дизайне (zh)](../../docs/design.zh.md), [доказательства по каждой версии совместимости](../../docs/compatibility-evidence.md), которые подпирают объявление `dsh.compatibility.dshReleases`, и [архивированные](../../docs/archive/) заметки, в каждой из которых баннер называет то, что её заменило. Перед правкой или релизом следуйте [TESTING.md](../../TESTING.md).
 
 ## Лицензия и атрибуция
 

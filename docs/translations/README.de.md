@@ -2,12 +2,12 @@
 
 [![dsh.so security](https://www.dsh.so/badge/dsh-wsl-workspace.svg)](https://www.dsh.so/artifact/dsh-wsl-workspace) [![dsh.so install](https://www.dsh.so/badge/install/dsh-wsl-workspace.svg)](https://www.dsh.so/artifact/dsh-wsl-workspace)
 
-[English](README.md) · [中文](README.zh.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Português](README.pt.md) · [Русский](README.ru.md)
+[English](../../README.md) · [中文](../../README.zh.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Português](README.pt.md) · [Русский](README.ru.md)
 
 ![alt text](https://raw.githubusercontent.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/HEAD/image-3.png)
 Füge aus der DeepSeek-Harness-Web-GUI einen WSL-Arbeitsbereich hinzu und führe die gesamte Agent-Sitzung — Bash-Befehle und Datei-Lesen/-Schreiben — innerhalb einer lokalen WSL-Distribution mit Linux-Pfaden aus. In WSL muss nichts installiert werden. Die Sitzung kann gleichzeitig auf WSL und Windows zugreifen: Bash-Befehle laufen in der WSL-Distribution, während Windows-Dateien über `/mnt/<laufwerk>` (z. B. `/mnt/c/Users/...`) erreichbar bleiben.
 
-Die Liste der unterstützten DSH-Versionen steht im Abschnitt Compatibility von [README.md](README.md).
+Die Liste der unterstützten DSH-Versionen steht im Abschnitt Compatibility von [README.md](../../README.md).
 
 ## Installation
 
@@ -47,11 +47,11 @@ Klicke auf „Create & open", um eine neue Sitzung im Arbeitsbereich zu starten.
 
 ## Änderungshistorie
 
-Die vollständige Versionsgeschichte (neueste zuerst) steht in [CHANGELOG.md](CHANGELOG.md) (chinesisch: [CHANGELOG.zh.md](CHANGELOG.zh.md)); dieses README enthält nur die oben beschriebenen aktuellen Verhaltensweisen.
+Die vollständige Versionsgeschichte (neueste zuerst) steht in [CHANGELOG.md](../../CHANGELOG.md) (chinesisch: [CHANGELOG.zh.md](../../CHANGELOG.zh.md)); dieses README enthält nur die oben beschriebenen aktuellen Verhaltensweisen.
 
 ## Dokumentation
 
-Welches Dokument wo liegt, in welcher Sprache, und welches noch maßgeblich ist: [docs/README.md](docs/README.md) (Index auf Englisch) — [Design-Aufzeichnung (zh)](docs/design.zh.md), die [versionsweisen Kompatibilitätsnachweise](docs/compatibility-evidence.md), die die `dsh.compatibility.dshReleases`-Erklärung stützen, und die [archivierten](docs/archive/) Notizen, deren Banner nennen, was sie ersetzt hat. Vor einer Änderung oder einem Release folgen Sie [TESTING.md](TESTING.md).
+Welches Dokument wo liegt, in welcher Sprache, und welches noch maßgeblich ist: [docs/README.md](../../docs/README.md) (Index auf Englisch) — [Design-Aufzeichnung (zh)](../../docs/design.zh.md), die [versionsweisen Kompatibilitätsnachweise](../../docs/compatibility-evidence.md), die die `dsh.compatibility.dshReleases`-Erklärung stützen, und die [archivierten](../../docs/archive/) Notizen, deren Banner nennen, was sie ersetzt hat. Vor einer Änderung oder einem Release folgen Sie [TESTING.md](../../TESTING.md).
 
 ## Lizenz und Namensnennung
 
