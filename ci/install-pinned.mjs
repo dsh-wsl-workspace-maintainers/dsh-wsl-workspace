@@ -5,7 +5,8 @@
 //
 // Mechanism: a generated standalone npm project under ci/deps/ installs the
 // pinned set (npm ci against the committed ci/deps/package-lock.json when it
-// matches, npm install otherwise), then the ci/deps/node_modules/@deepseek-ai
+// matches, npm install otherwise — skipped entirely when the tree already
+// carries every pin at its pinned version), then the ci/deps/node_modules/@deepseek-ai
 // scope directory is linked into the repo root's node_modules so the test
 // buckets' bare specifiers resolve. If the root already has a real (non-link)
 // @deepseek-ai tree — maintainer junction machine, or a prior full install —
@@ -113,23 +114,42 @@ if (!current || JSON.stringify(current.dependencies) !== JSON.stringify(generate
 }
 writeFileSync(path.join(depsDir, '.npmrc'), 'legacy-peer-deps=true\n')
 
-const lockPath = path.join(depsDir, 'package-lock.json')
-let status
-if (existsSync(lockPath)) {
-  status = runNpm(['ci', '--no-audit', '--no-fund'], depsDir)
-  if (status !== 0) {
-    console.log('install-pinned: npm ci out of sync with pins — falling back to npm install (if pins changed, commit the refreshed ci/deps/package-lock.json)')
-    status = runNpm(['install', '--no-audit', '--no-fund'], depsDir)
-  }
-} else {
-  status = runNpm(['install', '--no-audit', '--no-fund'], depsDir)
-}
-if (status !== 0) {
-  console.error(`install-pinned: dependency install in ${depsDir} failed with exit status ${status}`)
-  process.exit(1)
+const depsModules = path.join(depsDir, 'node_modules')
+
+/** The version a materialised tree carries for one package, or MISSING when it is not there. */
+const versionOf = (dir) => {
+  const manifest = path.join(dir, 'package.json')
+  return existsSync(manifest) ? JSON.parse(readFileSync(manifest, 'utf8')).version : 'MISSING'
 }
 
-const depsModules = path.join(depsDir, 'node_modules')
+// A repeat run against an unchanged pin set is not a reinstall: `npm ci` would spend it wiping
+// and restoring all ~200 packages to end at the versions the tree already carries (measured
+// 2026-10-24: 42 s on the Windows maintainer machine, 22 s on an ubuntu runner — and five jobs
+// a frame pay it). Freshness is judged exactly the way the conflict tree below judges its own:
+// every pin materialises at its pinned version. A pin that moves still reinstalls; a refreshed
+// lock whose direct pins did not move keeps the transitive versions already installed.
+const stale = Object.entries(deps).some(([name, want]) =>
+  versionOf(path.join(depsModules, ...name.split('/'))) !== want)
+if (stale) {
+  const lockPath = path.join(depsDir, 'package-lock.json')
+  let status
+  if (existsSync(lockPath)) {
+    status = runNpm(['ci', '--no-audit', '--no-fund'], depsDir)
+    if (status !== 0) {
+      console.log('install-pinned: npm ci out of sync with pins — falling back to npm install (if pins changed, commit the refreshed ci/deps/package-lock.json)')
+      status = runNpm(['install', '--no-audit', '--no-fund'], depsDir)
+    }
+  } else {
+    status = runNpm(['install', '--no-audit', '--no-fund'], depsDir)
+  }
+  if (status !== 0) {
+    console.error(`install-pinned: dependency install in ${depsDir} failed with exit status ${status}`)
+    process.exit(1)
+  }
+} else {
+  console.log('install-pinned: the tree already carries every pin at its pinned version — no npm run')
+}
+
 // Link the @deepseek-ai scope and the listed unscoped bare imports (pin file
 // 'unscoped' — e.g. js-yaml, which src/index.ts dynamic-imports) from
 // ci/deps/node_modules into the root; nothing else, so transitive bloat never
@@ -209,10 +229,6 @@ if (conflict !== undefined && Object.keys(conflict).length > 0) {
   writeFileSync(path.join(conflictDir, '.npmrc'), 'legacy-peer-deps=true\n')
   // Already satisfied means no npm run at all, so a repeat `node ci/install-pinned.mjs`
   // stays offline-capable the same way the main tree does.
-  const versionOf = (dir) => {
-    const manifest = path.join(dir, 'package.json')
-    return existsSync(manifest) ? JSON.parse(readFileSync(manifest, 'utf8')).version : 'MISSING'
-  }
   const conflictModules = path.join(conflictDir, 'node_modules')
   const stale = Object.entries(conflict).some(([name, want]) => versionOf(path.join(conflictModules, name)) !== want)
   if (stale) {
