@@ -1,0 +1,87 @@
+name: replay-plane
+# Adjudicate a real-machine plane with the replay ruler, on the runner shape that runs it green —
+# the measurement GATE-MAP requires before anything in `tests/support` + `scripts/compatibility`
+# (6 848 lines, 27% of the apparatus, adjudicated exclusive catches: seams 3, session 0) may be cut.
+#
+#   What this is NOT: a gate. It never runs on a schedule or a push, reddens nobody's PR, and
+#   proves nothing about a merge — it answers one maintainer question at dispatch time: "does
+#   anything depend on this plane?" The ruler rewrites the working tree by design, which is why it
+#   lives here on an ephemeral runner rather than in ci.yml's per-commit path.
+#
+# Dispatch inputs:
+#   gates - comma list of gate ids to consult (mutation-engine's EXTRA_GATES: wsl, session, seams…).
+#           `--all-reds` is always on: with one gate consulted it is the same as first-red, and with
+#           several it is the only ordering that does not hide a later gate's catches.
+# Runtime expectation (measured shape, 2026-10-24): the wsl gate is ~3 min per plant and every
+# plant forces a lib rebuild for the bundle-reading plane, so a full 31-plant adjudication is
+# ~2 h — the job timeout is set for that, and the reading lands in the `replay-plane-reading`
+# artifact as tests/replay/last-run.json plus the per-plant console rows.
+on:
+  workflow_dispatch:
+    inputs:
+      gates:
+        description: 'Gate ids to adjudicate (comma list, e.g. wsl or session,seams)'
+        required: false
+        default: 'wsl'
+
+permissions:
+  contents: read
+
+jobs:
+  adjudicate:
+    runs-on: windows-latest
+    timeout-minutes: 300
+    defaults:
+      run:
+        shell: bash
+    env:
+      WSL_COMPAT_DISTRO: Ubuntu-24.04
+      WSL_COMPAT_USER: root
+      # Same values and same reasons as ci.yml's wsl-gate job: the drivers' built-in fixture roots
+      # are Linux-side paths the Windows bash runner must not rewrite (MSYS path conversion), and
+      # TMP/TEMP must be a casing-consistent spelling or smoke.ts's dual-access cell reddens on a
+      # clean tree — and a baseline red is an environment, not a measurement.
+      WSL_COMPAT_RELAY_CWD: '\\wsl.localhost\Ubuntu-24.04\tmp\dsh-wsl-relay-ws'
+      WSL_COMPAT_DRIVE_CWD: 'C:\'
+      WSL_COMPAT_DRIVE_PATH: ${{ github.workspace }}\tests
+      TMP: 'C:\tmp'
+      TEMP: 'C:\tmp'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: cache the pinned host tree by its committed lock
+        uses: actions/cache@v4
+        with:
+          path: ci/deps/node_modules
+          key: pinned-deps-${{ runner.os }}-${{ hashFiles('ci/deps/package-lock.json') }}
+      - name: install pinned @deepseek-ai host packages
+        run: node ci/install-pinned.mjs
+      - name: provision WSL2 Ubuntu
+        uses: Vampire/setup-wsl@v3
+        with:
+          wsl-version: 2
+          distribution: Ubuntu-24.04
+          set-as-default: 'true'
+          systemd: 'false'
+          use-headless: 'false'
+      - name: fixture preparation (bounded keep-warm so the 9P share stays visible)
+        run: |
+          mkdir -p /c/tmp
+          wsl.exe --set-default Ubuntu-24.04
+          wsl.exe -d Ubuntu-24.04 -- bash -c 'mkdir -p /tmp/dsh-wsl-relay-ws /tmp/dsh-wsl-compat /root/symprobe/ws && (nohup bash -c "for i in \$(seq 1 40); do sleep 60; done" >/dev/null 2>&1 & echo kept-alive)'
+      - name: baseline - the consulted gate must be green on a clean tree
+        run: npm run test:wsl
+      - name: adjudicate the plane (31 plants, every consulted gate, tree rewritten and reverted)
+        run: node --experimental-strip-types tests/replay/run.mjs --only-gates "${{ github.event.inputs.gates }}" --all-reds --json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: replay-plane-reading
+          path: |
+            tests/replay/last-run.json
+          retention-days: 30
+          if-no-files-found: warn
