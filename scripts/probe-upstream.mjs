@@ -37,7 +37,10 @@ const UMBRELLA = '@deepseek-ai/dsh'
 const registry = process.env.NPM_REGISTRY ?? 'https://registry.npmjs.org'
 const pinned = JSON.parse(readFileSync(pinPath, 'utf8'))
 const explicitIndex = process.argv.indexOf('--version')
-const explicit = explicitIndex === -1 ? undefined : process.argv[explicitIndex + 1]
+const explicitArg = explicitIndex === -1 ? undefined : process.argv[explicitIndex + 1]
+// A dispatch without the input still arrives as `--version ""` — the empty string is "unspecified",
+// not a version (first live dispatch answered INVALID with "has no version " until this line).
+const explicit = explicitArg === '' ? undefined : explicitArg
 
 /** Semver precedence with prerelease identifiers (numeric sorts below alphanumeric, absence of a prerelease wins). */
 function compare(a, b) {
