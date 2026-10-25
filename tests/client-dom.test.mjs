@@ -54,8 +54,15 @@ globalThis.KeyboardEvent = dom.window.KeyboardEvent
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
 const React = require('react')
-const { createRoot } = require('react-dom/client')
+const ReactDOMClient = require('react-dom/client')
+const { createRoot } = ReactDOMClient
 const jsxRuntime = require('react/jsx-runtime')
+// The shell's shared primitives table is a platform module, not a package on disk. This stub stands
+// in for the one member the header entry uses and leaves the label visible as an attribute, so the
+// test can tell the tooltip text from a native `title` bubble.
+const primitives = {
+  Tooltip: ({ label, children }) => React.cloneElement(children, { 'data-tooltip': label }),
+}
 const source = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
 const flush = () => new Promise(resolve => setTimeout(resolve, 0))
 
@@ -123,6 +130,8 @@ function mount(scenario, { wide = true } = {}) {
   dom.window.__ModuleLoader__ = { load: mod => { plugin = mod.factory(specifier => {
     if (specifier === 'react') return React
     if (specifier === 'react/jsx-runtime') return jsxRuntime
+    if (specifier === 'react-dom/client') return ReactDOMClient
+    if (specifier === '@deepseek-ai/dsh-client-ui-primitives') return primitives
     throw new Error(`unexpected require(${specifier})`)
   }) } }
   // The DOM's timers, not the host's: the bundle arms a 60-second roster refresh and the process
@@ -134,6 +143,8 @@ function mount(scenario, { wide = true } = {}) {
     new Function('window', 'document', 'require', source)(dom.window, globalThis.document, specifier => {
       if (specifier === 'react') return React
       if (specifier === 'react/jsx-runtime') return jsxRuntime
+      if (specifier === 'react-dom/client') return ReactDOMClient
+      if (specifier === '@deepseek-ai/dsh-client-ui-primitives') return primitives
       throw new Error(`unexpected require(${specifier})`)
     })
     plugin.apply(ctx)
@@ -467,3 +478,118 @@ test('no reachable state draws an error row around nothing', { timeout: 20_000 }
 })
 
 test.after(() => { dom.window.close() })
+
+/**
+ * The host's own workspace UI carries the entry too (#96 is why this file exists; these two cases
+ * are why the answer is not "a button at the foot").
+ *
+ * The shell gives a client plugin one seat — `sidebar.footer.action` — and the Workspaces section
+ * header and the picker menu are host-private markup. These cases draw that markup around the
+ * mounted root and assert the entry joins it: the shipped control's class list (so the box is the
+ * shipped box), the shipped row's icon and classes, and the same dialog behind both.
+ */
+
+/** The host markup the header entry discovers: a section header with an action strip and the add control. */
+function hostHeader() {
+  const region = document.createElement('div')
+  region.className = 'host_region'
+  region.innerHTML = '<div class="host_sectionHeader"><div class="host_headerActions">'
+    + '<button type="button" class="host_icon" aria-label="search"></button>'
+    + '<button type="button" class="host_icon" aria-label="add workspace"></button>'
+    + '</div></div>'
+  document.body.appendChild(region)
+  return region
+}
+
+test('the entry joins the section header beside the shipped add control', { timeout: 10_000 }, async () => {
+  const client = mount(healthy())
+  const region = hostHeader()
+  try {
+    await client.render()
+    // The seat is discovered from the footer element upwards, so the host region has to be an
+    // ancestor of the mounted root — in the shell it is the sidebar the slot sits in.
+    await client.act(async () => { region.appendChild(client.container) })
+    await client.act(flush)
+    const entry = region.querySelector('.dww-header-entry')
+    assert.ok(entry !== null, `the header carries no entry: ${region.innerHTML.slice(0, 300)}`)
+    assert.equal(entry.className, 'host_icon dww-header-entry',
+      'the shipped control`s own class list is what makes the box the shipped box')
+    assert.equal(entry.getAttribute('data-tooltip'), client.zh()['action.entry'],
+      'the hover label is the entry`s own sentence, drawn by the shell`s tooltip primitive')
+    assert.equal(entry.title, '', 'the entry must not fall back to the browser`s native title bubble')
+    assert.equal(entry.closest('[class*="_headerActions"]')?.lastElementChild?.contains(entry), true,
+      'the entry sits inside the action strip, not beside it')
+    assert.equal(client.container.querySelector('.dww-action').hidden, true,
+      'the footer row steps aside while the header carries the entry')
+    await client.act(async () => { entry.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true })) })
+    await client.act(flush)
+    assert.ok(client.container.querySelector('.dww-card') !== null, 'the header entry opens the same dialog')
+  } finally {
+    region.remove()
+    client.unmount()
+  }
+})
+
+test('the workspace picker menu carries the WSL row under the shipped one', { timeout: 10_000 }, async () => {
+  const client = mount(healthy())
+  const menu = document.createElement('div')
+  menu.setAttribute('role', 'menu')
+  menu.innerHTML = '<div class="host_itemWrap"><button type="button" role="menuitem" class="host_item" aria-keyshortcuts="Alt+N">'
+    + '<span class="host_itemLabel">添加工作区…</span><span class="host_itemHint">Ctrl+N</span></button></div>'
+  document.body.appendChild(menu)
+  try {
+    await client.render()
+    await client.act(async () => { document.body.appendChild(menu) })
+    await client.act(flush)
+    const entry = menu.querySelector('[data-dww-menu-entry]')
+    assert.ok(entry !== null, `the menu carries no entry: ${menu.innerHTML.slice(0, 300)}`)
+    assert.equal(entry.previousElementSibling, menu.querySelector('.host_itemWrap'),
+      'the entry is the row directly under the shipped one')
+    assert.equal(entry.querySelector('.host_itemLabel')?.textContent, client.zh()['action.entry'],
+      'the label is the only thing the clone changes')
+    assert.equal(entry.querySelector('svg, .host_item') !== null, true, 'the shipped icon and classes come with the row')
+    await client.act(async () => {
+      entry.querySelector('button').dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
+    })
+    await client.act(flush)
+    assert.ok(client.container.querySelector('.dww-card') !== null, 'the menu row opens the same dialog')
+  } finally {
+    menu.remove()
+    client.unmount()
+  }
+})
+
+test('the mode picker lists one family, whichever workspace the session belongs to', { timeout: 10_000 }, async () => {
+  const client = mount(healthy())
+  const menu = document.createElement('div')
+  menu.setAttribute('role', 'menu')
+  const row = (label, selected) => '<div class="host_itemWrap"><button type="button" role="menuitem" class="host_item">'
+    + `<span class="host_itemName">${label}</span>${selected ? '<span class="host_check"></span>' : ''}</button></div>`
+  menu.innerHTML = row('标准模式', true) + row('WSL · 标准模式', false) + row('PTC 模式', false) + row('WSL · PTC 模式', false)
+  document.body.appendChild(menu)
+  const visible = () => [...menu.querySelectorAll('.host_itemWrap')]
+    .filter(wrap => wrap.style.display !== 'none')
+    .map(wrap => wrap.querySelector('.host_itemName').textContent)
+  try {
+    await client.render()
+    await client.act(async () => { document.body.appendChild(menu) })
+    await client.act(flush)
+    assert.deepEqual(visible(), ['标准模式', 'PTC 模式'], 'a shipped-mode session lists the shipped modes')
+    assert.equal(menu.querySelector('.host_item[disabled]')?.closest('.host_itemWrap').style.display, 'none',
+      'a hidden row also leaves the keyboard order')
+
+    // The same menu, one selection later: the checked row is now a WSL variant.
+    await client.act(async () => {
+      const rows = [...menu.querySelectorAll('.host_itemWrap')]
+      rows[0].querySelector('.host_check').remove()
+      const check = document.createElement('span')
+      check.className = 'host_check'
+      rows[1].querySelector('button').appendChild(check)
+    })
+    await client.act(flush)
+    assert.deepEqual(visible(), ['WSL · 标准模式', 'WSL · PTC 模式'], 'a WSL session lists the WSL variants')
+  } finally {
+    menu.remove()
+    client.unmount()
+  }
+})

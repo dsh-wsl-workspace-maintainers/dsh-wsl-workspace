@@ -1,7 +1,9 @@
 /**
  * Browser half of dsh-wsl-workspace. Registers the "Add WSL workspace…"
- * action beside Settings at the sidebar foot (the official
- * `sidebar.footer.action` slot), and keeps every blank session whose
+ * action on the official `sidebar.footer.action` slot and mounts two further
+ * entries into the host's own workspace UI at runtime (see `./hostEntry.ts`):
+ * the W control in the Workspaces section header and the row under
+ * "Add workspace…" in the picker menu. It also keeps every blank session whose
  * workspace is a WSL UNC path composed from the WSL VARIANT of the mode it
  * currently runs (`standard` → `wsl-standard`, PTC → `wsl-code`, …) — so the
  * WSL execution world composes with any mode instead of being a mode itself.

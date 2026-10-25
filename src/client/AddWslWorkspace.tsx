@@ -1,7 +1,10 @@
 /**
- * Sidebar footer action that opens the "Add WSL workspace" dialog. In the
- * wide sidebar it renders a labeled row; in the 56px rail it collapses to a
- * 36px icon button (both honor the shell's `{ wide }` owner share).
+ * The "Add WSL workspace" dialog and its footer seat. The dialog is opened by
+ * the header control and the picker-menu row as well (see `./hostEntry.ts`);
+ * this seat is the fallback for a collapsed rail and for a release whose header
+ * the plugin cannot find. In the wide sidebar it renders a labeled row, hidden
+ * once the header carries the entry; in the 56px rail it collapses to a 36px
+ * icon button (both honor the shell's `{ wide }` owner share).
  *
  * Registration omits the typed `locale:` seat (the `wslWorkspace` namespace is
  * not merged into `LocaleNamespaceMap`), so the injected face carries the
@@ -12,6 +15,7 @@ import type * as React from 'react'
 import { useEffect, useRef, useState, type UIEventHandler } from 'react'
 import { isAbsoluteLinuxPath, isValidWslUsername, normalizeLinuxPath } from '../shared/paths.ts'
 import type { WslDirListing, WslPathCheck, WslSelfDescription } from './api.ts'
+import { mountHeaderEntry, mountWorkspaceMenuEntry } from './hostEntry.ts'
 import { WslHelp } from './help.tsx'
 
 /** Result-level shape of a browse/check/list call we surface uniformly. */
@@ -107,6 +111,27 @@ export function AddWslWorkspace({ wide, t, describe, checkPreset, listDistros, l
   // mutation sweep's sibling read, 2026-10-20). A single `error` string cannot tell which failure it
   // holds, so the provenance is tracked beside it.
   const browseFailed = useRef(false)
+  // The footer seat's own element: the header entry is discovered from it.
+  const homeRef = useRef<HTMLButtonElement | null>(null)
+  // The host mounts call these from DOM listeners React does not own, so they
+  // read the current dialog state through refs rather than a stale closure.
+  const openRef = useRef<() => void>(() => {})
+  const labelRef = useRef('')
+  labelRef.current = t('action.entry')
+  useEffect(() => {
+    openRef.current = () => setOpen(true)
+  })
+  // Whether the host header currently carries the entry. When it does, drawing
+  // the footer row too would put the same action in the same sidebar twice.
+  const [headerSeat, setHeaderSeat] = useState(false)
+  useEffect(() => {
+    if (!wide) {
+      setHeaderSeat(false)
+      return
+    }
+    return mountHeaderEntry(homeRef.current, { label: () => labelRef.current, open: () => openRef.current() }, setHeaderSeat)
+  }, [wide])
+  useEffect(() => mountWorkspaceMenuEntry({ label: () => labelRef.current, open: () => openRef.current() }), [])
 
   const refreshBrowse = async (root: string, targetDistro: string): Promise<void> => {
     const seq = ++browseSeq.current
@@ -213,13 +238,17 @@ export function AddWslWorkspace({ wide, t, describe, checkPreset, listDistros, l
   }, [open, busy])
 
   // Kept mounted while open; aria-modal means it must leave the tab order instead.
+  // In a wide sidebar whose section header carried the entry this row is hidden
+  // rather than unmounted: the header mount discovers its seat from this element.
   const trigger = (
     <button
+      ref={homeRef}
       type="button"
       className={wide ? 'dww-action dww-action--wide' : 'dww-action dww-action--rail'}
       title={t('action.title')}
       aria-label={t('action.title')}
-      aria-hidden={open || undefined}
+      aria-hidden={open || headerSeat || undefined}
+      hidden={headerSeat && wide}
       tabIndex={open ? -1 : undefined}
       onClick={() => setOpen(true)}
     >

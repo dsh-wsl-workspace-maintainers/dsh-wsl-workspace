@@ -181,8 +181,16 @@ dsh-wsl-workspace/                    # 一个仓库，多包（或单包多入�
 | 需求 | 实现 | 验证 |
 |---|---|---|
 | 选了 WSL 后无法切回其它模式 | 根因：自动绑 preset 的 effect 会覆盖 hero 里的显式选择。修复：**每会话只自动绑定一次**（首次出现时）；此后用户的选择被尊重并保持；在某工作区显式切走过模式的，该工作区新会话不再自动绑定 | 逻辑审查 + 类型检查 |
-| 按钮移到区头「搜索/视图选项/添加工作区」旁并列 | `ui-workspace` 新增官方子洞 `sidebar.workspaces.headerAction`（`list` kind，owner `{ wide }`），渲染在区头图标簇内；插件从 `sidebar.footer.action` 迁移过来，按钮改为纯图标（28px 圆形宽栏 / 36px 圆形轨道，与 `iconButton` 一致），不破坏布局 | ui-workspace 6 项 slot 测试通过 + 类型检查 + 双方 bundle 重建 |
+| 按钮移到区头「搜索/视图选项/添加工作区」旁并列 | **上游没有这个席位**（见下节）：改为运行时镜像宿主区头控件，不再改官方包 | `tests/client-dom.test.mjs` 区头/菜单两例 + `client-classnames` |
 | 联合访问（同时访问本机文件系统与 WSL） | `fs-wsl` 的 translate 新增 `/mnt/<drive>/...` 输入分支（映射回 Windows 盘直接读写，显示仍为 /mnt 形式）；bash 侧 `/mnt/<drive>` 本就可达；persona 明确引导迁移方式（跨路径 read/write 或 bash cp） | 冒烟新增用例：`dual access OK (Windows files via /mnt/<drive>)` 实测通过 |
+
+#### 区头入口没有官方 slot（2026-10 复核）
+
+实测运行中的 GUI（`cordis_inspect` → client `Slots`）与上游 master 的 [Web Client Slots](https://deepseek-harness.github.io/deepseek-harness/reference/subsystems/slots) 树一致：`sidebar.workspaces`（`single`）的 child 只有 `sidebar.workspaces.session.menu.item`、`sidebar.workspaces.session.row.action`、`sidebar.workspaces.directoryFlow`、`sidebar.session.row.leading`、`sidebar.session.row.hover`；选择器 `conversation.hero.workspace`（`single`）只有 `conversation.hero.workspace.directoryFlow`。侧栏里唯一的通用 React 席位是 `sidebar.footer.action`（`list`，owner `{ wide }`），插件已占用它作为回退。
+
+第四轮曾在本仓库给 `ui-workspace` 打补丁新增 `sidebar.workspaces.headerAction`（`list`，owner `{ wide }`），第五轮按「官方包零改动」回退，上游从未合并过这个洞。
+
+所以「插到添加工作区旁边」只能靠运行时镜像（`src/client/hostEntry.ts`）：复制该按钮的 `className`（盒子就是宿主盒子）、按 `role="menu"` 克隆「添加工作区…」行，并把 `_headerActions` 的 60px 上限撑到 92px 以容纳第三个控件。悬浮提示用共享原语 `@deepseek-ai/dsh-client-ui-primitives` 的 `Tooltip`（`side="bottom"`、`delayMs={500}`），与宿主同一份实现，因此气泡、延迟、翻转都一致。真正的零注入要等上游在 `sidebar.workspaces` 下声明 header child slot，届时改成 `ctx.slots.inject()` 即可，镜像逻辑可整体删除。
 
 ### 加固轮（代码审查后）
 
@@ -214,5 +222,5 @@ dsh-wsl-workspace/                    # 一个仓库，多包（或单包多入�
 ### 第五轮：模式选择器按工作区过滤 + 顺序对齐（后回退）
 
 - 曾通过官方 `ui-agent-preset` 的 `agentPresetOptionFilter` 服务接缝实现按工作区过滤模式列表，并让变体继承源模式 `order` 对齐顺序。
-- **用户决策：官方包零改动，回退功能**。官方两个包（`ui-workspace` 的 `headerAction` 洞、`ui-agent-preset` 的过滤接缝）已完整还原（源码 + README + 重建 lib），官方测试 278 项全绿。
-- 保留：变体族、模式自动映射、按钮（改回官方 `sidebar.footer.action` 槽，圆形象征按钮）、`/mnt` 联合访问、变体 `order` 继承（roster 显示顺序对齐仍生效）。回退的只是「按工作区隐藏/过滤模式条目」这一 UI 层。`src/shared/presets.ts` 及测试删除。
+- **用户决策：官方包零改动，回退功能**。本仓库曾给官方包打的两个补丁（`ui-workspace` 里本地新增的 `sidebar.workspaces.headerAction` 洞、`ui-agent-preset` 的过滤接缝）已完整还原（源码 + README + 重建 lib），官方测试 278 项全绿。
+- 保留：变体族、模式自动映射、`/mnt` 联合访问、变体 `order` 继承（roster 显示顺序对齐仍生效）。回退的只是「按工作区隐藏/过滤模式条目」这一 UI 层。`src/shared/presets.ts` 及测试删除。入口位置后来改成区头运行时镜像（见上一节「区头入口没有官方 slot」），不再使用 `sidebar.footer.action` 作为宽栏主入口。

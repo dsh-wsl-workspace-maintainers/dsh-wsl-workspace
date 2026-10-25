@@ -21,7 +21,7 @@ dsh plugin --profile web add https://github.com/dsh-wsl-workspace-maintainers/ds
 dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
 ```
 
-重启 `dsh web` 后，侧栏底部 Settings 旁出现 W 按钮。
+重启 `dsh web` 后，工作区区头「添加工作区」右侧出现 W 按钮；侧栏折叠成轨道时，它仍位于底部 Settings 旁。
 
 ## 兼容性
 
@@ -32,7 +32,7 @@ dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
 这份列表与 `package.json` 里的 `dsh.compatibility.dshReleases` 一一对应，单测会在两者不一致时失败。其中 `0.2.1-rc.2` 就是 DSH Desktop `0.2.1-rc.2` 自带的 DSH 版本——判决取自该应用**自己打包的那份宿主**（`resources/app.asar` 内），不只是 npm 上那份——所以桌面版由同一份声明覆盖；应用内帮助面板（对话框右上角「?」）会显示同一组 chip 以及插件版本。插件在运行时自动识别 DSH 版本并选用对应的 API；两边都不支持时会明确报错，而不是留下一个空工作区。版本不在列表里通常仍然可用，但未经验证。
 
 ## 使用
-点侧栏底部 Settings 旁的 W 按钮，打开「添加 WSL 工作区」对话框。先从下拉框选择一个发行版，再浏览目录树或直接输入 Linux 绝对路径（如 `/home/me/proj`），可以点「检查」确认路径存在。对话框文案跟随 DSH 界面语言。用户名是可选项：留空则以该发行版的默认用户运行，填写该发行版里的某个 Linux 用户名则以该用户运行（等价于 `wsl.exe -u <用户名>`）。用户名只影响 bash 命令的运行身份，文件工具通过 Windows 侧的 WSL 共享访问、不受其影响；每个工作区填写的用户名保存在 `<dshHome>/wsl-workspaces.json`，删除对应条目（或重开对话框重建工作区）即可恢复默认用户。
+点这个 W 按钮，或在「添加工作区」菜单里直接选「添加WSL工作区」，打开「添加 WSL 工作区」对话框。先从下拉框选择一个发行版，再浏览目录树或直接输入 Linux 绝对路径（如 `/home/me/proj`），可以点「检查」确认路径存在。对话框文案跟随 DSH 界面语言。用户名是可选项：留空则以该发行版的默认用户运行，填写该发行版里的某个 Linux 用户名则以该用户运行（等价于 `wsl.exe -u <用户名>`）。用户名只影响 bash 命令的运行身份，文件工具通过 Windows 侧的 WSL 共享访问、不受其影响；每个工作区填写的用户名保存在 `<dshHome>/wsl-workspaces.json`，删除对应条目（或重开对话框重建工作区）即可恢复默认用户。
 
 点「创建并打开」后，新会话随即运行在 WSL：`bash` 工具在所选发行版内执行命令，`read`/`write`/`edit` 读写 WSL 文件，模型看到的所有路径都是 Linux 形式。模式选择器照常可用——标准、PTC、极简、创造都会自动落到对应的 WSL 变体（选择器里的 WSL 变体条目为中英双语，如 `WSL · Standard mode（标准模式）`）；会话内仍可通过 `/mnt/<drive>`（如 `/mnt/c/Users/...`）访问 Windows 文件。对话框右上角的「?」按钮会展开一页说明：这份构建声明兼容的 DSH 版本、插件的用法与特性，以及它无法绕过的已知限制。
 ![alt text](https://raw.githubusercontent.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/HEAD/image-2.png)
