@@ -209,7 +209,12 @@ export function mountWorkspaceMenuEntry(options: HostEntryOptions): () => void {
   }
 
   const filterPresets = (menu: Element, buttons: NodeListOf<HTMLButtonElement>): void => {
-    if (buttons.length === 0) return
+    // A generic menu can carry an itemName without using the button-based menu
+    // shape this filter understands. The stylesheet must not leave it hidden.
+    if (buttons.length === 0) {
+      if (menu.querySelector('[class*="_itemName"]') !== null) releasePresets(menu)
+      return
+    }
     const rows = [...buttons].map(button => ({
       button,
       name: (button.querySelector('[class*="_itemName"]')?.textContent ?? '').trim(),
@@ -217,7 +222,10 @@ export function mountWorkspaceMenuEntry(options: HostEntryOptions): () => void {
     }))
     // A menu whose rows carry no recognizable name is not the preset picker;
     // leaving it alone is the only safe answer.
-    if (!rows.some(row => row.name !== '')) return
+    if (!rows.some(row => row.name !== '')) {
+      releasePresets(menu)
+      return
+    }
     const selected = rows.find(row => row.checked)
     if (selected === undefined) {
       releasePresets(menu)

@@ -524,6 +524,9 @@ test('the entry joins the section header beside the shipped add control', { time
     await client.act(async () => { entry.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true })) })
     await client.act(flush)
     assert.ok(client.container.querySelector('.dww-card') !== null, 'the header entry opens the same dialog')
+    await client.escape()
+    assert.ok(region.querySelector('.dww-header-entry') !== null,
+      'the header entry returns after the dialog closes, without a page reload')
   } finally {
     region.remove()
     client.unmount()
@@ -588,6 +591,26 @@ test('the mode picker lists one family, whichever workspace the session belongs 
     })
     await client.act(flush)
     assert.deepEqual(visible(), ['WSL · 标准模式', 'WSL · PTC 模式'], 'a WSL session lists the WSL variants')
+  } finally {
+    menu.remove()
+    client.unmount()
+  }
+})
+
+test('a menu that only resembles the preset picker is not left hidden', { timeout: 10_000 }, async () => {
+  const client = mount(healthy())
+  const menu = document.createElement('div')
+  menu.setAttribute('role', 'menu')
+  menu.innerHTML = '<button type="button" role="menuitem"><span class="host_itemName"></span></button>'
+  document.body.appendChild(menu)
+  try {
+    await client.render()
+    await client.act(async () => { document.body.appendChild(menu) })
+    await client.act(() => new Promise(resolve => setTimeout(resolve, 100)))
+    assert.equal(menu.getAttribute('data-dww-presets-ready'), '',
+      'an unrecognized menu must release the temporary hidden state')
+    assert.equal(menu.querySelector('button')?.parentElement, menu,
+      'releasing the menu must not move or filter its contents')
   } finally {
     menu.remove()
     client.unmount()
