@@ -2,6 +2,17 @@
 
 All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](README.md); the Chinese record is [CHANGELOG.zh.md](CHANGELOG.zh.md).
 
+## 0.7.11 — 2026-10-25
+
+**The WSL entry is now part of the Workspace UI, and the mode picker shows only the family that belongs to the current workspace.**
+
+- **The W no longer stands alone in the bottom-left corner ([#114](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/114), fixes [#96](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/96)).** In the wide sidebar it sits in the Workspaces section header, immediately beside the shipped add-workspace control; the home workspace menu also carries an “Add WSL workspace” row under “Add workspace…”. The collapsed rail keeps the W beside Settings as its fallback, so every sidebar shape has an entry.
+- **The mode picker shows one world at a time.** A normal session lists only Standard / PTC / Minimal / Creator, while a WSL session lists only the matching `WSL · …` variants. Hidden rows also leave the keyboard order, so arrow keys cannot land on a row that is not visible.
+- **Menu hiding is scoped to the preset picker.** The runtime probe now releases any unfamiliar menu instead of leaving it hidden when a future host or plugin menu also carries an `_itemName` marker. `test:client` carries the regression.
+- **The hero workspace chip closes its own menu on a second click.** The first click opens it; the second press no longer reaches the outside-pointerdown handler only to reopen the menu.
+
+This release was exercised on isolated DSH `0.1.5-rc.2` and `0.2.1-rc.2` instances across the wide sidebar, collapsed rail, both menu entries, filtering in both directions, and second-click dismissal. Build, client, unit, node, world, contract, install, profile, and artifact-identity gates passed.
+
 ## 0.7.10 — 2026-10-24
 
 **A Desktop session survives a sixth composition again, the WSL shell carries the session facts scripts branch on, and a world stops refusing to mount over `read_image`.** Three user-facing fixes, a leaner install, and a build that watches its own upstream.

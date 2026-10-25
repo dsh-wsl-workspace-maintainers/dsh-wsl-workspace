@@ -4,6 +4,17 @@
 
 本文件为中文记录（0.4.3 及更早为摘要）；英文原文见 [CHANGELOG.md](CHANGELOG.md)。
 
+## 0.7.11 — 2026-10-25
+
+**WSL 入口终于成为 Workspace UI 的一部分，模式选择器也只展示当前工作区能用的那一族模式。**
+
+- **W 不再单独站在侧栏左下角（[#114](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/114)，修 [#96](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/96)）。** 宽侧栏里，入口位于 Workspace 区块标题右侧、紧邻原生的“添加工作区”按钮；首页工作区的“添加工作区…”菜单中也新增了同一入口。折叠成轨道式侧栏时仍回退到设置旁的 W 按钮，所以所有侧栏形态都有可用入口。
+- **模式选择器一次只显示一个世界。** 普通会话只列出 Standard / PTC / Minimal / Creator，WSL 会话只列出对应的 `WSL · …` 变体；隐藏项同时退出键盘顺序，不会出现“看不见却还能被方向键选中”的行。
+- **菜单隐藏只在预设选择器上生效。** 修掉了运行时探测的一个边界：其他插件或宿主以后新增的异步菜单即使也带 `_itemName` 标记，也不会被本插件的预设过滤逻辑永久藏起来。对应回归已加入 `test:client`。
+- **首页工作区 Chip 现在可以二次点击关闭菜单。** 首次点击打开，第二次点击不再触发 outside-pointerdown 后又被 Chip 的 click 重开。
+
+本版在 DSH `0.1.5-rc.2` 与 `0.2.1-rc.2` 的隔离实例上验证了宽侧栏、折叠侧栏、菜单入口、普通/WSL 双向模式过滤和二次点击关闭；构建、客户端、单元、node、world、contract、install、profile 与 artifact identity 门禁均通过。
+
 ## 0.7.10 — 2026-10-24
 
 **Desktop 会话在第六个组合上重新活过来，WSL shell 带上了脚本赖以分支的会话事实，世界也不再因 `read_image` 重名而拒绝挂载。** 三个面向用户的修复，一个更瘦的安装包，一套会自己盯上游的构建。
