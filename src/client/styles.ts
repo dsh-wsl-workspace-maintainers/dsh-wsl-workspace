@@ -393,7 +393,7 @@ const STYLES = `
 /* The mode menu is built and measured with every mode before this plugin trims
    it; hold that untrimmed frame (and its backdrop) invisible so it cannot
    flash above the anchor before the trimmed list has been placed. */
-[role='menu']:has([class*='_itemName']):not([data-dww-presets-ready]) {
+[role='menu']:has(button[role='menuitem'] [class*='_itemName']):not([data-dww-presets-ready]) {
   visibility: hidden !important;
 }
 body[data-dww-presets-pending] [data-menu-backing] {
