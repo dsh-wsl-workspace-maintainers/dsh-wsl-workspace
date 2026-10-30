@@ -141,8 +141,16 @@ for (const file of DOCS) {
     }
     // Bare file names (`PITFALLS.md`, `CHECK-CATALOG.md`): they must be published, or the
     // document must declare that repository-only references exist (a banner near the top).
-    for (const m of row.text.matchAll(/(?<![\w/.-])([A-Za-z0-9][A-Za-z0-9_-]*\.md)(?![\w/])/g)) {
+    // Match whole tokens, then keep only names without a slash (path-shaped targets belong
+    // to the two rules above/below). Two shapes this replaced were wrong: a lookbehind that
+    // excluded `-` made every hyphenated name unmatchable (a bare
+    // `release-behaviour-matrix.zh.md` passed silently), and dropping `-` from it instead
+    // matched the tail of a path such as `…/No-Such-File.md` as a bare name.
+    for (const token of row.text.split(/[\s\x60'"()\[\]{}<>*,;|=]+/)) {
+      const m = /^([A-Za-z0-9][A-Za-z0-9_./-]*\.md)(?:#.*)?$/.exec(token.replace(/[.,;:]+$/, ''))
+      if (!m) continue
       const name = m[1]
+      if (name.includes('/')) continue
       if (seen.has(name)) continue
       seen.add(name)
       checked += 1
