@@ -129,6 +129,30 @@ export function getWindowsWorkspace(winPath: string): WorkspaceEntry | undefined
   return readStore()[key]
 }
 
+/**
+ * Remove one workspace's registration, whichever dialog route wrote it.
+ *
+ * The store had exactly one exit before this function: `setWorkspaceUsername`'s
+ * `delete`, which resolves its key through `canonicalWslUnc()` and therefore
+ * throws on a drive key. A `/mnt/<drive>` workspace written by `registerWindows`
+ * had no way back out — deleting the session, deleting the workspace in the host,
+ * and deleting the directory itself all leave the record behind, and the client
+ * re-binds every new session from it (issue #129).
+ * @param path - a WSL UNC path or a Windows drive path, in any spelling.
+ * @returns the key removed from the store, or null when the path names neither.
+ */
+export function unregisterWorkspace(path: string): string | null {
+  const key = canonicalWslUnc(path) ?? canonicalWindowsPath(path)
+  if (key === null) return null
+  const store = readStore()
+  if (!(key in store)) return null
+  delete store[key]
+  const file = storePath()
+  mkdirSync(dirname(file), { recursive: true })
+  writeFileSync(file, JSON.stringify(store, null, 2) + '\n', 'utf8')
+  return key
+}
+
 /** Every stored workspace key (canonical UNC and Windows drive paths). */
 export function listWorkspaceKeys(): string[] {
   return Object.keys(readStore())

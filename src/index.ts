@@ -34,7 +34,7 @@ import { dirname, isAbsolute, join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir } from 'node:os'
 import { joinUnc, mntToWindowsPath, normalizeLinuxPath, isAbsoluteLinuxPath, isValidWslUsername, parseWslUnc } from './shared/paths.ts'
-import { canonicalWslUnc, getWindowsWorkspace, getWorkspaceUsername, listWorkspaceKeys, listWorkspaceRecords, registerWindowsWorkspace, setWorkspaceUsername } from './shared/wsl-credentials.ts'
+import { canonicalWslUnc, getWindowsWorkspace, getWorkspaceUsername, listWorkspaceKeys, listWorkspaceRecords, registerWindowsWorkspace, setWorkspaceUsername, unregisterWorkspace } from './shared/wsl-credentials.ts'
 import { defaultDistro, listDistros } from './shared/wsl.ts'
 import { isElectronHost, persistentShellAllowed, resolveRelayNode } from './shared/relay-node.ts'
 import { probePersistentShellReadiness } from './host/pty-readiness.ts'
@@ -228,6 +228,17 @@ function requireWslUnc(value: unknown): string {
   const canonical = canonicalWslUnc(value)
   if (canonical === null) throw new Error('path must be a WSL UNC workspace path')
   return canonical
+}
+
+/**
+ * Validate a wire-supplied workspace path in **either** key shape the store
+ * uses: a WSL UNC path, or the Windows drive path a `/mnt/<drive>` workspace is
+ * registered under. `requireWslUnc` cannot serve the second, and folding it into
+ * a `{exists:false}`-style answer is exactly what made issue #129 unrecoverable.
+ */
+function requireWorkspacePath(value: unknown): string {
+  if (typeof value !== 'string' || value.trim() === '') throw new Error('path must be a workspace path')
+  return value
 }
 
 /**
@@ -426,6 +437,18 @@ async function dispatch(method: string, params: Record<string, unknown>): Promis
       // Every registered WSL workspace key (UNC and Windows drive spellings):
       // the client uses the drive keys to recognize `/mnt` workspaces.
       return listWorkspaceKeys()
+    }
+    case 'removeWorkspace': {
+      // The exit `registerWindows` never had (issue #129): a `/mnt/<drive>`
+      // workspace is stored under its Windows drive key, and the only delete in
+      // the store resolved its key as a UNC path, so that key threw and nothing
+      // else could remove it. One method answers for both key shapes — the drive
+      // spelling a `/mnt` workspace was registered under, and the UNC spelling a
+      // `remove` of an in-distribution workspace would use.
+      const path = requireWorkspacePath(params.path)
+      const removed = unregisterWorkspace(path)
+      if (removed === null) throw new Error('path must be a registered WSL or Windows-drive workspace path')
+      return { removed }
     }
     case 'listWorkspaceRecords': {
       // The keys plus the stored credentials. The client half needs the distro

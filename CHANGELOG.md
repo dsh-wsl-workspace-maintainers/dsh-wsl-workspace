@@ -2,6 +2,14 @@
 
 All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](README.md); the Chinese record is [CHANGELOG.zh.md](CHANGELOG.zh.md).
 
+## Unreleased
+
+**A `/mnt/<drive>` workspace can be un-registered again.**
+
+- **`removeWorkspace` is a new host route** ([#129](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/129)). `registerWindows` has written a Windows drive key into `wsl-workspaces.json` since the first dialog, and the store's only delete resolved its key as a WSL UNC path — so a drive record survived deleting the session, deleting the workspace in the host, and deleting the directory itself, and every new session in that path was re-bound to a WSL mode with no way back. The route removes either key shape (`canonicalWslUnc()` then `canonicalWindowsPath()`, the same pair `listWorkspaceRecords` emits) and reports a miss rather than clearing nothing silently.
+- **A one-row mode picker cannot happen** ([#129](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/129)). The picker trim added in 0.7.11 matches on the host's display names; when a WSL session's family had no second member in the menu, the trim left exactly one row — the mode already selected — which is a picker with nothing to choose. That shape now releases the menu whole, the way an unrecognized menu already did.
+- `host-api.mjs` covers the removal and its effect on the record list; its probe floor moves 13 → 15. `tests/route-envelope.mjs` locks the drive-key removal at the HTTP seam the dialog uses (with the positive control that `setUser` still clears a UNC key and no drive key), and `test:client` locks the one-row menu shape.
+
 ## 0.7.11 — 2026-10-25
 
 **The WSL entry is now part of the Workspace UI, and the mode picker shows only the family that belongs to the current workspace.**

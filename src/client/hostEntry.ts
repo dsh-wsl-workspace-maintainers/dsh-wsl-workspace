@@ -231,7 +231,17 @@ export function mountWorkspaceMenuEntry(options: HostEntryOptions): () => void {
       releasePresets(menu)
       return
     }
-    const wslOnly = /^WSL\b/i.test(selected.name)
+    const wslSelected = /^WSL\b/i.test(selected.name)
+    if (wslSelected && !rows.some(row => row !== selected && /^WSL\b/i.test(row.name))) {
+      // A WSL session whose family has no *second* member in this menu would
+      // collapse to a picker carrying only the mode already selected — the shape
+      // with no way to choose anything (issue #129's second exit, reachable
+      // because the match is on the host's display names, not our ids). Release
+      // the menu whole, exactly as an unrecognized menu is released below.
+      releasePresets(menu)
+      return
+    }
+    const wslOnly = wslSelected
     for (const row of rows) {
       const wrap = row.button.parentElement
       if (wrap === null) continue

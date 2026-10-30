@@ -400,6 +400,80 @@ try {
   assert(after === before, 'the registry store is byte-for-byte untouched after the refused setUser calls')
   assert(!after.includes('attacker'), 'no refused setUser left a username in the registry store')
 
+  // ── 11. issue #129: a drive-keyed registration has an exit ─────────────
+  // Reproduction lock, kept in this file because this is the seam the dialog
+  // actually uses — the shipped route over a socket, with `registerWindows` and
+  // `listWorkspaceRecords` as the two ends the reporter read. Nothing here starts
+  // a distribution: the store is keyed on the path string, and a name that does
+  // not resolve only ever surfaces if a removal is followed by a `check`.
+  const driveKey = 'c:\\users\\me\\documents\\github\\automation'
+  const drivePath = 'C:\\Users\\me\\Documents\\GitHub\\automation'
+  const sentinelKey = '\\\\wsl.localhost\\SentinelDistro\\home\\kept'
+  const mntPath = '/mnt/c/Users/me/Documents/GitHub/automation'
+  const plantStore = () => {
+    writeFileSync(store, JSON.stringify(
+      { [driveKey]: { distro: 'SentinelDistro' }, [sentinelKey]: { username: 'keptuser' } }, null, 2) + '\n', 'utf8')
+  }
+  const readStoreNow = () => JSON.parse(readFileSync(store, 'utf8'))
+
+  plantStore()
+  // The defect's own half, still asserted: the store's original delete resolves a
+  // UNC key and throws on a drive one, so the dialog's old exit cannot clear a
+  // `/mnt/<drive>` record. #129's answer is the method below, not a change here.
+  const refusedDrive = await post({ method: 'setUser', params: { path: drivePath, username: '' } })
+  assert(refusedDrive.envelope?.ok === false && readStoreNow()[driveKey] !== undefined,
+    `setUser still cannot clear a drive key (refused: "${String(refusedDrive.envelope?.error ?? '')}") — by design; the exit is removeWorkspace`)
+
+  // removeWorkspace takes the store key verbatim, the same spelling setUser and
+  // listWorkspaceRecords use: the dialog reads it from listWorkspaceRecords rather
+  // than canonicalising Windows paths in a browser, so that is the one spelling to serve.
+  const removed = await post({ method: 'removeWorkspace', params: { path: drivePath } })
+  assert(removed.status === 200 && removed.envelope?.ok === true && removed.envelope?.value?.removed === driveKey,
+    `removeWorkspace answers the canonical key it removed (got ${JSON.stringify(removed.envelope)})`)
+  const afterRemove = readStoreNow()
+  assert(afterRemove[driveKey] === undefined, 'the drive key is gone from the store')
+  assert(afterRemove[sentinelKey] !== undefined, 'the UNC record the drive removal was not about stays in the store')
+
+  const listAfter = await post({ method: 'listWorkspaceRecords' })
+  assert(!(listAfter.envelope?.value ?? []).some((r) => r.path === driveKey),
+    'listWorkspaceRecords no longer reports the removed workspace, so the client stops binding new sessions from it')
+
+  const again = await post({ method: 'removeWorkspace', params: { path: drivePath } })
+  assert(again.envelope?.ok === false && /registered/.test(String(again.envelope?.error)),
+    `a second removal is a REPORTED miss naming the path, not a silent success ("${String(again.envelope?.error ?? '')}")`)
+
+  // The UNC half, on the same method — and an idempotent clear is NOT enough here:
+  // a caller removing a workspace must be told when there was nothing to remove.
+  plantStore()
+  const uncRemoval = await post({ method: 'removeWorkspace', params: { path: sentinelKey } })
+  assert(uncRemoval.envelope?.ok === true && readStoreNow()[driveKey] !== undefined
+    && readStoreNow()[sentinelKey] === undefined,
+    'removeWorkspace clears a UNC record and leaves the drive record alone')
+
+  // The registration and the removal must be a pair, or the dialog list would show
+  // rows its own write never produced.
+  plantStore()
+  const registered = await post({ method: 'registerWindows', params: { distro: 'SentinelDistro', linuxPath: mntPath, username: '' } })
+  assert(registered.envelope?.ok === true && readStoreNow()[driveKey]?.distro === 'SentinelDistro',
+    'registerWindows writes the drive key that removeWorkspace clears')
+  const removeOwnKey = await post({ method: 'removeWorkspace', params: { path: driveKey } })
+  assert(removeOwnKey.envelope?.ok === true && readStoreNow()[driveKey] === undefined,
+    'the canonical key read back from listWorkspaceRecords is accepted by removeWorkspace verbatim')
+
+  for (const [label, params] of [['no path', {}], ['an empty path', { path: '   ' }], ['a foreign UNC', { path: '\\\\otherhost\\share\\x' }]]) {
+    const answer = await post({ method: 'removeWorkspace', params })
+    assert(answer.status === 200 && answer.envelope?.ok === false,
+      `removeWorkspace with ${label} answers {ok:false}, never a 500 (got ${answer.status} ${JSON.stringify(answer.envelope?.error)})`)
+  }
+
+  plantStore()
+  const cleared = await post({ method: 'setUser', params: { path: sentinelKey, username: '' } })
+  const storeCleared = readStoreNow()
+  assert(cleared.envelope?.ok === true && storeCleared[sentinelKey] === undefined
+    && storeCleared[driveKey] !== undefined,
+    'the positive control holds: setUser clears a seeded UNC key and no drive key')
+  plantStore()
+
   // ── 9. an empty picker is a reported failure (fake spawn, child process) ─
   // `listDistros()` cannot be answered honestly in this process: without the fake it
   // would run the real wsl.exe. So this one assertion runs in a child with

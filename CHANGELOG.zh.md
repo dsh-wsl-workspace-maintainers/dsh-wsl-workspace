@@ -4,6 +4,14 @@
 
 本文件为中文记录（0.4.3 及更早为摘要）；英文原文见 [CHANGELOG.md](CHANGELOG.md)。
 
+## 未发布
+
+**`/mnt/<盘符>` 工作区终于可以取消登记了。**
+
+- **新增宿主路由 `removeWorkspace`**（[#129](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/129)）。`registerWindows` 从第一版起就往 `wsl-workspaces.json` 写盘符键，而登记表里唯一的删除动作先把键解析成 WSL UNC 路径——于是这条记录在删会话、在宿主里删工作区、甚至删掉目录之后都还在，该路径下每个新会话仍被改写成 WSL 模式，且没有任何退回办法。新路由接受两种键形（`canonicalWslUnc()` 再 `canonicalWindowsPath()`，与 `listWorkspaceRecords` 给出的同一对），删不到时如实报错，不静默返回"成功"。
+- **模式选择器不会再只剩一行**（[#129](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/129)）。0.7.11 加入的裁剪按宿主的显示名匹配；当某个 WSL 会话的同族在菜单里没有第二行时，裁剪后只剩已选中的那一行——那等于一个没得选的选择器。这种形状现在整份放行菜单，与"无法识别的菜单"已有的处理一致。
+- `host-api.mjs` 覆盖注销动作与它对记录列表的影响，探针地板从 13 抬到 15。`tests/route-envelope.mjs` 在对话框真正使用的那条 HTTP 缝上锁住盘符键注销（阳性对照：`setUser` 仍能删 UNC 键、仍删不掉盘符键），`test:client` 锁住"只剩一行"的菜单形状。
+
 ## 0.7.11 — 2026-10-25
 
 **WSL 入口终于成为 Workspace UI 的一部分，模式选择器也只展示当前工作区能用的那一族模式。**

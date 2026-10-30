@@ -597,6 +597,65 @@ test('the mode picker lists one family, whichever workspace the session belongs 
   }
 })
 
+test('a WSL session whose family has no other variant in the menu is not left with a one-row mode picker', { timeout: 10_000 }, async () => {
+  // Issue #129's second exit. The trim matches on the row's *display name*, which
+  // is the host's, not ours: a checked WSL row with no other WSL row beside it
+  // would trim to a menu containing only the mode already selected — a picker the
+  // user cannot choose from at all.
+  const client = mount(healthy({ presets: 'none' }))
+  const menu = document.createElement('div')
+  menu.setAttribute('role', 'menu')
+  const row = (label, selected) => '<div class="host_itemWrap"><button type="button" role="menuitem" class="host_item">'
+    + `<span class="host_itemName">${label}</span>${selected ? '<span class="host_check"></span>' : ''}</button></div>`
+  menu.innerHTML = row('WSL · 标准模式', true) + row('标准模式', false) + row('PTC 模式', false)
+  document.body.appendChild(menu)
+  const visible = () => [...menu.querySelectorAll('.host_itemWrap')]
+    .filter(wrap => wrap.style.display !== 'none')
+    .map(wrap => wrap.querySelector('.host_itemName').textContent)
+  try {
+    await client.render()
+    await client.act(async () => { document.body.appendChild(menu) })
+    await client.act(flush)
+    assert.deepEqual(visible().slice().sort(), ['PTC 模式', 'WSL · 标准模式', '标准模式'],
+      'a menu with no second WSL row stays untrimmed rather than collapsing to the selected row')
+    assert.equal([...menu.querySelectorAll('button')].every(button => !button.disabled), true,
+      'and no row is left disabled, so one is always selectable')
+    // Past PRESET_SETTLE_MS: the released flag is what makes the menu visible.
+    await client.act(() => new Promise(resolve => setTimeout(resolve, 100)))
+    assert.equal(menu.getAttribute('data-dww-presets-ready'), '', 'the released menu is visible')
+  } finally {
+    menu.remove()
+    client.unmount()
+  }
+})
+
+test('a healthy WSL roster still trims the menu to its own family', { timeout: 10_000 }, async () => {
+  // The pair of the row above, and the boundary of this fix: with a real variant
+  // family present the menu still lists only WSL modes — which is the documented
+  // design. The way back to a plain workspace is `removeWorkspace`, not a row here.
+  const client = mount(healthy())
+  const menu = document.createElement('div')
+  menu.setAttribute('role', 'menu')
+  const row = (label, selected) => '<div class="host_itemWrap"><button type="button" role="menuitem" class="host_item">'
+    + `<span class="host_itemName">${label}</span>${selected ? '<span class="host_check"></span>' : ''}</button></div>`
+  menu.innerHTML = row('标准模式', false)
+    + row('WSL · 标准模式', true) + row('WSL · PTC 模式', false) + row('WSL · 精简模式', false)
+  document.body.appendChild(menu)
+  const visible = () => [...menu.querySelectorAll('.host_itemWrap')]
+    .filter(wrap => wrap.style.display !== 'none')
+    .map(wrap => wrap.querySelector('.host_itemName').textContent)
+  try {
+    await client.render()
+    await client.act(async () => { document.body.appendChild(menu) })
+    await client.act(flush)
+    assert.deepEqual(visible(), ['WSL · 标准模式', 'WSL · PTC 模式', 'WSL · 精简模式'],
+      'a WSL session with a variant family lists that family (the documented design)')
+  } finally {
+    menu.remove()
+    client.unmount()
+  }
+})
+
 test('a menu that only resembles the preset picker is not left hidden', { timeout: 10_000 }, async () => {
   const client = mount(healthy())
   const menu = document.createElement('div')

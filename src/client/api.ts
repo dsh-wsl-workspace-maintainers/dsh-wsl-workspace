@@ -188,6 +188,18 @@ export async function registerWindows(linuxPath: string, distro: string, usernam
 }
 
 /**
+ * Remove one workspace's registration — the exit `registerWindows` had no
+ * partner for (issue #129). A `/mnt/<drive>` workspace is stored under its
+ * Windows drive key, and the store's only delete resolved UNC keys, so the
+ * record outlived the session, the workspace and the directory itself.
+ * @param path - the store key: a canonical Windows drive path or a WSL UNC path.
+ * @returns the canonical key the host removed from the store.
+ */
+export async function removeWorkspace(path: string): Promise<{ removed: string }> {
+  return call<{ removed: string }>('removeWorkspace', { path })
+}
+
+/**
  * List every registered WSL workspace key (canonical UNC and Windows drive
  * spellings). The client uses the drive keys to recognize `/mnt` workspaces
  * across page reloads.
