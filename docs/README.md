@@ -1,5 +1,7 @@
 # Documentation index
 
+> **Repository-only paths.** This index and everything it links to (except `docs/driving.md` and `docs/driving.zh.md`) live in the repository and are **not published** with the package; a reader holding only the tarball needs `docs/driving.*`.
+
 Where each document lives, what language it is in, and whether it still describes the current build. Naming rule: `kebab-case`, with a `.zh` suffix when the text is Chinese (English carries no suffix). Superseded documents move to [`archive/`](./archive/) unchanged — the banner at the top of each one names what replaced it.
 
 | Path | Language | What it is | Status |

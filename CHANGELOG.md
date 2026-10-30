@@ -2,6 +2,16 @@
 
 All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](README.md); the Chinese record is [CHANGELOG.zh.md](CHANGELOG.zh.md).
 
+## 0.7.12 — 2026-10-30
+
+**Another agent can now drive this package from what the package ships**, without the repository or the maintainer's memory.
+
+- **`describe` carries the operational facts.** It now returns `route` (the path this process actually serves), `loopbackOnly`, `methods` (the authoritative table: name / mutates / params / returns), `installProof` (a literal to grep in the installed `lib/index.js`, because a version string cannot prove which bytes are loaded) and `driving` (start / login / composer / provider). The table is the same constant the dispatcher reads, and a gate fails the build when the two disagree.
+- **`docs/driving.md` and `docs/driving.zh.md` ship in the package** and answer five questions: (1) headless start, including the `ELECTRON_RUN_AS_NODE` variable that must be unset — with it the executable runs as Node and a bare launch exits 0 with no output; (2) the login URL and token, with the measured replay behaviour (the token is not consumed while that process lives; a wrong token is 401); (3) the route, its envelope and how to enumerate the methods; (4) composer injection (the editor is Lexical: one `beforeinput`, never `execCommand`, and never both); (5) moving a session off a provider that answers 401, through `cordis.patch.yml` with `apiKeyEnv` keeping the key off disk.
+- **The READMEs declare which paths are repository-only** (`src/`, `tests/`, `scripts/`, `ci/`, most of `docs/`) instead of linking them as though they shipped.
+- **Two document gates run at the end of `npm run test:unit`**: `scripts/check-doc-paths.mjs` (every repository path a document names must exist; `--pack <dir>` applies the same rule to the artifact, where the repository-only prefixes must be declared in a banner) and `scripts/check-discoverability.mjs` (builds the packed artifact and fails when any of the five questions stops being answerable, or when the method table drifts from the dispatcher).
+- **Evidence for the claim**: three cold-start agents read only the packed artifact. Before, four of the five questions were unanswerable and the fifth was code-only; after, all five are answerable from `docs/driving.md` with file:line citations.
+
 ## Unreleased
 
 **A `/mnt/<drive>` workspace can be un-registered again.**

@@ -2,7 +2,9 @@
 
 [![dsh.so security](https://www.dsh.so/badge/dsh-wsl-workspace.svg)](https://www.dsh.so/artifact/dsh-wsl-workspace) [![dsh.so install](https://www.dsh.so/badge/install/dsh-wsl-workspace.svg)](https://www.dsh.so/artifact/dsh-wsl-workspace)
 
-[English](README.md) · [中文](README.zh.md) · [日本語](docs/translations/README.ja.md) · [한국어](docs/translations/README.ko.md) · [Français](docs/translations/README.fr.md) · [Deutsch](docs/translations/README.de.md) · [Español](docs/translations/README.es.md) · [Português](docs/translations/README.pt.md) · [Русский](docs/translations/README.ru.md)
+> **Repository-only paths.** This package publishes `lib/`, `cordis.patch.yml`, both READMEs, `TESTING.md`, both CHANGELOGs, `LICENSE`, `NOTICE` and `docs/driving.*`. Paths under `src/`, `tests/`, `scripts/`, `ci/` and the rest of `docs/` exist in the repository and are **not published** — this file names them as coordinates, not as files you can open from the tarball.
+
+[English](README.md) · [中文](README.zh.md) · [日本語](docs/translations/README.ja.md) · [한국어](docs/translations/README.ko.md) · [Français](docs/translations/README.fr.md) · [Deutsch](docs/translations/README.de.md) · [Español](docs/translations/README.es.md) · [Português](docs/translations/README.pt.md) · [Русский](docs/translations/README.ru.md) · [日本語](docs/translations/README.ja.md) · [한국어](docs/translations/README.ko.md) · [Français](docs/translations/README.fr.md) · [Deutsch](docs/translations/README.de.md) · [Español](docs/translations/README.es.md) · [Português](docs/translations/README.pt.md) · [Русский](docs/translations/README.ru.md)
 ![alt text](https://raw.githubusercontent.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/HEAD/image-3.png)
 Add a WSL workspace from the DeepSeek Harness web GUI and run the whole agent session — bash commands and file reads/writes — inside a local WSL distribution with Linux paths. Nothing needs to be installed inside WSL. The session can reach both WSL and Windows at the same time: bash commands run inside the WSL distribution, while Windows files stay accessible via `/mnt/<drive>` (for example `/mnt/c/Users/...`).
 
@@ -49,13 +51,17 @@ Click "Create & open" to start a new session in the workspace. In the new sessio
 - **Older hosts fall back to a one-shot shell**: the persistent stack is the *host's* code, and on Windows it needs a platform process inspector that only exists from `0.1.0-rc.8` on — in `0.1.0-rc.7` `spawnTerminal` throws `subprocess-local: terminal inspection is unsupported on platform win32` before any process starts, so every `bash` call in that release fails outright (grep/glob, which never touch the PTY, keep working). The plugin therefore *probes* the substrate at startup instead of assuming: it hands `spawnTerminal` a program that cannot exist, which reaches the inspector check and nothing else — no process is created either way, and the rejection says which half failed. When the answer is "no inspector", the generated world keeps the one-shot `dsh-tool-bash` row (this plugin's own `ctx.shell` provider, no PTY) and the model gets a working, stateless shell instead of an error on every call. `0.1.0-rc.7` is the only declared release in that state; every later one gets the persistent shell.
 - The garbled `localhost` port-forwarding banner `wsl.exe` prints to stderr when the distro was not running yet is harmless.
 
+## Driving it from another agent
+
+[docs/driving.md](docs/driving.md) (**ships inside the package**) answers the five questions a fresh agent cannot invent: how to start a harness headlessly (and the one environment variable that must be unset, or the launch exits 0 silently), where the login URL and its token come from (measured: the token is not consumed while that process lives — restart the instance to invalidate it), this plugin's route plus how to enumerate its methods at runtime (`describe`), how to inject text into the composer and send it (the composer is Lexical: one `beforeinput`, never `execCommand`), and how to move a session off a provider that answers 401. The same facts are returned by the plugin's `describe` method (`route`, `loopbackOnly`, `methods`, `installProof`, `driving`), so they travel with the HTTP surface too.
+
 ## Changelog
 
 The full release history — every version, newest first — lives in [CHANGELOG.md](CHANGELOG.md) ([中文](CHANGELOG.zh.md)); this README keeps only the current behaviour described above.
 
 ## Documentation
 
-[docs/README.md](docs/README.md) indexes what lives where and in which language: the [design record](docs/design.zh.md) (zh), the [per-release compatibility evidence](docs/compatibility-evidence.md) behind the `dsh.compatibility.dshReleases` declaration, and the [archived](docs/archive/) notes whose banners name what superseded them. Before a change or a release, follow [TESTING.md](TESTING.md).
+**Most of `docs/` is repository-only** (it is not in `package.json#files`; the one shipped file is [docs/driving.md](docs/driving.md)). In the repository, [docs/README.md](docs/README.md) indexes what lives where and in which language: the [design record](docs/design.zh.md) (zh), the [per-release compatibility evidence](docs/compatibility-evidence.md) behind the `dsh.compatibility.dshReleases` declaration, and the [archived](docs/archive/) notes whose banners name what superseded them. Before a change or a release, follow [TESTING.md](TESTING.md).
 
 ## License & attribution
 

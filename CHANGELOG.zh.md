@@ -4,6 +4,16 @@
 
 本文件为中文记录（0.4.3 及更早为摘要）；英文原文见 [CHANGELOG.md](CHANGELOG.md)。
 
+## 0.7.12 — 2026-10-30
+
+**别的 agent 现在能只凭包里发布的东西把这枚插件用起来**，不需要仓库，也不需要维护者的记忆。
+
+- **`describe` 带上运行所需的事实**：它现在回 `route`（本进程真正在服务的那条路径）、`loopbackOnly`、`methods`（权威方法表：名字／是否写／参数／返回）、`installProof`（一个去装侧 `lib/index.js` 里 grep 的字面量——版本号证明不了加载的是哪批字节）与 `driving`（启动／登录／composer／provider）。方法表与派发器读同一个常量，两者不一致时构建红。
+- **`docs/driving.md` 与 `docs/driving.zh.md` 随包发布**，回答五问：① 无头启动，含**必须删掉**的 `ELECTRON_RUN_AS_NODE`——带着它那个 exe 会以 Node 身份运行，裸启动退出码 0、零输出；② 登录 URL 与 token，并写明实测的重放行为（进程存活期间不会被用掉；错的 token 才 401）；③ 路由、信封与怎么枚举方法；④ composer 注入（编辑器是 Lexical：只发一发 `beforeinput`，绝不用 `execCommand`，也不要两个都发）；⑤ 默认 provider 报 401 时改哪一处——`cordis.patch.yml`，`apiKeyEnv` 只放变量名、key 留在启动环境里。
+- **两份 README 声明哪些路径只在仓库里**（`src/`、`tests/`、`scripts/`、`ci/`、`docs/` 的其余部分），不再把它们写成好像随包发布。
+- **两把文档闸挂在 `npm run test:unit` 末尾**：`scripts/check-doc-paths.mjs`（文档点到的每个仓内路径必须真实存在；`--pack <dir>` 对发布产物施加同一规则，仓库专用前缀必须在文首声明）与 `scripts/check-discoverability.mjs`（构建发布产物，五问任何一问答不出来即红，方法表与派发器漂移也红）。
+- **判定凭据**：三枚冷启动代理只读发布产物作答。改前五问里四问答不出、第五问只能读代码；改后五问全都能从 `docs/driving.md` 答出并带 file:line。
+
 ## 未发布
 
 **`/mnt/<盘符>` 工作区终于可以取消登记了。**

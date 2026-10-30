@@ -2,6 +2,8 @@
 
 [![dsh.so security](https://www.dsh.so/badge/dsh-wsl-workspace.svg)](https://www.dsh.so/artifact/dsh-wsl-workspace) [![dsh.so install](https://www.dsh.so/badge/install/dsh-wsl-workspace.svg)](https://www.dsh.so/artifact/dsh-wsl-workspace)
 
+> **仓库内路径说明。** 本包发布的是 `lib/`、`cordis.patch.yml`、两份 README、`TESTING.md`、两份 CHANGELOG、`LICENSE`、`NOTICE` 与 `docs/driving.*`；`src/`、`tests/`、`scripts/`、`ci/` 以及 `docs/` 的其余部分只存在于仓库里、**不随包发布**——本文里点它们的名字是在给坐标，不是在给一个能从 tarball 里打开的文件。
+
 [English](README.md) · [中文](README.zh.md) · [日本語](docs/translations/README.ja.md) · [한국어](docs/translations/README.ko.md) · [Français](docs/translations/README.fr.md) · [Deutsch](docs/translations/README.de.md) · [Español](docs/translations/README.es.md) · [Português](docs/translations/README.pt.md) · [Русский](docs/translations/README.ru.md)
 ![alt text](https://raw.githubusercontent.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/HEAD/image-3.png)
 在 DeepSeek Harness Web GUI 中「添加 WSL 工作区」：让 agent 会话的 bash 命令与文件读写都运行在本机 WSL 发行版里，路径均为 Linux 形式，WSL 内无需安装任何工具链。会话可同时访问 WSL 与 Windows 两个系统——bash 命令在 WSL 发行版内执行，Windows 文件随时可通过 `/mnt/<drive>`（如 `/mnt/c/Users/...`）访问。
@@ -48,13 +50,17 @@ dsh plugin --profile web add D:\path\to\dsh-wsl-workspace
 - **老宿主回退到一次性 shell**：持久 shell 是**宿主**的代码，而在 Windows 上它需要一个平台进程检查器，那个东西从 `0.1.0-rc.8` 才有——在 `0.1.0-rc.7` 里 `spawnTerminal` 会在启动任何进程之前抛 `subprocess-local: terminal inspection is unsupported on platform win32`，于是该版本里**每一次 `bash` 调用都直接失败**（不碰 PTY 的 grep/glob 仍正常）。因此插件在启动时**探测**底座而不是假设：它把一个不存在的程序交给 `spawnTerminal`，这只会走到检查器那一步、不会真的创建进程，报错信息就能说明是哪一半失败。答案是否时，生成的世界保留一次性的 `dsh-tool-bash` 行（走本插件自己的 `ctx.shell`，不经 PTY），模型得到的是一个能用的无状态 shell，而不是每次调用都报错。八个已声明版本里只有 `0.1.0-rc.7` 是这种状态，之后的版本都拿到持久 shell。
 - `wsl.exe` 在发行版尚未启动时向 stderr 打印的 localhost 端口转发提示（乱码但无害）可忽略。
 
+## 从别的 agent 驱动它
+
+[docs/driving.zh.md](docs/driving.zh.md)（**随包发布**）回答新电脑 + 新 agent 猜不出来的五件：怎么无头起一枚宿主（以及**必须删掉**的那一枚环境变量——不删会以退出码 0 静默退出）、登录 URL 与它的 token 从哪来（实测：进程存活期间 token 不会用掉，要作废就重启实例）、本插件的路由与怎么在运行时枚举它的方法（`describe`）、怎么把文字送进 composer 并发出去（composer 是 Lexical：只发一发 `beforeinput`，绝不用 `execCommand`）、以及默认 provider 报 401 时改哪一处。同样的内容也在插件的 `describe` 方法里（`route`／`loopbackOnly`／`methods`／`installProof`／`driving`），随 HTTP 面一起走。
+
 ## 更新日志
 
 完整版本历史（最新在前）已抽到单独的 [CHANGELOG.zh.md](CHANGELOG.zh.md)（英文：[CHANGELOG.md](CHANGELOG.md)）；本文只保留上面「行为与权限说明」的当前口径。
 
 ## 相关文档
 
-各文档的位置、语言与口径见 [docs/README.md](docs/README.md)（英文索引）：[设计方案记录](docs/design.zh.md)、支撑 `dsh.compatibility.dshReleases` 声明的[逐版本兼容性证据](docs/compatibility-evidence.md)，以及已被取代、原文保留在 [docs/archive/](docs/archive/) 的历史结论。改动或发布前的验证步骤见 [TESTING.md](TESTING.md)。
+**`docs/` 绝大多数是仓库内文档**（不在 `package.json#files` 里；随包发布的只有 [docs/driving.zh.md](docs/driving.zh.md)）。在仓库里，各文档的位置、语言与口径见 [docs/README.md](docs/README.md)（英文索引）：[设计方案记录](docs/design.zh.md)、支撑 `dsh.compatibility.dshReleases` 声明的[逐版本兼容性证据](docs/compatibility-evidence.md)，以及已被取代、原文保留在 [docs/archive/](docs/archive/) 的历史结论。改动或发布前的验证步骤见 [TESTING.md](TESTING.md)。
 
 ## 许可与出处
 
