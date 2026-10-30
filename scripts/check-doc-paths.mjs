@@ -29,12 +29,14 @@ if (packMode && (packDir === null || !fs.existsSync(packDir))) {
 }
 
 const ROOT = packMode ? packDir : repo
-// Default scope: the documents whose links a user is expected to follow.
+// Scope: the documents whose links a user is expected to follow. The set is the same in
+// both modes on purpose — every one of these ships, so the artifact is where a fresh
+// reader meets them; the modes differ only in ROOT (repository vs unpacked package).
+// Presence is asserted below rather than skipped: a document missing from the artifact
+// used to make the gate scan one fewer file and stay green.
 // `docs/archive/**` is deliberately out of scope — those banners describe what
 // superseded them and are historical, so dead links there are a separate debt.
-const DOCS = packMode
-  ? ['README.md', 'README.zh.md', 'TESTING.md', 'docs/README.md', 'docs/driving.md', 'docs/driving.zh.md']
-  : ['README.md', 'README.zh.md', 'TESTING.md', 'docs/README.md', 'docs/driving.md', 'docs/driving.zh.md']
+const DOCS = ['README.md', 'README.zh.md', 'TESTING.md', 'docs/README.md', 'docs/driving.md', 'docs/driving.zh.md']
 
 const MARK_REPO_ONLY = /repository-only|仓库内|not published|不随包发布/i
 const MARK_DEV_ONLY = /dev-only|开发树|不随包发布/i
@@ -91,6 +93,12 @@ const pathRe = /(?<![\w./-])((?:lib|docs|scripts|tests|ci|src|\.test-runs)\/[A-Z
 const problems = []
 let checked = 0
 let declared = 0
+for (const file of DOCS) {
+  checked += 1
+  if (!fs.existsSync(path.join(ROOT, file))) {
+    problems.push({ file, line: 1, target: file, why: `${packMode ? 'packed artifact' : 'repository'} is missing a document this gate is supposed to scan` })
+  }
+}
 for (const file of HISTORY_DOCS) {
   const abs = path.join(ROOT, file)
   if (!fs.existsSync(abs)) continue
