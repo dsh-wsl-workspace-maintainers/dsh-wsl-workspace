@@ -77,6 +77,12 @@ const flush = () => new Promise(resolve => setTimeout(resolve, 0))
  */
 function mount(scenario, { wide = true } = {}) {
   const calls = []
+  // The plugin keeps two pieces of module state — the per-session opt-out list
+  // (in session storage) and the notice on screen. Both outlive one test's root,
+  // so a mount that inherited them would not be describing a fresh page.
+  try {
+    dom.window.sessionStorage.clear()
+  } catch { /* no storage in this engine: the in-memory fallback is per-process */ }
   /** The params of one host call, for an answer that depends on them. */
   const paramsOf = init => (JSON.parse(init.body).params ?? {})
   globalThis.fetch = async (_url, init) => {
@@ -96,9 +102,21 @@ function mount(scenario, { wide = true } = {}) {
   let component
   let face
   let dictionaries = {}
+  /** Every contribution, keyed by the seat it landed in, for the exits' tests. */
+  const seats = new Map()
+  /** The agent-preset swaps the plugin asked the host for, in order. */
+  const selectCalls = []
+  /** The sessions list store the plugin reads; a test mutates it and calls `notifyList`. */
+  const listState = scenario.listState ?? { ids: [], byId: {} }
+  let listListener = null
   const services = {
-    sessions: { list: { getSnapshot: () => ({ ids: [], byId: {} }), subscribe: () => () => {} } },
-    workspaces: { create: async () => ({ workspaceId: 'w1' }), startSession: () => {} },
+    sessions: {
+      list: {
+        getSnapshot: () => listState,
+        subscribe: (fn) => { listListener = fn; return () => { listListener = null } },
+      },
+    },
+    workspaces: scenario.workspaces ?? { create: async () => ({ workspaceId: 'w1' }), startSession: () => {} },
     'remote.agentPresets': {
       list: async () => ({
         ok: true,
@@ -108,21 +126,40 @@ function mount(scenario, { wide = true } = {}) {
             : [{ id: 'standard', isDefault: true }, { id: 'wsl-standard' }, { id: 'wsl-code' }],
         },
       }),
-      select: async () => ({ ok: true }),
+      // The host locks a preset once a session has produced output, and the
+      // exit has to show that refusal rather than swallow it.
+      select: async (sessionId, agentPreset) => {
+        selectCalls.push({ sessionId, agentPreset })
+        if (scenario.selectRefuses === true) return { ok: false, error: { message: 'agent-preset-locked' } }
+        return { ok: true }
+      },
     },
     uiWorkspace: { startSession: () => {} },
   }
   const ctx = {
     get: key => services[key],
-    effect: fn => { fn(); return () => {} },
+    // Real disposers, collected: the runtime ties an effect and a slot
+    // contribution to the plugin's fiber, so a test that leaves them mounted
+    // would run several instances of the mirrors over one document at once —
+    // which no page does.
+    effects: [],
+    effect: fn => { const disposer = fn(); if (typeof disposer === 'function') ctx.effects.push(disposer); return () => {} },
     inject: (deps, callback) => { if (deps.every(dep => services[dep] !== undefined)) callback(ctx) },
     locale: {
       register: (_namespace, dictionary) => { dictionaries = dictionary; return () => {} },
       bind: () => key => dictionaries.zh?.[key] ?? key,
     },
     slots: {
-      inject: (_name, fn) => fn(),
-      register: (config, Component) => { face = config.inject(); component = Component; return () => {} },
+      inject: (_name, fn) => { const disposer = fn(); if (typeof disposer === 'function') ctx.effects.push(disposer); },
+      register: (config, Component) => {
+        const injected = config.inject === undefined ? {} : config.inject()
+        seats.set(config.name, { config, Component, injected })
+        // The dialog keeps being the default component, so the existing
+        // interaction tests do not change meaning; a seat registers without an
+        // inject face (the overlay notice) contributes only its component.
+        if (config.name === 'sidebar.footer.action') { face = injected; component = Component }
+        return () => {}
+      },
     },
   }
 
@@ -166,6 +203,39 @@ function mount(scenario, { wide = true } = {}) {
     zh: () => dictionaries.zh ?? {},
     calls,
     act,
+    seats,
+    selectCalls,
+    listState,
+    /** Fire the session-list subscription the way a store change would. */
+    notifyList: () => { listListener?.() },
+    /**
+     * Render one contributed seat the way the host renders a slot entry: the
+     * owner share merged over the inject face the registration supplied.
+     * @param name - the seat, e.g. `sidebar.workspaces.session.menu.item`.
+     * @param props - the owner share for one occurrence.
+     * @param within - an element to mount inside, for a row that must sit in a menu.
+     * @returns the seat's container, a click helper, and a disposer.
+     */
+    async renderSeat(name, props, within = document.body) {
+      const seat = seats.get(name)
+      assert.ok(seat !== undefined, `nothing was contributed to ${name}`)
+      const seatContainer = document.createElement('div')
+      within.appendChild(seatContainer)
+      const seatRoot = createRoot(seatContainer)
+      await act(async () => { seatRoot.render(React.createElement(seat.Component, { ...seat.injected, ...props })) })
+      await act(flush)
+      return {
+        container: seatContainer,
+        async click(selector) {
+          const element = seatContainer.querySelector(selector)
+          assert.ok(element !== null, `nothing matches ${selector} — rendered: ${seatContainer.innerHTML.slice(0, 300)}`)
+          await act(async () => { element.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true })) })
+          await act(flush)
+          return element
+        },
+        dispose() { seatRoot.unmount(); seatContainer.remove() },
+      }
+    },
     async render() {
       await act(async () => { root.render(React.createElement(component, { wide, ...face })) })
       await act(flush)
@@ -194,7 +264,15 @@ function mount(scenario, { wide = true } = {}) {
       })
       await act(flush)
     },
-    unmount() { /* nothing to tear down: see the container comment above */ },
+    /**
+     * Run the disposers the plugin registered, the way unloading its fiber would.
+     * The React root `mount` opened stays up on purpose (see the container note
+     * above); what has to come down are the DOM mirrors, because a client still
+     * observing the document fights the next test's client over the same menu.
+     */
+    unmount() {
+      for (const disposer of ctx.effects.splice(0).reverse()) disposer()
+    },
   }
 }
 
@@ -675,3 +753,243 @@ test('a menu that only resembles the preset picker is not left hidden', { timeou
     client.unmount()
   }
 })
+
+// ---------------------------------------------------------------------------
+// Issue #129's two exits: one conversation out of the WSL world, and one
+// workspace's registration out. Both are rendered here rather than called,
+// because the defect was never a missing method — it was a surface with no way
+// back, and a refusal no one could see.
+// ---------------------------------------------------------------------------
+
+const SESSION_MENU_SEAT = 'sidebar.workspaces.session.menu.item'
+const OVERLAY_SEAT = 'shell.overlay'
+/** One blank session in a UNC workspace, already composed onto the WSL variant. */
+const WSL_UNC = '\\\\wsl.localhost\\Ubuntu\\home\\ruler'
+
+/** The host's session menu, carrying the shipped row this plugin borrows geometry from. */
+function sessionMenuDom() {
+  const menu = document.createElement('div')
+  menu.setAttribute('role', 'menu')
+  menu.innerHTML = '<div class="host_itemWrap"><button type="button" role="menuitem" class="host_item">'
+    + '<span class="host_itemName">复制 Session ID</span></button></div>'
+  document.body.appendChild(menu)
+  return menu
+}
+
+/** The host's project rows and its workspace menu, as detached nodes. */
+function workspaceMenuDom() {
+  const rowOf = (workspaceId) => {
+    const element = document.createElement('div')
+    element.className = 'host_projectRow'
+    element.setAttribute('data-row-key', `workspace:${workspaceId}`)
+    element.innerHTML = '<span class="host_title">issue129</span>'
+    return element
+  }
+  const menu = document.createElement('div')
+  menu.setAttribute('role', 'menu')
+  menu.innerHTML = '<div class="host_itemWrap"><button type="button" role="menuitem" class="host_item">'
+    + '<span class="host_itemName">重命名</span></button></div>'
+    + '<div class="host_itemWrap"><button type="button" role="menuitem" class="host_item host_danger">'
+    + '<svg viewBox="0 0 16 16"></svg><span class="host_itemName">删除工作区</span></button></div>'
+  return { w1: rowOf('w1'), w2: rowOf('w2'), menu }
+}
+
+/**
+ * Mount the overlay seat, which is also the only thing that can take a notice
+ * down — notices are module state and outlive one test's root.
+ * @param client - a mounted client.
+ * @returns the live seat, with nothing on screen.
+ */
+async function openNoticeSeat(client) {
+  const seat = await client.renderSeat(OVERLAY_SEAT, {})
+  if (seat.container.querySelector('.dww-notice-close') !== null) await seat.click('.dww-notice-close')
+  return seat
+}
+
+test('the session menu gives one conversation its own way out of the WSL world', { timeout: 10_000 }, async () => {
+  const listState = { ids: ['s1'], byId: { s1: { blank: true, cwd: WSL_UNC, projectionValues: { agentPreset: 'wsl-standard' } } } }
+  const client = mount(healthy({ listState }))
+  const menu = sessionMenuDom()
+  let closed = false
+  const useMenuOpenState = () => [true, (open) => { closed = !open }]
+  let seat = null
+  let notice = null
+  try {
+    await client.render()
+    notice = await openNoticeSeat(client)
+    assert.ok(notice.container.querySelector('.dww-notice') === null, 'no receipt before anything happens')
+    seat = await client.renderSeat(SESSION_MENU_SEAT, { sessionId: 's1', displayTitle: 'issue129', useMenuOpenState }, menu)
+    const row = seat.container.querySelector('[data-dww-session-exit]')
+    assert.ok(row !== null, `the seat contributed no row: ${menu.innerHTML.slice(0, 300)}`)
+    assert.equal(row.textContent.trim(), client.zh()['exit.session'], 'the row names the exit')
+    assert.equal(row.className, 'host_item', 'the row borrows the shipped row geometry instead of a lookalike')
+    assert.equal(row.querySelector('span')?.className, 'host_itemName', 'and the shipped label span')
+
+    await seat.click('[data-dww-session-exit]')
+    assert.deepEqual(client.selectCalls.filter(call => call.sessionId === 's1'),
+      [{ sessionId: 's1', agentPreset: 'standard' }], 'the session is composed back onto the plain mode')
+    assert.equal(closed, true, 'the menu comes down once the host accepted')
+    assert.equal(notice.container.querySelector('.dww-notice')?.dataset.level, 'info', 'the receipt is on screen')
+    assert.match(notice.container.textContent, /该会话已退出 WSL 模式/)
+
+    // Redrawn for the next open, the row offers the way back in — the state is
+    // the session's, not the menu's.
+    seat.dispose()
+    seat = await client.renderSeat(SESSION_MENU_SEAT, { sessionId: 's1', displayTitle: 'issue129', useMenuOpenState }, menu)
+    assert.equal(seat.container.querySelector('[data-dww-session-exit]')?.textContent.trim(),
+      client.zh()['exit.session.rejoin'], 'and it can be undone from the same place')
+
+    // The regression lock for the late-input trap: the roster and the workspace
+    // registry land after the first pass, and a binder that re-scans must not
+    // recompose a session the user just took out.
+    const before = client.selectCalls.length
+    client.notifyList()
+    await client.act(flush)
+    assert.equal(client.selectCalls.length, before, 'the binder left the opted-out session alone')
+  } finally {
+    seat?.dispose()
+    notice?.dispose()
+    menu.remove()
+    client.unmount()
+  }
+})
+
+test('a refused session exit says why, in the host’s own words, and does not pretend', { timeout: 10_000 }, async () => {
+  // The host locks a preset once a session has produced output. Swallowing that
+  // refusal is how #129 read as "nothing happened".
+  const listState = { ids: ['s1'], byId: { s1: { blank: true, cwd: WSL_UNC, projectionValues: { agentPreset: 'wsl-standard' } } } }
+  const client = mount(healthy({ listState, selectRefuses: true }))
+  const menu = sessionMenuDom()
+  let closed = false
+  const useMenuOpenState = () => [true, (open) => { closed = !open }]
+  let seat = null
+  let notice = null
+  try {
+    await client.render()
+    notice = await openNoticeSeat(client)
+    seat = await client.renderSeat(SESSION_MENU_SEAT, { sessionId: 's1', displayTitle: 'issue129', useMenuOpenState }, menu)
+    await seat.click('[data-dww-session-exit]')
+    const row = seat.container.querySelector('[data-dww-session-exit]')
+    assert.match(row.textContent, /agent-preset-locked/, 'the host\'s own reason is on the row')
+    assert.equal(closed, false, 'the menu stays open so the refusal is not missed')
+    assert.equal(row.dataset.dwwSessionExit, 'exit', 'the session is still in the WSL world: the opt-out was rolled back')
+    assert.equal(notice.container.querySelector('.dww-notice')?.dataset.level, 'error')
+    assert.match(notice.container.textContent, /更改 WSL 模式失败/)
+  } finally {
+    seat?.dispose()
+    notice?.dispose()
+    menu.remove()
+    client.unmount()
+  }
+})
+
+test('a session the WSL world does not reach is offered no exit row', { timeout: 10_000 }, async () => {
+  // The pair of the row above: the seat renders for every session, so a plain
+  // workspace's row must draw nothing rather than a control that cannot work.
+  const listState = { ids: ['s9'], byId: { s9: { blank: true, cwd: 'C:\\Users\\ruler\\proj', projectionValues: { agentPreset: 'standard' } } } }
+  const client = mount(healthy({ listState }))
+  const menu = sessionMenuDom()
+  let seat = null
+  try {
+    await client.render()
+    seat = await client.renderSeat(SESSION_MENU_SEAT, {
+      sessionId: 's9', displayTitle: 'plain', useMenuOpenState: () => [true, () => {}],
+    }, menu)
+    assert.equal(seat.container.querySelector('[data-dww-session-exit]'), null,
+      `a plain session was offered a WSL exit: ${seat.container.innerHTML}`)
+  } finally {
+    seat?.dispose()
+    menu.remove()
+    client.unmount()
+  }
+})
+
+test('the workspace menu clears the registration of a WSL workspace, and only that one', { timeout: 10_000 }, async () => {
+  const workspaces = {
+    create: async () => ({ workspaceId: 'w1' }),
+    startSession: () => {},
+    list: {
+      getSnapshot: () => ({
+        items: [
+          { workspaceId: 'w1', path: 'D:\\temp\\issue129' },
+          { workspaceId: 'w2', path: 'C:\\Users\\ruler\\proj' },
+        ],
+      }),
+    },
+  }
+  const client = mount(healthy({
+    listWorkspaceRecords: [{ path: 'd:\\temp\\issue129', distro: 'Ubuntu', username: 'ruler' }],
+    removeWorkspace: { removed: 'd:\\temp\\issue129' },
+    workspaces,
+  }))
+  const { w1, w2, menu } = workspaceMenuDom()
+  let notice = null
+  try {
+    await client.render()
+    notice = await openNoticeSeat(client)
+    await client.act(async () => {
+      document.body.append(w1, w2, menu)
+      w1.classList.add('host_menuOpen')
+    })
+    await client.act(flush)
+    const exit = menu.querySelector('[data-dww-ws-exit]')
+    assert.ok(exit !== null, `the workspace menu carries no exit: ${menu.innerHTML.slice(0, 400)}`)
+    assert.equal(exit.getAttribute('data-dww-ws-exit'), 'D:\\temp\\issue129',
+      'the row targets the host path of the workspace whose menu is open')
+    assert.equal(exit.textContent.trim(), client.zh()['exit.workspace'])
+    assert.equal(exit.previousElementSibling?.querySelector('.host_itemName')?.textContent, '删除工作区',
+      'and it sits directly under the shipped delete row')
+    assert.equal(exit.querySelector('svg'), null, 'the cloned trash icon does not come with the row')
+
+    await client.act(async () => { exit.querySelector('button').dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true })) })
+    await client.act(flush)
+    assert.ok(client.calls.includes('removeWorkspace'), 'the click clears the registration through the host route')
+    assert.match(notice.container.textContent, /已退出 WSL 工作区/, 'with a receipt naming the path')
+    assert.match(notice.container.textContent, /D:\\temp\\issue129/, 'the receipt carries the registration it removed')
+
+    // The negative, on the same fixture: the menu re-opens on the *other*
+    // workspace, which has no registration to clear. Closing and re-opening the
+    // menu is the tree mutation the mirror keys on, the same one the host's
+    // portal makes when a user right-clicks a different row.
+    await client.act(async () => {
+      w1.classList.remove('host_menuOpen')
+      w2.classList.add('host_menuOpen')
+      menu.remove()
+      document.body.append(menu)
+    })
+    await client.act(flush)
+    assert.equal(menu.querySelector('[data-dww-ws-exit]'), null,
+      'a workspace that is not a WSL one is offered no exit')
+  } finally {
+    notice?.dispose()
+    w1.remove()
+    w2.remove()
+    menu.remove()
+    client.unmount()
+  }
+})
+
+test('creating a WSL workspace leaves a light receipt telling the user both ways out', { timeout: 10_000 }, async () => {
+  const client = mount(healthy())
+  let notice = null
+  try {
+    await client.render()
+    notice = await openNoticeSeat(client)
+    assert.equal(notice.container.querySelector('.dww-notice'), null, 'nothing on screen before the create')
+    const failure = await client.face.createWorkspace('/mnt/d/temp/issue129', 'ruler', 'Ubuntu')
+    await client.act(flush)
+    assert.equal(failure, undefined, 'the create itself succeeded')
+    const card = notice.container.querySelector('.dww-notice')
+    assert.ok(card !== null, 'the create left no receipt')
+    assert.equal(card.dataset.level, 'info')
+    assert.match(card.textContent, /已登记为 WSL 工作区/)
+    assert.match(card.textContent, /退出 WSL 工作区/, 'the receipt names the workspace exit')
+    assert.match(card.textContent, /退出 WSL 模式/, 'and the session exit')
+    await notice.click('.dww-notice-close')
+    assert.equal(notice.container.querySelector('.dww-notice'), null, 'the user can take it down')
+  } finally {
+    notice?.dispose()
+    client.unmount()
+  }
+})
+

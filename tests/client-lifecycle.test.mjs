@@ -123,7 +123,10 @@ function fixture({ legacy = false, late = false, startService = legacy ? 'legacy
     effect: fn => effects.push(fn()),
     inject: (deps, callback) => { pending.push({ deps, callback }); runInjections(); },
     locale: { register: () => () => {}, bind: () => key => key },
-    slots: { inject: (_name, fn) => fn(), register: config => { dialog = config.inject(); return () => {}; } },
+    // The footer action carries the dialog's inject face; the mode-variant seat
+    // and the overlay notice contribute rows of their own, and must not be
+    // mistaken for it.
+    slots: { inject: (_name, fn) => fn(), register: config => { if (config.name === 'sidebar.footer.action') dialog = config.inject(); return () => {}; } },
   };
   services.slots = ctx.slots;
 

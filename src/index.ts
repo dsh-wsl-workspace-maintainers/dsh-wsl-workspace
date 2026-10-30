@@ -87,11 +87,19 @@ function variantName(presetId: string, sourceName: string): string {
   return labels === undefined ? `WSL · ${sourceName}` : `WSL · ${labels.en}（${labels.zh}）`
 }
 
-/** The variant description for one shipped mode (bilingual) or a custom preset. */
+/**
+ * The variant description for one shipped mode (bilingual) or a custom preset.
+ *
+ * The mode picker's row renders this string under the mode name, so it is the
+ * one place the WSL world can tell the user, before they choose it, that there
+ * is a way back out — issue #129 asked for an exit, and an exit nobody is told
+ * about is the same dead end wearing a different hat.
+ */
 function variantDescription(presetId: string): string {
   const labels = MODE_DISPLAY_LABELS[presetId]
   const display = labels === undefined ? presetId : `${labels.en}（${labels.zh}）`
-  return `WSL execution world for ${display}: bash and file tools run inside the WSL distribution.`
+  return `WSL execution world for ${display}: bash and file tools run inside the WSL distribution. `
+    + 'Exit from the session or workspace menu（在会话或工作区菜单里退出）.'
 }
 
 /** Plugin config. */
