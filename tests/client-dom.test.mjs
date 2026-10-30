@@ -189,9 +189,10 @@ function mount(scenario, { wide = true } = {}) {
     dom.window.setInterval = setInterval
   }
 
-  // A fresh container per mount. Two roots must never share one (React refuses it), and tearing a
-  // root down while a host answer is still in flight is a React-internals race this file does not
-  // need to depend on — the process exits with the window, so the roots go with it.
+  // A fresh container per mount. Two roots must never share one (React refuses
+  // it), and every root this helper opens is taken down by `unmount()` below —
+  // a root left mounted keeps its `useEffect` mirrors observing the document, and
+  // the next test's client then reads a menu the previous one trimmed.
   const container = document.createElement('div')
   document.body.appendChild(container)
   const root = createRoot(container)
@@ -265,12 +266,13 @@ function mount(scenario, { wide = true } = {}) {
       await act(flush)
     },
     /**
-     * Run the disposers the plugin registered, the way unloading its fiber would.
-     * The React root `mount` opened stays up on purpose (see the container note
-     * above); what has to come down are the DOM mirrors, because a client still
-     * observing the document fights the next test's client over the same menu.
+     * Tear the client down the way unloading its fiber would: the dialog's React
+     * root first (its `useEffect` is what mounts the picker mirror, and a mirror
+     * left observing the document would trim the next test's menus), then the
+     * disposers the plugin registered through effects and slot contributions.
      */
-    unmount() {
+    async unmount() {
+      await act(async () => { root.unmount() })
       for (const disposer of ctx.effects.splice(0).reverse()) disposer()
     },
   }
@@ -306,7 +308,7 @@ test('a healthy install opens the dialog and draws no error row at all', { timeo
     const options = [...client.container.querySelectorAll('.dww-select option')].map(option => option.textContent)
     assert.deepEqual(options, ['Ubuntu-24.04'], 'the distribution list is what the host answered')
     assert.equal(client.container.querySelectorAll('.dww-dir-row').length, 1, 'the directory tree filled')
-  } finally { client.unmount() }
+  } finally { await client.unmount() }
 })
 
 test('a blank message from any path draws nothing', { timeout: 10_000 }, async () => {
@@ -320,7 +322,7 @@ test('a blank message from any path draws nothing', { timeout: 10_000 }, async (
     await open(client)
     assert.ok(client.container.querySelector('.dww-error') === null,
       'an empty message must not draw a row: the condition is about text, not about null')
-  } finally { client.unmount() }
+  } finally { await client.unmount() }
 })
 
 test('a failed browse on one distribution is retired by a successful one on another', async () => {
@@ -349,7 +351,7 @@ test('a failed browse on one distribution is retired by a successful one on anot
     assert.ok(client.container.querySelector('.dww-error') === null,
       'a successful browse must retire the browse failure it replaces')
     assert.ok(client.container.querySelectorAll('.dww-dir-row').length >= 1, 'and the listing is what loaded')
-  } finally { client.unmount() }
+  } finally { await client.unmount() }
 })
 
 test('the trigger stays in the tree while the dialog is open, out of the tab order', { timeout: 10_000 }, async () => {
@@ -364,7 +366,7 @@ test('the trigger stays in the tree while the dialog is open, out of the tab ord
     assert.equal(trigger.getAttribute('aria-hidden'), 'true')
     assert.equal(trigger.getAttribute('tabindex'), '-1')
     assert.match(trigger.textContent, /WSL工作区/, 'the wide form carries the label')
-  } finally { client.unmount() }
+  } finally { await client.unmount() }
 })
 
 test('a preset failure names the variant and the host\'s own reason', { timeout: 10_000 }, async () => {
@@ -384,7 +386,7 @@ test('a preset failure names the variant and the host\'s own reason', { timeout:
     assert.match(text, /Cannot find module 'js-yaml'/, `the row must carry the host's reason, got: ${text}`)
     assert.match(text, /5\/6/, `the row must carry the host's own count, got: ${text}`)
     assert.ok(client.container.querySelector('.dww-retry') !== null, 'a failure offers Retry')
-  } finally { client.unmount() }
+  } finally { await client.unmount() }
 })
 
 test('a refused distro list is reported in words and leaves the form usable', { timeout: 10_000 }, async () => {
@@ -399,7 +401,7 @@ test('a refused distro list is reported in words and leaves the form usable', { 
     // sensible offer rather than a dead end.
     assert.ok(client.container.querySelector('.dww-card') !== null, 'the dialog stays open')
     assert.ok(client.container.querySelector('#dww-path') !== null, 'the form is still there')
-  } finally { client.unmount() }
+  } finally { await client.unmount() }
 })
 
 test('a directory that cannot be listed names the directory failure, not the distro one', { timeout: 10_000 }, async () => {
@@ -412,7 +414,7 @@ test('a directory that cannot be listed names the directory failure, not the dis
       `the row must name the browse failure, got: ${strip.textContent}`)
     assert.doesNotMatch(strip.textContent ?? '', new RegExp(client.zh()['error.loadDistros'].slice(0, 6)),
       'the distro failure is a different fact and must not be reported for a browse')
-  } finally { client.unmount() }
+  } finally { await client.unmount() }
 })
 
 test('Escape closes an idle dialog and is ignored while a create is in flight', { timeout: 10_000 }, async () => {
@@ -433,7 +435,7 @@ test('Escape closes an idle dialog and is ignored while a create is in flight', 
     assert.ok(client.container.querySelector('.dww-card') !== null, 'Escape must not close a busy dialog')
     release({ ok: true, status: 200, json: async () => ({ ok: true, value: { exists: true, isDirectory: true } }) })
     await client.act(flush)
-  } finally { client.unmount() }
+  } finally { await client.unmount() }
 })
 
 test('the help panel opens over the form and closing it restores the same message', { timeout: 10_000 }, async () => {
@@ -449,7 +451,7 @@ test('the help panel opens over the form and closing it restores the same messag
     await client.click('.dww-help-btn')
     assert.equal(client.container.querySelector('.dww-error')?.textContent ?? '', before,
       'closing the panel must return the same message, not a cleared one')
-  } finally { client.unmount() }
+  } finally { await client.unmount() }
 })
 
 test('Retry re-runs the open pass instead of only clearing the message', { timeout: 10_000 }, async () => {
@@ -472,7 +474,7 @@ test('Retry re-runs the open pass instead of only clearing the message', { timeo
       ['Ubuntu-24.04'],
       'and the values it fetched must be on screen',
     )
-  } finally { client.unmount() }
+  } finally { await client.unmount() }
 })
 
 test('the rail form renders the control a collapsed sidebar actually shows', { timeout: 10_000 }, async () => {
@@ -491,7 +493,7 @@ test('the rail form renders the control a collapsed sidebar actually shows', { t
     assert.ok(client.container.querySelector('.dww-card') === null, 'rendering the rail does not open the dialog')
     await client.click('.dww-action--rail')
     assert.ok(client.container.querySelector('.dww-card') !== null, 'and the rail control is the way in')
-  } finally { client.unmount() }
+  } finally { await client.unmount() }
 })
 
 test('the preset answer is rendered by its text, whichever shape it arrives in', { timeout: 15_000 }, async () => {
@@ -518,7 +520,7 @@ test('the preset answer is rendered by its text, whichever shape it arrives in',
       assert.ok(strip !== null, `${testCase.label} must draw a row`)
       assert.match(strip.textContent ?? '', /wsl-code/, `${testCase.label}: the row carries its own text`)
       assert.notEqual((strip.textContent ?? '').trim(), '', `${testCase.label}: a drawn row is never empty`)
-    } finally { client.unmount() }
+    } finally { await client.unmount() }
   }
 })
 
@@ -550,7 +552,7 @@ test('no reachable state draws an error row around nothing', { timeout: 20_000 }
         if (label === 'a partial generation') {
           assert.ok(strips.length >= 1, `${label}: the failure state must draw its row in both forms`)
         }
-      } finally { client.unmount() }
+      } finally { await client.unmount() }
     }
   }
 })
@@ -607,7 +609,7 @@ test('the entry joins the section header beside the shipped add control', { time
       'the header entry returns after the dialog closes, without a page reload')
   } finally {
     region.remove()
-    client.unmount()
+    await client.unmount()
   }
 })
 
@@ -636,7 +638,7 @@ test('the workspace picker menu carries the WSL row under the shipped one', { ti
     assert.ok(client.container.querySelector('.dww-card') !== null, 'the menu row opens the same dialog')
   } finally {
     menu.remove()
-    client.unmount()
+    await client.unmount()
   }
 })
 
@@ -671,7 +673,7 @@ test('the mode picker lists one family, whichever workspace the session belongs 
     assert.deepEqual(visible(), ['WSL · 标准模式', 'WSL · PTC 模式'], 'a WSL session lists the WSL variants')
   } finally {
     menu.remove()
-    client.unmount()
+    await client.unmount()
   }
 })
 
@@ -703,7 +705,7 @@ test('a WSL session whose family has no other variant in the menu is not left wi
     assert.equal(menu.getAttribute('data-dww-presets-ready'), '', 'the released menu is visible')
   } finally {
     menu.remove()
-    client.unmount()
+    await client.unmount()
   }
 })
 
@@ -730,7 +732,7 @@ test('a healthy WSL roster still trims the menu to its own family', { timeout: 1
       'a WSL session with a variant family lists that family (the documented design)')
   } finally {
     menu.remove()
-    client.unmount()
+    await client.unmount()
   }
 })
 
@@ -750,7 +752,7 @@ test('a menu that only resembles the preset picker is not left hidden', { timeou
       'releasing the menu must not move or filter its contents')
   } finally {
     menu.remove()
-    client.unmount()
+    await client.unmount()
   }
 })
 
@@ -850,7 +852,7 @@ test('the session menu gives one conversation its own way out of the WSL world',
     seat?.dispose()
     notice?.dispose()
     menu.remove()
-    client.unmount()
+    await client.unmount()
   }
 })
 
@@ -879,7 +881,7 @@ test('a refused session exit says why, in the host’s own words, and does not p
     seat?.dispose()
     notice?.dispose()
     menu.remove()
-    client.unmount()
+    await client.unmount()
   }
 })
 
@@ -900,7 +902,7 @@ test('a session the WSL world does not reach is offered no exit row', { timeout:
   } finally {
     seat?.dispose()
     menu.remove()
-    client.unmount()
+    await client.unmount()
   }
 })
 
@@ -965,12 +967,71 @@ test('the workspace menu clears the registration of a WSL workspace, and only th
     w1.remove()
     w2.remove()
     menu.remove()
-    client.unmount()
+    await client.unmount()
   }
 })
 
-test('creating a WSL workspace leaves a light receipt telling the user both ways out', { timeout: 10_000 }, async () => {
-  const client = mount(healthy())
+test('the mode picker is the blank session’s exit: it lists every mode it can still accept', { timeout: 10_000 }, async () => {
+  // Measured on a real host: a blank session row carries NO action strip (`!row.blank`
+  // in the host's own rows), so the session menu above is unreachable for the one
+  // session that is allowed to change. Trimming that session's mode menu to the WSL
+  // family would therefore leave no way out at all.
+  const listState = {
+    ids: ['s1'],
+    byId: { s1: { blank: true, cwd: WSL_UNC, retainedBy: { mainView: 1 }, projectionValues: { agentPreset: 'wsl-standard' } } },
+  }
+  const client = mount(healthy({ listState }))
+  const menu = document.createElement('div')
+  menu.setAttribute('role', 'menu')
+  const row = (label, selected) => '<div class="host_itemWrap"><button type="button" role="menuitem" class="host_item">'
+    + `<span class="host_itemName">${label}</span>${selected ? '<span class="host_check"></span>' : ''}</button></div>`
+  menu.innerHTML = row('标准模式', false)
+    + row('WSL · 标准模式', true) + row('WSL · PTC 模式', false) + row('WSL · 精简模式', false)
+  document.body.appendChild(menu)
+  const visible = () => [...menu.querySelectorAll('.host_itemWrap')]
+    .filter(wrap => wrap.style.display !== 'none')
+    .map(wrap => wrap.querySelector('.host_itemName').textContent)
+  try {
+    await client.render()
+    await client.act(async () => { document.body.appendChild(menu) })
+    await client.act(() => new Promise(resolve => setTimeout(resolve, 100)))
+    assert.deepEqual(visible(), ['标准模式', 'WSL · 标准模式', 'WSL · PTC 模式', 'WSL · 精简模式'],
+      'a blank session is offered the plain modes too')
+    assert.equal(menu.getAttribute('data-dww-presets-ready'), '', 'and the menu is released, not left hidden')
+    assert.equal([...menu.querySelectorAll('button')].every(b => !b.disabled), true, 'no row is left unusable')
+  } finally {
+    menu.remove()
+    await client.unmount()
+  }
+})
+
+test('a blank session the user moved off a WSL variant is not bound back', { timeout: 10_000 }, async () => {
+  // The other half: picking 标准模式 in the picker above only stays picked if the
+  // binder reads it as a choice. Without the diff it recomposes the session on the
+  // next store change, which is what made the picker look broken.
+  const listState = {
+    ids: ['s1'],
+    byId: { s1: { blank: true, cwd: WSL_UNC, retainedBy: { mainView: 1 }, projectionValues: { agentPreset: 'wsl-standard' } } },
+  }
+  const client = mount(healthy({ listState }))
+  try {
+    await client.render()
+    await client.act(flush)
+    assert.equal(client.selectCalls.length, 0, 'nothing to bind: it is already a WSL variant')
+    // The user picks a plain mode in the picker; the host writes the projection.
+    listState.byId.s1.projectionValues = { agentPreset: 'standard' }
+    client.notifyList()
+    await client.act(flush)
+    client.notifyList()
+    await client.act(flush)
+    assert.deepEqual(client.selectCalls.filter(call => call.sessionId === 's1'), [],
+      `the binder recomposed the mode the user just chose: ${JSON.stringify(client.selectCalls)}`)
+  } finally {
+    await client.unmount()
+  }
+})
+
+test('creating a WSL workspace leaves a light receipt telling the user both ways out', { timeout: 10_000 }, async () => {  const client = mount(healthy())
   let notice = null
   try {
     await client.render()
@@ -989,7 +1050,7 @@ test('creating a WSL workspace leaves a light receipt telling the user both ways
     assert.equal(notice.container.querySelector('.dww-notice'), null, 'the user can take it down')
   } finally {
     notice?.dispose()
-    client.unmount()
+    await client.unmount()
   }
 })
 

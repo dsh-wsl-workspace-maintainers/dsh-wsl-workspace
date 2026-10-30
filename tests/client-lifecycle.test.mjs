@@ -45,10 +45,15 @@ function fixture({ legacy = false, late = false, startService = legacy ? 'legacy
   let outcome = variantStatus;
   const effects = [], calls = [], opened = [], pending = [];
   const apiSignals = [];
+  // `retainedBy.mainView` is the host's own marker for the session on screen
+  // (`mainSessionId` reads it), and the plugin needs it: a plain preset arriving
+  // on that session is somebody choosing it, while on any other blank session it
+  // is the host handing back a default.
   const summary = legacy
-    ? { blank: true, cwd: '\\\\wsl.localhost\\Ubuntu\\tmp\\fixture', agentPreset: 'standard' }
-    : { blank: true, cwd: '\\\\wsl.localhost\\Ubuntu\\tmp\\fixture', projectionValues: { agentPreset: 'standard' } };
+    ? { blank: true, cwd: '\\\\wsl.localhost\\Ubuntu\\tmp\\fixture', agentPreset: 'standard', retainedBy: { mainView: 0 } }
+    : { blank: true, cwd: '\\\\wsl.localhost\\Ubuntu\\tmp\\fixture', projectionValues: { agentPreset: 'standard' }, retainedBy: { mainView: 0 } };
   const state = { ids: ['s1'], byId: { s1: summary } };
+  const onScreen = () => { summary.retainedBy = { mainView: 1 } };
   const setPreset = value => {
     if (legacy) summary.agentPreset = value;
     else summary.projectionValues = { agentPreset: value };
@@ -233,7 +238,7 @@ function fixture({ legacy = false, late = false, startService = legacy ? 'legacy
   });
   plugin.apply(ctx);
   return {
-    calls, services, dialog, mount, summary, setPreset, opened, pending,
+    calls, services, dialog, mount, summary, setPreset, onScreen, opened, pending,
     emit: () => subscriber?.(),
     tick: () => tick?.(),
     dispose: () => effects.reverse().forEach(fn => typeof fn === 'function' && fn()),
@@ -273,14 +278,38 @@ for (const legacy of [true, false]) {
   });
 
   test(`${line}: every mode converges to its WSL variant`, async () => {
-    const f = fixture({ legacy });
-    await flush();
     for (const mode of ['code', 'ptc', 'minimal', 'cordis', 'custom']) {
+      // A fresh session per mode: this is the arrival path, where the preset the
+      // host gave the session names a plain mode and nothing has composed it yet.
+      const f = fixture({ legacy });
+      await flush();
       f.setPreset(mode);
       f.emit();
       await flush();
       assert.equal(f.selected().at(-1), `wsl-${mode}`);
+      f.dispose();
     }
+  });
+
+  test(`${line}: picking a plain mode in the picker takes that session out of the WSL world`, async () => {
+    // The other side of the same projection. A blank session has no sidebar row
+    // menu (measured on a real host: the host draws no action strip for a blank
+    // row), so the mode picker is where its exit has to be — which only works if
+    // a plain pick is read as a choice instead of as something to recompose.
+    const f = fixture({ legacy });
+    await flush();
+    assert.deepEqual(f.selected(), ['wsl-standard'], 'the blank WSL session arrives composed onto its variant');
+    // One pass to record the variant it now carries, then the pick itself.
+    f.emit();
+    await flush();
+    f.onScreen();
+    f.setPreset('standard');
+    f.emit();
+    await flush();
+    f.emit();
+    await flush();
+    assert.deepEqual(f.selected(), ['wsl-standard'],
+      `the binder undid the mode the user just chose: ${JSON.stringify(f.selected())}`);
     f.dispose();
   });
 

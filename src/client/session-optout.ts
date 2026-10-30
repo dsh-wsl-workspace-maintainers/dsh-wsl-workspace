@@ -24,10 +24,18 @@ const KEY = 'dsh-wsl-workspace:session-exits'
 let memory: string[] | null = null
 
 function store(): { read: () => string[]; write: (ids: string[]) => void } {
+  // `null` and `undefined` are the same answer here, and conflating them with a
+  // truthiness test is what made an earlier version read from memory and write to
+  // storage (or the reverse) depending on which side probed first: an engine with
+  // no session storage at all, or one that refuses the very first read (privacy
+  // mode), must fall back on BOTH sides.
   let backing: Storage | null = null
   try {
-    backing = typeof window !== 'undefined' ? window.sessionStorage : null
-    backing?.getItem(KEY)
+    const candidate: Storage | undefined = typeof window !== 'undefined' ? window.sessionStorage : undefined
+    if (candidate !== undefined && candidate !== null) {
+      candidate.getItem(KEY)
+      backing = candidate
+    }
   } catch {
     backing = null
   }

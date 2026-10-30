@@ -52,6 +52,12 @@ export interface AddWslWorkspaceInjected {
    * @returns undefined on success, else a message to show.
    */
   createWorkspace(linuxPath: string, username: string, distro: string): Promise<string | undefined>
+  /**
+   * Whether the session on screen can still change its own mode — true only while
+   * it is blank. The mode picker reads it, because the host gives a blank session
+   * no row menu, so the picker is the only place that session's WSL exit lives.
+   */
+  sessionSwitchable(): boolean
   /** Translate a `wslWorkspace` dictionary key (follows the DeepSeek Harness locale). */
   t: (key: string, params?: Record<string, unknown>) => string
 }
@@ -88,7 +94,7 @@ function WslGlyph({ size = 16 }: { size?: number }): React.ReactElement {
  * The "Add WSL workspace…" footer action and its dialog.
  * @param props - owner share + injected face.
  */
-export function AddWslWorkspace({ wide, t, describe, checkPreset, listDistros, listDir, check, createWorkspace }: AddWslWorkspaceProps): React.ReactElement | null {
+export function AddWslWorkspace({ wide, t, describe, checkPreset, listDistros, listDir, check, createWorkspace, sessionSwitchable }: AddWslWorkspaceProps): React.ReactElement | null {
   const [open, setOpen] = useState(false)
   const [opening, setOpening] = useState(false)
   const [distros, setDistros] = useState<string[]>([])
@@ -117,7 +123,9 @@ export function AddWslWorkspace({ wide, t, describe, checkPreset, listDistros, l
   // read the current dialog state through refs rather than a stale closure.
   const openRef = useRef<() => void>(() => {})
   const labelRef = useRef('')
+  const switchableRef = useRef<() => boolean>(() => false)
   labelRef.current = t('action.entry')
+  switchableRef.current = sessionSwitchable
   useEffect(() => {
     openRef.current = () => setOpen(true)
   })
@@ -131,7 +139,11 @@ export function AddWslWorkspace({ wide, t, describe, checkPreset, listDistros, l
     }
     return mountHeaderEntry(homeRef.current, { label: () => labelRef.current, open: () => openRef.current() }, setHeaderSeat)
   }, [wide])
-  useEffect(() => mountWorkspaceMenuEntry({ label: () => labelRef.current, open: () => openRef.current() }), [])
+  useEffect(() => mountWorkspaceMenuEntry({
+    label: () => labelRef.current,
+    open: () => openRef.current(),
+    untrim: () => switchableRef.current(),
+  }), [])
 
   const refreshBrowse = async (root: string, targetDistro: string): Promise<void> => {
     const seq = ++browseSeq.current

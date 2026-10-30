@@ -44,6 +44,13 @@ export interface HostEntryOptions {
   label: () => string
   /** Open the dialog. Called from a host-owned click listener. */
   open: () => void
+  /**
+   * Answered per menu pass: when true, the mode picker is left whole.
+   * The session on screen asks for this while it is still blank — a blank session
+   * gets no sidebar row menu from the host, so the picker is the only surface where
+   * leaving the WSL world is both visible and actually allowed.
+   */
+  untrim?: () => boolean
 }
 
 /**
@@ -228,6 +235,13 @@ export function mountWorkspaceMenuEntry(options: HostEntryOptions): () => void {
     }
     const selected = rows.find(row => row.checked)
     if (selected === undefined) {
+      releasePresets(menu)
+      return
+    }
+    if (options.untrim?.() === true) {
+      // The session on screen can still change its mode, so the picker shows
+      // every mode it actually accepts — trimming to one family here would hide
+      // the only way out a blank session has.
       releasePresets(menu)
       return
     }

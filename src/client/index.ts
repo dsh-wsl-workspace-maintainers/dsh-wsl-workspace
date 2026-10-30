@@ -74,6 +74,8 @@ export let sessionWslControls: SessionWslControls | null = null
 interface WslSessionSummary {
   blank: boolean
   cwd?: string
+  /** The host's own retention marker: `mainView > 0` is the session on screen. */
+  retainedBy?: { mainView?: number }
   /** v0.1.1-rc.2 direct field */
   agentPreset?: string
   /** v0.1.2-rc.1+ projection value */
@@ -379,6 +381,13 @@ export function apply(ctx: ClientContext): void {
    */
   let maybeBindNow: () => void = () => {}
 
+  /**
+   * Whether the session on screen can still change its own mode. Published by the
+   * binding effect; the mode picker reads it to decide whether to offer the other
+   * family, because a blank session has no row menu to hold an exit.
+   */
+  let sessionSwitchable: () => boolean = () => false
+
   const injected = (): AddWslWorkspaceInjected => ({
     t,
     checkPreset: async (): Promise<string | undefined> => {
@@ -441,6 +450,9 @@ export function apply(ctx: ClientContext): void {
       return t('error.presetMissing')
     },
     listDistros: () => listDistrosApi(),
+    // Read on every pass, never once: the binding effect publishes it after this
+    // face is built, and a cached value would freeze at `false`.
+    sessionSwitchable: () => sessionSwitchable(),
     // Advisory data for the help panel: a host that cannot answer reports an
     // unavailable description instead of breaking the dialog.
     describe: () => describeApi(),
@@ -535,6 +547,9 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => {
     const inFlight = new Set<string>()
     const attempts = new Map<string, number>()
+    // The preset each session was last seen with, so a move from `wsl-*` back to
+    // a plain mode can be recognised as the user's own choice.
+    const lastPreset = new Map<string, string>()
     const MAX_ATTEMPTS = 3
     // Healthy `wsl-<mode>` variant ids plus the roster's default preset id
     // (what a session with no explicit choice gets). Refreshed periodically
@@ -609,6 +624,24 @@ export function apply(ctx: ClientContext): void {
         // scan below would recompose it on the next tick (issue #129's session exit).
         if (hasOptedOut(id)) continue
         const current = getAgentPreset(summary)
+        // A blank session that moved off a `wsl-*` variant got there by the user:
+        // the mode picker is the only control a blank session actually exposes
+        // (the host renders no row menu for one), and the binder below would
+        // otherwise recompose it on the next tick and make the picker look broken.
+        const previous = lastPreset.get(id)
+        lastPreset.set(id, current ?? '')
+        // Only the session on screen: its picker is what a plain value can come
+        // from. A `wsl-*` → plain change on any other blank session is the host
+        // handing back a default after a roster change, not somebody choosing.
+        if ((summary.retainedBy?.mainView ?? 0) > 0
+          && previous !== undefined && previous.startsWith('wsl-')
+          && current !== undefined && !current.startsWith('wsl-')) {
+          optOutSession(id)
+          // The pass that recognises the user's choice must not also undo it:
+          // the binding below would run on the same tick, before the opt-out
+          // check got another look at this session.
+          continue
+        }
         if (current !== undefined && current.startsWith('wsl-')) continue
         // Legacy standalone `wsl` (now folded into the variants): remap it to
         // the default mode's variant, since the standalone preset no longer
@@ -643,6 +676,15 @@ export function apply(ctx: ClientContext): void {
     // the opt-out list because only this effect knows the roster, the base mode and
     // the select channel together.
     const summaryOf = (id: string): WslSessionSummary | undefined => sessions.list.getSnapshot().byId[id]
+    // The picker needs to know whether the session on screen can still be
+    // recomposed. A blank session has no sidebar row menu at all (the host draws
+    // no action strip for one), so the picker is the only place its WSL exit can
+    // live; a session that has started is locked by the host either way.
+    sessionSwitchable = (): boolean => {
+      const state = sessions.list.getSnapshot()
+      const id = state.ids.find(each => (state.byId[each]?.retainedBy?.mainView ?? 0) > 0)
+      return id === undefined ? false : state.byId[id]?.blank === true
+    }
     /** The WSL test the binder itself uses, so the menu offers an exit for exactly the sessions the binder reaches. */
     const isWslSession = (id: string): boolean => {
       const cwd = summaryOf(id)?.cwd
@@ -710,6 +752,7 @@ export function apply(ctx: ClientContext): void {
       window.clearInterval(timer)
       sessionWslControls = null
       maybeBindNow = () => {}
+      sessionSwitchable = () => false
     }
   }, 'dsh-wsl-workspace: WSL mode-variant binding')
 
