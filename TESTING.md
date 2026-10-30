@@ -13,7 +13,7 @@ This document describes how to verify `dsh-wsl-workspace` after a change or befo
 > still human — is [docs/CHECK-CATALOG.md](docs/CHECK-CATALOG.md). This document keeps
 > the background and the release checklist.
 >
-> **Two document gates run at the end of `npm run test:unit`** (repository-only): `node scripts/check-doc-paths.mjs` fails when a document names a path that does not exist (and its `--pack <dir>` mode checks the published artifact, where `src/`, `tests/`, `scripts/`, `ci/` and most of `docs/` are declared repository-only); `node scripts/check-discoverability.mjs` builds the packed artifact and fails when any of the five driving questions (start / login / route / composer / provider) stops being answerable from it.
+> **Two document gates run at the end of `npm run test:unit`** (repository-only): `node scripts/check-doc-paths.mjs` fails when a document names a path that does not exist — including **bare file names** (`PITFALLS.md`) that are neither published nor covered by a repository-only banner, and **concrete absolute local paths** (`C:\Users\<name>\…`, `D:\Temp\x`) — placeholders such as `<install>` and `D:\path\to\…`, and elided forms, pass; a concrete one must carry a `maintainer-local` mark or sit inside a changelog's append-only-history banner. Its `--pack <dir>` mode checks the published artifact, where `src/`, `tests/`, `scripts/`, `ci/` and most of `docs/` are declared repository-only; `node scripts/check-discoverability.mjs` builds the packed artifact and fails when any of the five driving questions (start / login / route / composer / provider) stops being answerable from it.
 
 ## Prerequisites
 
@@ -146,7 +146,7 @@ The WSL skill provider publishes `.dsh/skills` / `.agents/skills` from nested pr
    node scripts/repro-e2e.mjs
    ```
 
-   The target defaults to `\\wsl.localhost\<distro>\home\<user>\repro-ws-root`; override the distro/user with `WSL_COMPAT_DISTRO` / `WSL_COMPAT_USER` and the tree location with `WSL_REPRO_ROOT` (no path editing needed). Two Git Bash traps, both hit on the maintainer machine while re-establishing this run: a bare `wsl.exe -d <distro> -- bash /tmp/repro-setup.sh` has its `/tmp/…` argument rewritten to the Windows temp directory (run it through `bash -c "…"` instead, as above), and `WSL_REPRO_ROOT=/home/…` is rewritten the same way by MSYS, so prefix the run with `MSYS_NO_PATHCONV=1`. The second one is silent and total: the UNC becomes `…\C:\Users\…\.qoder-cn\bin\git\home\…`, the listing comes back empty, and — before this change — the script still exited 0.
+   The target defaults to `\\wsl.localhost\<distro>\home\<user>\repro-ws-root`; override the distro/user with `WSL_COMPAT_DISTRO` / `WSL_COMPAT_USER` and the tree location with `WSL_REPRO_ROOT` (no path editing needed). Two Git Bash traps, both hit on the maintainer machine while re-establishing this run: a bare `wsl.exe -d <distro> -- bash /tmp/repro-setup.sh` has its `/tmp/…` argument rewritten to the Windows temp directory (run it through `bash -c "…"` instead, as above), and `WSL_REPRO_ROOT=/home/…` is rewritten the same way by MSYS, so prefix the run with `MSYS_NO_PATHCONV=1`. The second one is silent and total: the UNC becomes `…\C:\Users\<user>\…\home\…`, the listing comes back empty, and — before this change — the script still exited 0.
 3. In the running harness, open a session on the repro workspace and ask the agent to load the nested skills (`brainstorming`, `systematic-debugging`, `writing-plans`) through its skill tool — each must load with the `wsl-workspace` provider attribution, and no duplicate entries may appear. In a non-WSL workspace session the same skills must be "unknown".
 4. Clean-install check (simulates another user): `npm pack`, `npm install <tarball>` in an empty temp project (peers must resolve), then `dsh plugin --profile web add <extracted tarball dir>`, restart `dsh web`, and repeat the end-to-end checks below plus the nested-skill probe above.
 
@@ -189,10 +189,10 @@ Two levels, in order of cost:
 2. **End to end inside the real Desktop.** This needs no installation: the unpacked installer from step 1 *is* a runnable Electron application. Run it against a scratch `DSH_HOME` and with remote debugging on, install the build through the Desktop's own plugin panel, and drive the window over CDP:
 
    ```powershell
-   $env:DSH_HOME = 'D:\scratch\dsh-desktop-home'   # never the real profile
+   $env:DSH_HOME = 'D:\path\to\dsh-desktop-home'   # never the real profile
    # copy settings.yaml / .credentials.yaml in, so the first-run welcome is skipped
    Start-Process '<dir>\DeepSeek Harness.exe' -ArgumentList `
-     '--remote-debugging-port=9333','--remote-allow-origins=*','--user-data-dir=D:\scratch\ud'
+     '--remote-debugging-port=9333','--remote-allow-origins=*','--user-data-dir=D:\path\to\ud'
 
    node .test-runs/desktop-cdp.mjs 9333 text                      # read the window (dev-only, not published)
    node .test-runs/desktop-cdp.mjs 9333 eval .test-runs/<probe>.mjs  # dev-only, not published
@@ -223,7 +223,7 @@ group 2  cd /tmp/state2/gone && rmdir … && pwd                          # dele
          foo(){ echo FUNC_OK; }; export -f foo; bash -c 'foo'           # exported function
          (sleep 40 & echo $!) ; disown; jobs -l | wc -l                 # detached inside the call
          pkill -f 'sleep 40' ; exec bash --norc                         # kills its own tree; replaces it
-group 3  wslpath -u 'C:\Program Files\node\node.exe'                    # spaces across the boundary
+group 3  wslpath -u 'C:\path\to\program.exe'                    # spaces across the boundary
          node -e "…process.env.DEEPSEEK_HARNESS_ROOT…"                 # does the host env travel
          ls /mnt/c/Users | head -5; du -sh /mnt/c/Users                # the 9P cost case
          git init + git commit --allow-empty; then git log | wc -l      # real side effect at a deadline

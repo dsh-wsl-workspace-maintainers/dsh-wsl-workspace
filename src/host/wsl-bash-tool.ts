@@ -139,7 +139,7 @@ function linuxOf(path: string | undefined): string | undefined {
  *
  * A relative `workdir` is joined onto the session's own directory, which is what the host's one-shot
  * tool does (`dsh-tool-bash`'s `resolveWorkdir`); measured there, `workdir: "docs"` becomes
- * `/home/ruler/docs` and the `cd` fails with bash's own `No such file or directory`. Translating it
+ * `/home/<session-user>/docs` and the `cd` fails with bash's own `No such file or directory`. Translating it
  * to nothing instead would run the command somewhere the model did not ask for, silently.
  *
  * @param args - the model's arguments.

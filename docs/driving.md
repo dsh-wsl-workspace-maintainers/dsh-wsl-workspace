@@ -1,5 +1,7 @@
 # Driving this plugin from another agent (five questions)
 
+> **Repository-only references.** `PITFALLS.md` — and any other file outside this package — lives in the plugin workspace this package came from and is **not published**. Everything needed to drive the plugin is in this file and the package itself.
+
 This file ships inside the package (it is listed in `package.json#files`) because the
 facts below are the ones a fresh agent cannot invent: how to start a harness, how to
 log in, how to call this plugin, how to put text into the composer, and how to move a
@@ -18,7 +20,7 @@ entry the desktop shell uses. A plain `dsh` CLI, if your machine has one, takes 
 
 ```powershell
 # 1) a scratch home, never the real profile
-$env:DSH_HOME = 'D:\scratch\dsh-home'
+$env:DSH_HOME = 'D:\path\to\dsh-home'
 # 2) THE ONE VARIABLE THAT MUST BE UNSET
 Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 
@@ -52,7 +54,28 @@ the profile (never `cd` into `profiles\web`, and never point `DSH_HOME` at the r
 the tarball alone is a plugin, not a runtime. `<install>` is the folder that contains
 `DeepSeek Harness.exe` (the packaged runtime lives under its `resources\`), or a machine
 where a `dsh` CLI is on `PATH`, in which case the same `web --no-open --host … --port …`
-arguments apply to it.
+arguments apply to it. The official installer is the desktop release; `TESTING.md`
+(which ships) names the current download URL. Where the executable landed depends on the
+installer: a per-user install normally sits under `%LOCALAPPDATA%\Programs`, and the
+Start-menu shortcut's target is the authoritative answer.
+
+**Put the plugin into that same scratch home**, or §3 has nothing to answer: with
+`DSH_HOME` still set, `dsh plugin --profile web add <tarball or its unpacked directory>`,
+then start `dsh web` as above. With no `dsh` on `PATH`, the `cli.js` entry from the start
+line is the same CLI — pass `plugin --profile web add …` where it passes `web …`. Prefer
+the **tarball**: a bare unpacked directory is added as a `link:` whose realpath has to
+resolve this package's own dependency (`js-yaml`), so it can answer `describe` while
+variant generation fails; a tarball lets the profile install the dependency. If you hold
+only the unpacked directory, `npm pack --ignore-scripts` inside it produces a tarball —
+the shipped `package.json`'s `prepack` hook rebuilds from a repository that the tarball
+does not contain. If the server
+is up but `{"method":"describe"}` does not come back `{"ok":true}`, the plugin is not
+loaded in that profile — check `<DSH_HOME>/profiles/web/cordis.patch.yml` before
+suspecting the route path.
+
+The printed URL appears only once the server is listening. If no line appears, the
+process did not start — read stderr; a busy port is the usual cause, and any free
+`--port` works because the printed URL follows the port you passed.
 
 ## 2. Log in: the printed URL and its token (measured: not consumed while that process lives)
 
@@ -85,7 +108,26 @@ The plugin's own route does **not** need that cookie — it is loopback-only ins
 | path | `/wsl-workspace/api` by default; the profile can override it (`Config.route`) — read the real one from `describe` |
 | body | `{ "method": "<name>", "params": { … } }` (`params` must be an object → else `400`) |
 | response | `{ "ok": true, "value": … }` or `{ "ok": false, "error": "…" }` (validation errors come back as `200` with `ok:false`) |
-| auth | none — **loopback only**: a non-loopback socket address or `Host` header gets `403 {"error":"loopback-only"}` |
+| auth | none — **loopback only**: a non-loopback socket address or `Host` header gets `403 {"ok":false,"error":"loopback-only"}` |
+
+The path is **profile configuration** (`Config.route`), not a constant in the code. A
+profile that moved it declares so in its patch file:
+
+```yaml
+# <DSH_HOME>/profiles/web/cordis.patch.yml
+- id: wsl-workspace
+  config:
+    route: /wsl-workspace/api
+```
+
+Always read the effective value from `describe.route.path` instead of assuming the
+default. **Overriding it is a both-halves change**: the shipped sidebar dialog calls the
+default path from a constant, so an override without a matching client patch leaves the
+dialog dead while `curl` keeps working.
+
+The route sends **no CORS headers**: call it from a process (`curl`, Node, a script) or
+from a page served by that same origin. A `fetch` from a different origin fails without a
+readable error, which is not a bug in the route.
 
 Discover the methods **at runtime**, never from a list copied into your own code:
 
@@ -112,7 +154,8 @@ curl -s -X POST http://127.0.0.1:3981/wsl-workspace/api -H 'content-type: applic
 
 **Which bytes are installed?** The version string cannot answer that — a `file:` install
 is a copy and goes stale silently. `describe.installProof` names a literal marker that
-exists only in builds carrying this table:
+exists only in builds carrying this table. `<profile>` below is the directory under
+`<DSH_HOME>/profiles` (for the `web` profile, `<DSH_HOME>/profiles/web`):
 
 ```powershell
 Select-String -Path "<profile>\node_modules\dsh-wsl-workspace\lib\index.js" -Pattern "wsl-workspace:methods-v1"
@@ -129,30 +172,63 @@ leaves one:
 - `document.execCommand('insertText', …)` returns **false** and the text stays empty.
 - Dispatching `input` **as well as** `beforeinput` inserts the text **twice**.
 
-Do this instead (in-page JS; `evaluate_script` in a built-in browser works):
+Do this instead. **The identification here is structural and language-neutral**: dialogs
+are advanced by the last button (a known-label match is tried first), the composer is found
+by its attributes, and the send control by the disabled→enabled flip. The label regexes
+(`继续|continue|关闭|close|got it`, `send|发送`) are fallbacks only — extend them if the UI
+is in neither English nor Chinese.
 
 ```js
-const ed = document.querySelector('[contenteditable][data-lexical-editor]');
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// 1) First-run dialogs, without matching their labels: the advance/dismiss control is
+//    the LAST button of each dialog (measured on both first-run dialogs). Labels seen
+//    so far are listed only as a fallback if a future dialog breaks that position.
+for (let i = 0; i < 3; i += 1) {
+  const dialog = document.querySelector('[role=dialog]');
+  if (!dialog) break;
+  const buttons = [...dialog.querySelectorAll('button')];
+  const byLabel = buttons.find((b) => /继续|continue|关闭|close|got it/i.test(`${b.innerText} ${b.getAttribute('aria-label') || ''}`));
+  (byLabel ?? buttons[buttons.length - 1] ?? dialog).click();
+  await sleep(300);
+}
+
+// 2) The composer. Lexical announces itself; the role=textbox fallback covers a rename.
+const ed = document.querySelector('[contenteditable][data-lexical-editor]')
+  || [...document.querySelectorAll('[contenteditable][role=textbox]')][0];
 if (!ed || ed.getAttribute('contenteditable') !== 'true') throw new Error('composer disabled: select a workspace first');
 ed.focus();
-const r = document.createRange(); r.selectNodeContents(ed); r.collapse(false);
-const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+const range = document.createRange(); range.selectNodeContents(ed); range.collapse(false);
+const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
+
+// 3) Send control by BEHAVIOUR: it is the labelled button that flips disabled -> enabled
+//    once the composer has text. (Its aria-label is localized: 发送消息 / Send message.)
+const labelled = () => new Map([...document.querySelectorAll('button[aria-label]')]
+  .map((b) => [b.getAttribute('aria-label'), b.disabled]));
+const before = labelled();
 ed.dispatchEvent(new InputEvent('beforeinput', {
-  inputType: 'insertText', data: '只回一个字：好', bubbles: true, cancelable: true, composed: true,
+  inputType: 'insertText', data: 'reply with one word: ok', bubbles: true, cancelable: true, composed: true,
 }));
-// then
-[...document.querySelectorAll('button')].find(b => (b.getAttribute('aria-label') || '') === '发送消息').click();
+await sleep(150);
+const flipped = [...labelled()].filter(([label, disabled]) => before.get(label) === true && disabled === false);
+const send = flipped.length === 1
+  ? [...document.querySelectorAll('button[aria-label]')].find((b) => b.getAttribute('aria-label') === flipped[0][0])
+  : [...document.querySelectorAll('button[aria-label]')].find((b) => /send|发送/i.test(b.getAttribute('aria-label')) && !b.disabled);
+if (!send) throw new Error('send control not found; labels here: ' + [...document.querySelectorAll('button[aria-label]')].map((b) => b.getAttribute('aria-label')).join(' | '));
+send.click();
 ```
 
-Prerequisites, in order: dismiss the first-run dialogs (`预览版说明` → `继续`, then
-`开始使用` → `关闭`), and **select a workspace** — until then the composer is
-`contenteditable="false"`, and the injection silently has nowhere to go. A workspace can
-be created without the UI through the host's same-origin RPC:
+**Select a workspace first** — until then the composer is `contenteditable="false"` and the
+injection silently has nowhere to go. Selecting means opening a session: click the workspace
+in the sidebar. A workspace can be created without the UI through the host's same-origin RPC
+(point `path` at an existing empty directory of your own), but creating it does not select it —
+click it afterwards. Run the snippet in the page itself (the devtools console, or an
+automation tool's evaluate-script), after the first-run dialogs have been dismissed:
 
 ```js
 await fetch('/api/workspace/create', { method: 'POST', headers: { 'content-type': 'application/json' },
   body: JSON.stringify({ type: 'client-request', rpcId: crypto.randomUUID(), method: 'workspace/create',
-    payload: { args: { request: { path: 'D:/Temp/scratch-ws' } } } }) });
+    payload: { args: { request: { path: 'D:/path/to/scratch-ws' } } } }) });
 ```
 
 Measured end to end: injecting and clicking send produced a real reply ("好", 16 s,
@@ -163,7 +239,10 @@ Measured end to end: injecting and clicking send produced a real reply ("好", 1
 A fresh isolated home falls back to `deepseek-official`, whose key is usually absent, and
 **every turn ends with `MISSING_CREDENTIAL` / 401** while nothing else looks wrong.
 
-Provider and default model are **profile configuration**, not plugin configuration:
+Provider and default model are **profile configuration**, not plugin configuration. The
+patch is a list of rows keyed by `id`: **edit the existing rows** — the profile already
+carries `llm-pi-ai` and `agent-default-model` after the plugin is installed — rather than
+appending a second row with the same id:
 
 `<DSH_HOME>/profiles/web/cordis.patch.yml`
 
@@ -191,6 +270,10 @@ Provider and default model are **profile configuration**, not plugin configurati
   environment**; the patch carries only the name.
 - **Only new sessions pick it up.** A session created before the patch keeps the model it
   recorded; create a new one (or use the host's model picker) after editing the patch.
+  Profile patches are read at startup, so restart the instance after editing before
+  creating that session. There is no model readout on this plugin's API — the
+  confirmation is behavioural: a new session answers instead of ending every turn in
+  `MISSING_CREDENTIAL` / 401.
 - The same shape works on a desktop profile (`<home>/profiles/desktop/cordis.patch.yml`);
   the model must be one the provider's `models` list declares.
 
@@ -198,4 +281,5 @@ Provider and default model are **profile configuration**, not plugin configurati
 
 It answers loopback-only data calls and registers preset variants. It does not start,
 stop or restart the harness, does not write outside its own credential store
-(`~/.dsh/wsl-workspaces.json`), and does not manage providers — §5 is host configuration.
+(`<DSH_HOME>/wsl-workspaces.json`, i.e. `~/.dsh/wsl-workspaces.json` when the home is the
+default one), and does not manage providers — §5 is host configuration.

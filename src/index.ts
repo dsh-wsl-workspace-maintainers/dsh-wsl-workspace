@@ -404,7 +404,7 @@ const DRIVING = {
   composer: {
     element: '[contenteditable][data-lexical-editor]',
     event: 'one beforeinput with inputType "insertText" and data',
-    then: 'click button[aria-label="发送消息"]',
+    then: 'click the send control: the one button[aria-label] that became enabled after the insert (its disabled flag flips). Do not match a translated label — the UI ships more than one language',
     doNot: [
       'document.execCommand("insertText") — returns false on Lexical, the text stays empty',
       'dispatching input in addition to beforeinput — the text doubles',

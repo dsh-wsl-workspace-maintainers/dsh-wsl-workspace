@@ -3,7 +3,7 @@
  *
  * The session gives a command pipes for stdin. That is right for everything a model normally runs,
  * and wrong for the programs that read the terminal instead — and the failure there is not an error
- * message. Measured on this machine (2026-10-05, `D:\Temp\issue51-s0\v1b-report.txt`): the session
+ * message. Measured on this machine (2026-10-05, a local report): the session
  * shell *does* have a controlling terminal (`ps -o tty=` answers `pts/1`) and job control (`$-` is
  * `himBs`), so a command that reads `/dev/tty` is put in the foreground of a terminal whose input
  * side nothing can feed. `sudo true` sleeps there as `S+` with `wchan=wait_woken` until the call's

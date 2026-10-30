@@ -53,7 +53,7 @@ const IMAGE_ROW_ID = 'read-image-wsl'
  * without having recognised a prompt — the host's `idleSilenceMs`, default 3000.
  *
  * The number comes from a measurement, not from taste (2026-10-06, real ConPTY, real
- * distribution, `D:\Temp\issue51-s0\v4-report.txt`): a send whose prompt the backend
+ * distribution, a local measurement report): a send whose prompt the backend
  * recognises settles in 75–136 ms, while every send whose prompt it does not recognise
  * costs the full default — 3.0–3.6 s, measured across seven sends — which is what a
  * whole keyboard conversation would be made of. The recognition path is what a caller

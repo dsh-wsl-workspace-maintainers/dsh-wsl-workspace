@@ -16,7 +16,7 @@
  * The ceiling on one call's `stdin`, and the reason it is where it is.
  *
  * The text travels inside the frame line (base64, like the command), so its cost is the frame's cost,
- * and that was measured on this machine (2026-10-05, `D:\Temp\issue51-s0`): a 64 kB command answers in
+ * and that was measured on this machine (2026-10-05): a 64 kB command answers in
  * ~3.8 s and a 256 kB one in ~59 s, because a piped bash reads the line as fast as the pipe delivers
  * it. Half the measured 64 kB point is the ceiling — a command plus its input at the frame size
  * nobody has measured past should still feel like a tool call — and a larger input is refused by name

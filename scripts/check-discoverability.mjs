@@ -92,6 +92,7 @@ const QUESTIONS = [
       ['event to dispatch', /beforeinput/],
       ['what not to do', /execCommand/],
       ['send action', /发送消息|send/i],
+      ['language-independent control discovery', /aria-label|locale|language/i],
     ],
   },
   {
