@@ -188,9 +188,12 @@ assert(byId.get('wsl-data').name === 'WSL · Data mode', 'a custom preset keeps 
 assert(byId.get('wsl-standard').order === 1 && byId.get('wsl-ptc').order === 2
   && byId.get('wsl-minimal').order === 3 && byId.get('wsl-data').order === 8,
   'each variant inherits the source roster order')
-assert(byId.get('wsl-standard').description.includes('WSL execution world for Standard mode（标准模式）'), 'the description is bilingual')
-assert(byId.get('wsl-ptc').description.includes('WSL execution world for PTC mode（PTC 模式）'),
-  'a labelled mode gets a labelled description instead of its bare id')
+assert(byId.get('wsl-standard').description === byId.get('wsl-ptc').description,
+  'every variant carries the same one-line description — the row title already names the mode')
+assert(byId.get('wsl-standard').description.includes('模式选择器'),
+  'the description still says where the way out is')
+assert(!byId.get('wsl-ptc').description.includes('PTC'),
+  'and it does not repeat the mode name the title shows (the eight-copy sentence this replaces)')
 assert(!existsSync(join(home, '.agent-presets', 'wsl-standard', 'preset.yml')), 'no preset.yml is written on this channel')
 
 // ── the declaration is an importable entry list ────────────────────────────

@@ -88,18 +88,16 @@ function variantName(presetId: string, sourceName: string): string {
 }
 
 /**
- * The variant description for one shipped mode (bilingual) or a custom preset.
+ * The variant description, shown as the mode menu's second line.
  *
- * The mode picker's row renders this string under the mode name, so it is the
- * one place the WSL world can tell the user, before they choose it, that there
- * is a way back out — issue #129 asked for an exit, and an exit nobody is told
- * about is the same dead end wearing a different hat.
+ * Deliberately the SAME line for every variant, and it does not name the mode:
+ * the row's own title already reads `WSL · PTC mode（PTC 模式）`, so an earlier
+ * draft that repeated that inside the description made eight rows read as eight
+ * copies of one sentence. Chinese carries the copy because the product copy is
+ * Chinese; the mode names stay bilingual in the title.
  */
-function variantDescription(presetId: string): string {
-  const labels = MODE_DISPLAY_LABELS[presetId]
-  const display = labels === undefined ? presetId : `${labels.en}（${labels.zh}）`
-  return `WSL execution world for ${display}: bash and file tools run inside the WSL distribution. `
-    + 'Leave with one session in the mode picker, or the whole workspace from its menu（会话在模式选择器里退，工作区在其菜单里退）.'
+function variantDescription(): string {
+  return 'bash 与文件工具在发行版内运行 · 退出：模式选择器（单会话）／工作区菜单（整个工作区）'
 }
 
 /** Plugin config. */
@@ -1127,7 +1125,7 @@ async function materializeOne(
     const declaration: PresetDeclaration = {
       id: variantId,
       name: variantName(preset.id, composition.name ?? preset.name ?? preset.id),
-      description: variantDescription(preset.id),
+      description: variantDescription(),
       ...(preset.order === undefined ? {} : { order: preset.order }),
       plugins,
     }
@@ -1172,7 +1170,7 @@ async function materializeOne(
     join(staging, 'preset.yml'),
     `name: ${yamlScalar(name)}\n`
     + orderLine
-    + `description: ${yamlScalar(variantDescription(preset.id))}\n`,
+    + `description: ${yamlScalar(variantDescription())}\n`,
     'utf8',
   )
   publishVariant(staging, dir)

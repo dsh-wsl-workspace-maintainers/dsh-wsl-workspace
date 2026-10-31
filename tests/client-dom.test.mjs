@@ -967,9 +967,10 @@ test('creating a WSL workspace leaves a light receipt telling the user both ways
     // with no background at all, because the colour tokens were guessed.
     assert.equal(card.dataset.tone, 'success')
     assert.match(card.textContent, /已登记为 WSL 工作区/)
-    assert.match(card.textContent, /退出 WSL 工作区/, 'the receipt names the workspace exit')
-    assert.match(card.textContent, /模式选择器/, 'and points the single-session exit at the picker, which a blank session actually has')
-    assert.doesNotMatch(card.textContent, /会话的菜单/, 'the session menu is NOT offered: a blank session has none')
+    assert.match(card.textContent, /模式选择器/, 'the receipt names the picker as the single-session exit')
+    assert.match(card.textContent, /工作区菜单/, 'and the workspace menu as the whole-workspace exit')
+    assert.doesNotMatch(card.textContent, /会话菜单|会话的菜单/, 'the withdrawn session menu is not offered again')
+    assert.ok(card.textContent.length < 90, `the receipt grew back long: ${card.textContent.length}`)
     await notice.click('.host-toast')
     assert.equal(notice.container.querySelector('.host-toast'), null, 'the shell’s own dismissal takes it down')
   } finally {
