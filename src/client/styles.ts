@@ -467,6 +467,24 @@ body[data-dww-presets-pending] [data-menu-backing] {
   cursor: pointer;
 }
 .dww-menu-row:hover { background: var(--dsw-alias-interactive-bg-hover); }
+
+/* Both contributed rows must fill the menu's inline axis. The slot outlet mounts
+   an entry inside a display:contents wrapper of its own, so a row that only
+   borrows the shipped button's class list can be laid out as a bare flex item —
+   which is how "退出 WSL 模式" ended up one glyph per line. */
+[data-dww-session-exit],
+.dww-menu-row { width: 100%; }
+
+/* The icon cell a mirrored row keeps where the shipped row's glyph was: the
+   shell's own icon component renders into it, at the shipped 16px box. */
+.dww-menu-icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
 `
 
 /**

@@ -62,6 +62,9 @@ const jsxRuntime = require('react/jsx-runtime')
 // test can tell the tooltip text from a native `title` bubble.
 const primitives = {
   Tooltip: ({ label, children }) => React.cloneElement(children, { 'data-tooltip': label }),
+  // The shipped icon components take no props and render an `<svg>`; the stub
+  // keeps the shape so a row's icon cell can be asserted without the platform table.
+  IconRightUpOutlineRegular: () => React.createElement('svg', { 'data-icon': 'right-up' }),
 }
 const source = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
 const flush = () => new Promise(resolve => setTimeout(resolve, 0))
@@ -826,6 +829,10 @@ test('the session menu gives one conversation its own way out of the WSL world',
     assert.equal(row.textContent.trim(), client.zh()['exit.session'], 'the row names the exit')
     assert.equal(row.className, 'host_item', 'the row borrows the shipped row geometry instead of a lookalike')
     assert.equal(row.querySelector('span')?.className, 'host_itemName', 'and the shipped label span')
+    assert.equal(row.parentElement?.className, 'host_itemWrap',
+      'and sits inside the shipped wrapper — the slot outlet is display:contents, so a bare button collapses one glyph per line')
+    assert.equal(row.querySelector('svg[data-icon="right-up"]') !== null, true,
+      'the row carries the shell’s own leave glyph, not a hand-drawn one')
 
     await seat.click('[data-dww-session-exit]')
     assert.deepEqual(client.selectCalls.filter(call => call.sessionId === 's1'),
@@ -941,7 +948,9 @@ test('the workspace menu clears the registration of a WSL workspace, and only th
     assert.equal(exit.textContent.trim(), client.zh()['exit.workspace'])
     assert.equal(exit.previousElementSibling?.querySelector('.host_itemName')?.textContent, '删除工作区',
       'and it sits directly under the shipped delete row')
-    assert.equal(exit.querySelector('svg'), null, 'the cloned trash icon does not come with the row')
+    assert.equal(exit.querySelector('svg[viewBox="0 0 16 16"]'), null, 'the cloned trash glyph does not come with the row')
+    assert.equal(exit.querySelector('.dww-menu-icon svg[data-icon="right-up"]') !== null, true,
+      'the icon cell carries the shell’s own leave glyph instead')
 
     await client.act(async () => { exit.querySelector('button').dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true })) })
     await client.act(flush)

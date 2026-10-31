@@ -33,4 +33,12 @@ declare module '@deepseek-ai/dsh-client-ui-primitives' {
 
   /** The themed hover/focus bubble the shell's own controls use. */
   export function Tooltip(props: TooltipProps): ReactElement
+
+  /**
+   * The upper-right arrow the shell draws for "leave this / send elsewhere"
+   * affordances. Declared with the same empty-props shape the host's own call
+   * sites use (`jsx(IconRightUpOutlineRegular, {})`), so a menu row contributed
+   * by this plugin carries the shipped glyph instead of a hand-drawn lookalike.
+   */
+  export function IconRightUpOutlineRegular(props: Record<never, never>): ReactElement
 }

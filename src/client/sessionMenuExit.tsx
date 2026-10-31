@@ -19,6 +19,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
+import { IconRightUpOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SessionWslControls } from './index.ts'
 import { raiseWslNotice } from './notice.tsx'
 
@@ -66,10 +67,14 @@ export function SessionWslExitRow({ controls, labels, sessionId, useMenuOpenStat
   const [, setMenuOpen] = useMenuOpenState()
   const [refusal, setRefusal] = useState<string | null>(null)
   const buttonRef = useRef<HTMLButtonElement | null>(null)
-  // The shipped rows bring their own class list through ui-primitives'
-  // `MenuItemButton`; this entry is a plain button, so it borrows the geometry
-  // of a sibling row at mount rather than shipping a lookalike.
-  const [skin, setSkin] = useState<{ button: string; label: string }>({ button: '', label: '' })
+  // The shipped rows come from ui-primitives' `MenuItemButton`, which renders a
+  // wrapper element around the button and gives the button and its label span
+  // their own class lists. The slot outlet mounts this entry inside a
+  // `display: contents` element of its own, so borrowing only the button's class
+  // is not enough: without the wrapper the row is laid out as a bare flex item
+  // and the label collapses one glyph per line. All three class lists are taken
+  // from a sibling row at mount, so this is the shipped geometry, not a lookalike.
+  const [skin, setSkin] = useState<{ button: string; label: string; wrap: string }>({ button: '', label: '', wrap: '' })
   useEffect(() => {
     const self = buttonRef.current
     if (self === null) return
@@ -78,8 +83,15 @@ export function SessionWslExitRow({ controls, labels, sessionId, useMenuOpenStat
     const sibling = [...menu.querySelectorAll('button[role="menuitem"]')].find(button => button !== self)
     if (sibling === undefined) return
     const labelNode = sibling.querySelector('[class*="_itemName"]') ?? sibling.firstElementChild
-    const next = { button: sibling.className, label: labelNode?.className ?? '' }
-    setSkin(previous => (previous.button === next.button && previous.label === next.label ? previous : next))
+    const siblingWrap = sibling.parentElement
+    const next = {
+      button: sibling.className,
+      label: labelNode?.className ?? '',
+      wrap: siblingWrap !== null && siblingWrap !== menu ? siblingWrap.className : '',
+    }
+    setSkin(previous => (previous.button === next.button && previous.label === next.label && previous.wrap === next.wrap
+      ? previous
+      : next))
   })
   const api = controls()
   if (api === null || !api.isWslSession(sessionId)) return null
@@ -104,7 +116,7 @@ export function SessionWslExitRow({ controls, labels, sessionId, useMenuOpenStat
       setMenuOpen(false)
     })
   }
-  return (
+  const row = (
     <button
       ref={buttonRef}
       type="button"
@@ -113,9 +125,12 @@ export function SessionWslExitRow({ controls, labels, sessionId, useMenuOpenStat
       data-dww-session-exit={optedOut ? 'rejoin' : 'exit'}
       onClick={onClick}
     >
+      <IconRightUpOutlineRegular />
       <span className={spanClass}>{text}</span>
     </button>
   )
+  // The wrapper is what makes the row a menu item rather than a loose flex child.
+  return skin.wrap === '' ? row : <div className={skin.wrap}>{row}</div>
 }
 
 /** The registration face this entry needs, narrowed to what it calls. */

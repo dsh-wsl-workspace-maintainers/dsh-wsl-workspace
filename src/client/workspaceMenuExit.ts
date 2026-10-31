@@ -18,6 +18,9 @@
  * @module dsh-wsl-workspace/client/workspaceMenuExit
  */
 
+import { createElement } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
+import { IconRightUpOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import { raiseWslNotice } from './notice.tsx'
 
 /** The shipped row this entry follows, in every locale the shell ships. */
@@ -74,6 +77,35 @@ function openWorkspaceId(root: ParentNode): string | null {
   return id === '' ? null : id
 }
 
+/** React roots this mirror opens inside host markup, so a removed row unmounts its icon. */
+const iconRoots = new WeakMap<Element, Root>()
+
+/**
+ * Fill an icon cell with the shell's own glyph.
+ * @param cell - an empty element standing where the shipped row's `<svg>` was.
+ */
+function mountIcon(cell: Element): void {
+  const root = createRoot(cell)
+  iconRoots.set(cell, root)
+  root.render(createElement(IconRightUpOutlineRegular))
+}
+
+/**
+ * Take a mirrored row out of the menu, releasing the icon root it owns.
+ * @param row - the row element, or nothing when none was drawn.
+ */
+function dropRow(row: Element | null | undefined): void {
+  if (row === null || row === undefined) return
+  for (const cell of row.querySelectorAll('.dww-menu-icon')) {
+    const root = iconRoots.get(cell)
+    if (root !== undefined) {
+      root.unmount()
+      iconRoots.delete(cell)
+    }
+  }
+  row.remove()
+}
+
 /**
  * Clone the shipped delete row into a mirror of our own, label and icon replaced.
  * The clone keeps the shipped wrapper and class list, so the entry inherits the
@@ -97,7 +129,14 @@ function cloneRow(anchor: HTMLButtonElement, text: string, owner: string): { row
   row.setAttribute(EXIT_OWNER_ATTRIBUTE, owner)
   button.setAttribute('role', 'menuitem')
   button.removeAttribute('aria-keyshortcuts')
-  for (const icon of button.querySelectorAll('svg')) icon.remove()
+  for (const icon of [...button.querySelectorAll('svg')]) {
+    // The shipped glyph is a trash can, and this row deletes nothing: it leaves
+    // the WSL world. The cell stays, so the label keeps the shipped alignment.
+    const cell = document.createElement('span')
+    cell.className = 'dww-menu-icon'
+    icon.replaceWith(cell)
+    mountIcon(cell)
+  }
   const label = button.querySelector('[class*="_itemName"]') ?? button.querySelector('[class*="_itemLabel"]')
   if (label === null) button.textContent = text
   else label.textContent = text
@@ -125,7 +164,7 @@ export function mountWorkspaceMenuExit(options: WorkspaceExitOptions): () => voi
       const anchor = buttons.find(button => WORKSPACE_ANCHOR_LABELS.includes(rowLabel(button)))
       if (anchor === undefined) {
         // Not the workspace menu: leave it exactly as the host drew it.
-        drawn?.remove()
+        dropRow(drawn)
         continue
       }
       const workspaceId = openWorkspaceId(document)
@@ -133,7 +172,7 @@ export function mountWorkspaceMenuExit(options: WorkspaceExitOptions): () => voi
       if (path === undefined) {
         // Not a WSL workspace — or a release whose row markup this plugin no
         // longer recognises. Either way there is no honest exit to draw.
-        drawn?.remove()
+        dropRow(drawn)
         continue
       }
       let row = drawn
@@ -175,6 +214,6 @@ export function mountWorkspaceMenuExit(options: WorkspaceExitOptions): () => voi
   return () => {
     observer?.disconnect()
     window.clearInterval(timer)
-    for (const stale of document.querySelectorAll(`[${EXIT_OWNER_ATTRIBUTE}="${owner}"]`)) stale.remove()
+    for (const stale of [...document.querySelectorAll(`[${EXIT_OWNER_ATTRIBUTE}="${owner}"]`)]) dropRow(stale)
   }
 }
