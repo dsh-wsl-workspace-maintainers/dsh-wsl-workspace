@@ -1045,7 +1045,8 @@ test('creating a WSL workspace leaves a light receipt telling the user both ways
     assert.equal(card.dataset.level, 'info')
     assert.match(card.textContent, /已登记为 WSL 工作区/)
     assert.match(card.textContent, /退出 WSL 工作区/, 'the receipt names the workspace exit')
-    assert.match(card.textContent, /退出 WSL 模式/, 'and the session exit')
+    assert.match(card.textContent, /模式选择器/, 'and points the single-session exit at the picker, which a blank session actually has')
+    assert.doesNotMatch(card.textContent, /会话的菜单/, 'the session menu is NOT offered: a blank session has none')
     await notice.click('.dww-notice-close')
     assert.equal(notice.container.querySelector('.dww-notice'), null, 'the user can take it down')
   } finally {

@@ -99,7 +99,7 @@ function variantDescription(presetId: string): string {
   const labels = MODE_DISPLAY_LABELS[presetId]
   const display = labels === undefined ? presetId : `${labels.en}（${labels.zh}）`
   return `WSL execution world for ${display}: bash and file tools run inside the WSL distribution. `
-    + 'Exit from the session or workspace menu（在会话或工作区菜单里退出）.'
+    + 'Leave with one session in the mode picker, or the whole workspace from its menu（会话在模式选择器里退，工作区在其菜单里退）.'
 }
 
 /** Plugin config. */

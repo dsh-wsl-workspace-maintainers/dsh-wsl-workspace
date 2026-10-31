@@ -23,7 +23,7 @@ export const zh: Record<string, string> = {
   'exit.workspace.done.body': '登记记录已删除，之后的新会话不再使用 WSL 模式。路径：',
   'exit.workspace.failed': '删除 WSL 登记失败',
   'exit.toast': '已登记为 WSL 工作区',
-  'exit.toast.body': '新会话会自动用 WSL 模式。要退出：工作区菜单选「退出 WSL 工作区」，或只在某一个会话的菜单里选「退出 WSL 模式」。',
+  'exit.toast.body': '新会话会自动用 WSL 模式。要退出：整个工作区在工作区菜单选「退出 WSL 工作区」；只退一个会话，就在它的模式选择器里改选普通模式——会话一旦产出内容，宿主就不许再改模式，那时只能退工作区。',
 
   'dialog.title': '添加 WSL 工作区',
   'dialog.distro': '发行版',
@@ -91,7 +91,7 @@ export const en: Record<string, string> = {
   'exit.workspace.done.body': 'The registration is deleted, so new sessions no longer use WSL mode. Path: ',
   'exit.workspace.failed': 'Could not delete the WSL registration',
   'exit.toast': 'Registered as a WSL workspace',
-  'exit.toast.body': 'New sessions open in a WSL mode. To undo it: choose "Exit WSL workspace" in the workspace menu, or "Exit WSL mode" in one session\u2019s menu.',
+  'exit.toast.body': 'New sessions open in a WSL mode. To undo it: choose "Exit WSL workspace" in the workspace menu for the whole folder, or pick a plain mode in the mode picker to leave with one session only — once a session has produced output the host will not change its mode, and only the workspace can be left.',
 
   'dialog.title': 'Add WSL workspace',
   'dialog.distro': 'Distro',
