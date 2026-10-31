@@ -4,7 +4,7 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
 
 > **This is append-only history, not a set of links.** Older entries name repository-only files (`src/…`, `tests/…`, `docs/…`) and reading files on the maintainer's machine; those are records of what was measured, and neither they nor any path outside this package are shipped in it. The package ships `lib/`, both READMEs, `TESTING.md`, both CHANGELOGs and `docs/driving.*`.
 
-## 0.7.12 — 2026-10-30
+## 0.7.12 — 2026-10-31
 
 **Another agent can now drive this package from what the package ships**, without the repository or the maintainer's memory.
 
@@ -13,8 +13,6 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
 - **The READMEs declare which paths are repository-only** (`src/`, `tests/`, `scripts/`, `ci/`, most of `docs/`) instead of linking them as though they shipped.
 - **Two document gates run at the end of `npm run test:unit`**: `scripts/check-doc-paths.mjs` (every repository path a document names must exist — also **bare file names** that are neither published nor covered by a repository-only banner, and **absolute local paths** that are concrete rather than placeholders (`<install>`, `D:\path\to\…`) unless marked `maintainer-local`; the two shipped CHANGELOGs must carry an append-only-history banner; `--pack <dir>` applies the same rule to the artifact) and `scripts/check-discoverability.mjs` (builds the packed artifact and fails when any of the five questions stops being answerable, or when the method table drifts from the dispatcher).
 - **Evidence for the claim**: three cold-start agents read only the packed artifact. Before, four of the five questions were unanswerable and the fifth was code-only; after, all five are answerable from `docs/driving.md` with file:line citations.
-
-## Unreleased
 
 **A `/mnt/<drive>` workspace can be un-registered again.**
 
