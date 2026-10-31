@@ -950,6 +950,59 @@ test('a blank session the user moved off a WSL variant is not bound back', { tim
   }
 })
 
+test('a registration the host no longer has a workspace for is cleared on the next read', { timeout: 10_000 }, async () => {
+  // Issue #129's repro step 1: delete the workspace in DSH, re-add the folder,
+  // still WSL. The two registries never talked to each other, so the record
+  // outlived the workspace. The browser holds the host's workspace list, so the
+  // reconciliation runs there — but only once that list says it is loaded.
+  const records = [{ path: 'd:\\temp\\gone-ws', distro: 'Ubuntu' }]
+  const list = (items, ready) => ({ create: async () => ({ workspaceId: 'w1' }), startSession: () => {}, list: { getSnapshot: () => ({ items, baselinesReady: ready }) } })
+
+  const orphan = mount(healthy({
+    listWorkspaceRecords: records,
+    removeWorkspace: { removed: 'd:\\temp\\gone-ws' },
+    workspaces: list([{ workspaceId: 'w2', path: 'C:\\Users\\me\\other' }], true),
+  }))
+  try {
+    await orphan.render()
+    await orphan.act(flush)
+    assert.ok(orphan.calls.includes('removeWorkspace'),
+      `the orphaned registration was left in place: ${JSON.stringify(orphan.calls)}`)
+  } finally {
+    await orphan.unmount()
+  }
+
+  // The positive control: the same record, with the host workspace still there.
+  const kept = mount(healthy({
+    listWorkspaceRecords: records,
+    removeWorkspace: { removed: 'd:\\temp\\gone-ws' },
+    workspaces: list([{ workspaceId: 'w1', path: 'D:\\temp\\gone-ws' }], true),
+  }))
+  try {
+    await kept.render()
+    await kept.act(flush)
+    assert.equal(kept.calls.includes('removeWorkspace'), false,
+      'a registration whose workspace is still hosted must not be cleared')
+  } finally {
+    await kept.unmount()
+  }
+
+  // And the guard: an empty list before the baseline is loaded is not a deletion.
+  const loading = mount(healthy({
+    listWorkspaceRecords: records,
+    removeWorkspace: { removed: 'd:\\temp\\gone-ws' },
+    workspaces: list([], false),
+  }))
+  try {
+    await loading.render()
+    await loading.act(flush)
+    assert.equal(loading.calls.includes('removeWorkspace'), false,
+      'the plugin cleared a registration against a workspace list the host had not finished loading')
+  } finally {
+    await loading.unmount()
+  }
+})
+
 test('creating a WSL workspace leaves a light receipt telling the user both ways out', { timeout: 10_000 }, async () => {
   const client = mount(healthy())
   let notice = null

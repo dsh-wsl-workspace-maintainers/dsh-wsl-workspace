@@ -81,7 +81,11 @@ interface WslWorkspacesFace {
    * no exit rather than throw on opening it.
    */
   list?: {
-    getSnapshot(): { items: readonly { workspaceId: string; path: string }[] }
+    getSnapshot(): {
+      items: readonly { workspaceId: string; path: string }[]
+      /** The host's own promise that the workspace list has been fetched. */
+      baselinesReady?: boolean
+    }
   }
   /** v0.1.1-rc.2 only — removed in v0.1.2-rc.1+. */
   startSession?(workspaceId?: string): void
@@ -539,6 +543,42 @@ export function apply(ctx: ClientContext): void {
       })
     }
     refreshRoster()
+    /**
+     * The store key as the browser can compute it: the host's workspace paths
+     * arrive in the same two shapes the store is keyed by, and both sides need
+     * one spelling before they can be compared.
+     * @param path - a workspace path in any spelling.
+     * @returns the comparable key.
+     */
+    const storeKey = (path: string): string =>
+      isWslUnc(path) ? path.replace(/[\\/]+/g, '\\').toLowerCase() : canonicalWindowsPath(path) ?? path
+    /**
+     * Retire registrations the host no longer has a workspace for (issue #129's
+     * repro step 1: delete the workspace, re-add the folder, still WSL).
+     *
+     * The host keeps its own registry (`storages/workspace.json`) and this plugin
+     * keeps `wsl-workspaces.json`, and nothing connected them — the plugin's
+     * `apply()` subscribes to no lifecycle event, which is exactly the "生命周期不联动"
+     * the report names. The browser does hold the host's workspace list, so the
+     * reconciliation runs there, against the same read the binder already uses.
+     *
+     * It waits for `baselinesReady`: that flag is the host's own promise that the
+     * workspace list has been fetched, and pruning before it would read an empty
+     * list as "the user deleted every workspace".
+     * @param records - the registrations this read returned.
+     */
+    const reconcileRegistrations = (records: WslWorkspaceRecord[]): void => {
+      const state = workspaces.list?.getSnapshot()
+      if (state === undefined || state.baselinesReady !== true) return
+      const hosted = new Set(state.items.map(item => storeKey(item.path)))
+      for (const record of records) {
+        if (hosted.has(storeKey(record.path))) continue
+        // A failed removal is not retried here: the next refresh re-reads the
+        // store and re-asks, and a registration that outlived its workspace is
+        // worse than one that takes a minute longer to go.
+        void removeWorkspaceApi(record.path).catch(() => {})
+      }
+    }
     const refreshWorkspaces = (): void => {
       void listWorkspaceRecordsApi().then((records: WslWorkspaceRecord[]) => {
         const keys = new Set<string>()
@@ -554,6 +594,7 @@ export function apply(ctx: ClientContext): void {
         // Same late-input rule as the roster: the `/mnt/<drive>` key set
         // decides binding for drive-cwd sessions.
         maybeBind()
+        reconcileRegistrations(records)
       }).catch(() => {
         // A failed store read leaves the previous sets; sessions stay on
         // their current composition until the next refresh.
