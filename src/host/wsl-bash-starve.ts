@@ -10,7 +10,7 @@
  * every time a distribution changes. This module replaces that prediction with a reading taken from
  * outside the shell while the call is in flight.
  *
- * What was measured, and what the rule is built from (`D:\Temp\issue51-s0\v1c-table.txt` and
+ * What was measured, and what the rule is built from (local measurement tables,
  * `v5-run.txt`, 2026-10-05, read off the production session):
  *
  * | the command is… | state | `/proc/<pid>/wchan` | a terminal in its fds | acted on |

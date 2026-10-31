@@ -62,6 +62,15 @@ const jsxRuntime = require('react/jsx-runtime')
 // test can tell the tooltip text from a native `title` bubble.
 const primitives = {
   Tooltip: ({ label, children }) => React.cloneElement(children, { 'data-tooltip': label }),
+  // The shipped icon components take no props and render an `<svg>`; the stub
+  // keeps the shape so a row's icon cell can be asserted without the platform table.
+  IconRightUpOutlineRegular: () => React.createElement('svg', { 'data-icon': 'right-up' }),
+  // The shell's own notice: it owns the plate, the tone and the hold, and calls
+  // `onDone` when it goes away. The stub keeps that contract (click = done) so a
+  // test can prove the plugin renders *through* Toast rather than around it.
+  Toast: ({ text, tone, onDone }) => React.createElement('div', {
+    className: 'host-toast', 'data-tone': tone, onClick: () => onDone(),
+  }, String(text)),
 }
 const source = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
 const flush = () => new Promise(resolve => setTimeout(resolve, 0))
@@ -77,6 +86,12 @@ const flush = () => new Promise(resolve => setTimeout(resolve, 0))
  */
 function mount(scenario, { wide = true } = {}) {
   const calls = []
+  // The plugin keeps two pieces of module state — the per-session opt-out list
+  // (in session storage) and the notice on screen. Both outlive one test's root,
+  // so a mount that inherited them would not be describing a fresh page.
+  try {
+    dom.window.sessionStorage.clear()
+  } catch { /* no storage in this engine: the in-memory fallback is per-process */ }
   /** The params of one host call, for an answer that depends on them. */
   const paramsOf = init => (JSON.parse(init.body).params ?? {})
   globalThis.fetch = async (_url, init) => {
@@ -96,9 +111,21 @@ function mount(scenario, { wide = true } = {}) {
   let component
   let face
   let dictionaries = {}
+  /** Every contribution, keyed by the seat it landed in, for the exits' tests. */
+  const seats = new Map()
+  /** The agent-preset swaps the plugin asked the host for, in order. */
+  const selectCalls = []
+  /** The sessions list store the plugin reads; a test mutates it and calls `notifyList`. */
+  const listState = scenario.listState ?? { ids: [], byId: {} }
+  let listListener = null
   const services = {
-    sessions: { list: { getSnapshot: () => ({ ids: [], byId: {} }), subscribe: () => () => {} } },
-    workspaces: { create: async () => ({ workspaceId: 'w1' }), startSession: () => {} },
+    sessions: {
+      list: {
+        getSnapshot: () => listState,
+        subscribe: (fn) => { listListener = fn; return () => { listListener = null } },
+      },
+    },
+    workspaces: scenario.workspaces ?? { create: async () => ({ workspaceId: 'w1' }), startSession: () => {} },
     'remote.agentPresets': {
       list: async () => ({
         ok: true,
@@ -108,21 +135,40 @@ function mount(scenario, { wide = true } = {}) {
             : [{ id: 'standard', isDefault: true }, { id: 'wsl-standard' }, { id: 'wsl-code' }],
         },
       }),
-      select: async () => ({ ok: true }),
+      // The host locks a preset once a session has produced output, and the
+      // exit has to show that refusal rather than swallow it.
+      select: async (sessionId, agentPreset) => {
+        selectCalls.push({ sessionId, agentPreset })
+        if (scenario.selectRefuses === true) return { ok: false, error: { message: 'agent-preset-locked' } }
+        return { ok: true }
+      },
     },
     uiWorkspace: { startSession: () => {} },
   }
   const ctx = {
     get: key => services[key],
-    effect: fn => { fn(); return () => {} },
+    // Real disposers, collected: the runtime ties an effect and a slot
+    // contribution to the plugin's fiber, so a test that leaves them mounted
+    // would run several instances of the mirrors over one document at once —
+    // which no page does.
+    effects: [],
+    effect: fn => { const disposer = fn(); if (typeof disposer === 'function') ctx.effects.push(disposer); return () => {} },
     inject: (deps, callback) => { if (deps.every(dep => services[dep] !== undefined)) callback(ctx) },
     locale: {
       register: (_namespace, dictionary) => { dictionaries = dictionary; return () => {} },
       bind: () => key => dictionaries.zh?.[key] ?? key,
     },
     slots: {
-      inject: (_name, fn) => fn(),
-      register: (config, Component) => { face = config.inject(); component = Component; return () => {} },
+      inject: (_name, fn) => { const disposer = fn(); if (typeof disposer === 'function') ctx.effects.push(disposer); },
+      register: (config, Component) => {
+        const injected = config.inject === undefined ? {} : config.inject()
+        seats.set(config.name, { config, Component, injected })
+        // The dialog keeps being the default component, so the existing
+        // interaction tests do not change meaning; a seat registers without an
+        // inject face (the overlay notice) contributes only its component.
+        if (config.name === 'sidebar.footer.action') { face = injected; component = Component }
+        return () => {}
+      },
     },
   }
 
@@ -152,9 +198,10 @@ function mount(scenario, { wide = true } = {}) {
     dom.window.setInterval = setInterval
   }
 
-  // A fresh container per mount. Two roots must never share one (React refuses it), and tearing a
-  // root down while a host answer is still in flight is a React-internals race this file does not
-  // need to depend on — the process exits with the window, so the roots go with it.
+  // A fresh container per mount. Two roots must never share one (React refuses
+  // it), and every root this helper opens is taken down by `unmount()` below —
+  // a root left mounted keeps its `useEffect` mirrors observing the document, and
+  // the next test's client then reads a menu the previous one trimmed.
   const container = document.createElement('div')
   document.body.appendChild(container)
   const root = createRoot(container)
@@ -166,6 +213,39 @@ function mount(scenario, { wide = true } = {}) {
     zh: () => dictionaries.zh ?? {},
     calls,
     act,
+    seats,
+    selectCalls,
+    listState,
+    /** Fire the session-list subscription the way a store change would. */
+    notifyList: () => { listListener?.() },
+    /**
+     * Render one contributed seat the way the host renders a slot entry: the
+     * owner share merged over the inject face the registration supplied.
+     * @param name - the seat, e.g. `sidebar.workspaces.session.menu.item`.
+     * @param props - the owner share for one occurrence.
+     * @param within - an element to mount inside, for a row that must sit in a menu.
+     * @returns the seat's container, a click helper, and a disposer.
+     */
+    async renderSeat(name, props, within = document.body) {
+      const seat = seats.get(name)
+      assert.ok(seat !== undefined, `nothing was contributed to ${name}`)
+      const seatContainer = document.createElement('div')
+      within.appendChild(seatContainer)
+      const seatRoot = createRoot(seatContainer)
+      await act(async () => { seatRoot.render(React.createElement(seat.Component, { ...seat.injected, ...props })) })
+      await act(flush)
+      return {
+        container: seatContainer,
+        async click(selector) {
+          const element = seatContainer.querySelector(selector)
+          assert.ok(element !== null, `nothing matches ${selector} — rendered: ${seatContainer.innerHTML.slice(0, 300)}`)
+          await act(async () => { element.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true })) })
+          await act(flush)
+          return element
+        },
+        dispose() { seatRoot.unmount(); seatContainer.remove() },
+      }
+    },
     async render() {
       await act(async () => { root.render(React.createElement(component, { wide, ...face })) })
       await act(flush)
@@ -194,7 +274,16 @@ function mount(scenario, { wide = true } = {}) {
       })
       await act(flush)
     },
-    unmount() { /* nothing to tear down: see the container comment above */ },
+    /**
+     * Tear the client down the way unloading its fiber would: the dialog's React
+     * root first (its `useEffect` is what mounts the picker mirror, and a mirror
+     * left observing the document would trim the next test's menus), then the
+     * disposers the plugin registered through effects and slot contributions.
+     */
+    async unmount() {
+      await act(async () => { root.unmount() })
+      for (const disposer of ctx.effects.splice(0).reverse()) disposer()
+    },
   }
 }
 
@@ -228,7 +317,7 @@ test('a healthy install opens the dialog and draws no error row at all', { timeo
     const options = [...client.container.querySelectorAll('.dww-select option')].map(option => option.textContent)
     assert.deepEqual(options, ['Ubuntu-24.04'], 'the distribution list is what the host answered')
     assert.equal(client.container.querySelectorAll('.dww-dir-row').length, 1, 'the directory tree filled')
-  } finally { client.unmount() }
+  } finally { await client.unmount() }
 })
 
 test('a blank message from any path draws nothing', { timeout: 10_000 }, async () => {
@@ -242,7 +331,7 @@ test('a blank message from any path draws nothing', { timeout: 10_000 }, async (
     await open(client)
     assert.ok(client.container.querySelector('.dww-error') === null,
       'an empty message must not draw a row: the condition is about text, not about null')
-  } finally { client.unmount() }
+  } finally { await client.unmount() }
 })
 
 test('a failed browse on one distribution is retired by a successful one on another', async () => {
@@ -271,7 +360,7 @@ test('a failed browse on one distribution is retired by a successful one on anot
     assert.ok(client.container.querySelector('.dww-error') === null,
       'a successful browse must retire the browse failure it replaces')
     assert.ok(client.container.querySelectorAll('.dww-dir-row').length >= 1, 'and the listing is what loaded')
-  } finally { client.unmount() }
+  } finally { await client.unmount() }
 })
 
 test('the trigger stays in the tree while the dialog is open, out of the tab order', { timeout: 10_000 }, async () => {
@@ -286,7 +375,7 @@ test('the trigger stays in the tree while the dialog is open, out of the tab ord
     assert.equal(trigger.getAttribute('aria-hidden'), 'true')
     assert.equal(trigger.getAttribute('tabindex'), '-1')
     assert.match(trigger.textContent, /WSL工作区/, 'the wide form carries the label')
-  } finally { client.unmount() }
+  } finally { await client.unmount() }
 })
 
 test('a preset failure names the variant and the host\'s own reason', { timeout: 10_000 }, async () => {
@@ -306,7 +395,7 @@ test('a preset failure names the variant and the host\'s own reason', { timeout:
     assert.match(text, /Cannot find module 'js-yaml'/, `the row must carry the host's reason, got: ${text}`)
     assert.match(text, /5\/6/, `the row must carry the host's own count, got: ${text}`)
     assert.ok(client.container.querySelector('.dww-retry') !== null, 'a failure offers Retry')
-  } finally { client.unmount() }
+  } finally { await client.unmount() }
 })
 
 test('a refused distro list is reported in words and leaves the form usable', { timeout: 10_000 }, async () => {
@@ -321,7 +410,7 @@ test('a refused distro list is reported in words and leaves the form usable', { 
     // sensible offer rather than a dead end.
     assert.ok(client.container.querySelector('.dww-card') !== null, 'the dialog stays open')
     assert.ok(client.container.querySelector('#dww-path') !== null, 'the form is still there')
-  } finally { client.unmount() }
+  } finally { await client.unmount() }
 })
 
 test('a directory that cannot be listed names the directory failure, not the distro one', { timeout: 10_000 }, async () => {
@@ -334,7 +423,7 @@ test('a directory that cannot be listed names the directory failure, not the dis
       `the row must name the browse failure, got: ${strip.textContent}`)
     assert.doesNotMatch(strip.textContent ?? '', new RegExp(client.zh()['error.loadDistros'].slice(0, 6)),
       'the distro failure is a different fact and must not be reported for a browse')
-  } finally { client.unmount() }
+  } finally { await client.unmount() }
 })
 
 test('Escape closes an idle dialog and is ignored while a create is in flight', { timeout: 10_000 }, async () => {
@@ -355,7 +444,7 @@ test('Escape closes an idle dialog and is ignored while a create is in flight', 
     assert.ok(client.container.querySelector('.dww-card') !== null, 'Escape must not close a busy dialog')
     release({ ok: true, status: 200, json: async () => ({ ok: true, value: { exists: true, isDirectory: true } }) })
     await client.act(flush)
-  } finally { client.unmount() }
+  } finally { await client.unmount() }
 })
 
 test('the help panel opens over the form and closing it restores the same message', { timeout: 10_000 }, async () => {
@@ -371,7 +460,7 @@ test('the help panel opens over the form and closing it restores the same messag
     await client.click('.dww-help-btn')
     assert.equal(client.container.querySelector('.dww-error')?.textContent ?? '', before,
       'closing the panel must return the same message, not a cleared one')
-  } finally { client.unmount() }
+  } finally { await client.unmount() }
 })
 
 test('Retry re-runs the open pass instead of only clearing the message', { timeout: 10_000 }, async () => {
@@ -394,7 +483,7 @@ test('Retry re-runs the open pass instead of only clearing the message', { timeo
       ['Ubuntu-24.04'],
       'and the values it fetched must be on screen',
     )
-  } finally { client.unmount() }
+  } finally { await client.unmount() }
 })
 
 test('the rail form renders the control a collapsed sidebar actually shows', { timeout: 10_000 }, async () => {
@@ -413,7 +502,7 @@ test('the rail form renders the control a collapsed sidebar actually shows', { t
     assert.ok(client.container.querySelector('.dww-card') === null, 'rendering the rail does not open the dialog')
     await client.click('.dww-action--rail')
     assert.ok(client.container.querySelector('.dww-card') !== null, 'and the rail control is the way in')
-  } finally { client.unmount() }
+  } finally { await client.unmount() }
 })
 
 test('the preset answer is rendered by its text, whichever shape it arrives in', { timeout: 15_000 }, async () => {
@@ -440,7 +529,7 @@ test('the preset answer is rendered by its text, whichever shape it arrives in',
       assert.ok(strip !== null, `${testCase.label} must draw a row`)
       assert.match(strip.textContent ?? '', /wsl-code/, `${testCase.label}: the row carries its own text`)
       assert.notEqual((strip.textContent ?? '').trim(), '', `${testCase.label}: a drawn row is never empty`)
-    } finally { client.unmount() }
+    } finally { await client.unmount() }
   }
 })
 
@@ -472,7 +561,7 @@ test('no reachable state draws an error row around nothing', { timeout: 20_000 }
         if (label === 'a partial generation') {
           assert.ok(strips.length >= 1, `${label}: the failure state must draw its row in both forms`)
         }
-      } finally { client.unmount() }
+      } finally { await client.unmount() }
     }
   }
 })
@@ -529,7 +618,7 @@ test('the entry joins the section header beside the shipped add control', { time
       'the header entry returns after the dialog closes, without a page reload')
   } finally {
     region.remove()
-    client.unmount()
+    await client.unmount()
   }
 })
 
@@ -558,7 +647,7 @@ test('the workspace picker menu carries the WSL row under the shipped one', { ti
     assert.ok(client.container.querySelector('.dww-card') !== null, 'the menu row opens the same dialog')
   } finally {
     menu.remove()
-    client.unmount()
+    await client.unmount()
   }
 })
 
@@ -593,7 +682,66 @@ test('the mode picker lists one family, whichever workspace the session belongs 
     assert.deepEqual(visible(), ['WSL · 标准模式', 'WSL · PTC 模式'], 'a WSL session lists the WSL variants')
   } finally {
     menu.remove()
-    client.unmount()
+    await client.unmount()
+  }
+})
+
+test('a WSL session whose family has no other variant in the menu is not left with a one-row mode picker', { timeout: 10_000 }, async () => {
+  // Issue #129's second exit. The trim matches on the row's *display name*, which
+  // is the host's, not ours: a checked WSL row with no other WSL row beside it
+  // would trim to a menu containing only the mode already selected — a picker the
+  // user cannot choose from at all.
+  const client = mount(healthy({ presets: 'none' }))
+  const menu = document.createElement('div')
+  menu.setAttribute('role', 'menu')
+  const row = (label, selected) => '<div class="host_itemWrap"><button type="button" role="menuitem" class="host_item">'
+    + `<span class="host_itemName">${label}</span>${selected ? '<span class="host_check"></span>' : ''}</button></div>`
+  menu.innerHTML = row('WSL · 标准模式', true) + row('标准模式', false) + row('PTC 模式', false)
+  document.body.appendChild(menu)
+  const visible = () => [...menu.querySelectorAll('.host_itemWrap')]
+    .filter(wrap => wrap.style.display !== 'none')
+    .map(wrap => wrap.querySelector('.host_itemName').textContent)
+  try {
+    await client.render()
+    await client.act(async () => { document.body.appendChild(menu) })
+    await client.act(flush)
+    assert.deepEqual(visible().slice().sort(), ['PTC 模式', 'WSL · 标准模式', '标准模式'],
+      'a menu with no second WSL row stays untrimmed rather than collapsing to the selected row')
+    assert.equal([...menu.querySelectorAll('button')].every(button => !button.disabled), true,
+      'and no row is left disabled, so one is always selectable')
+    // Past PRESET_SETTLE_MS: the released flag is what makes the menu visible.
+    await client.act(() => new Promise(resolve => setTimeout(resolve, 100)))
+    assert.equal(menu.getAttribute('data-dww-presets-ready'), '', 'the released menu is visible')
+  } finally {
+    menu.remove()
+    await client.unmount()
+  }
+})
+
+test('a healthy WSL roster still trims the menu to its own family', { timeout: 10_000 }, async () => {
+  // The pair of the row above, and the boundary of this fix: with a real variant
+  // family present the menu still lists only WSL modes — which is the documented
+  // design. The way back to a plain workspace is `removeWorkspace`, not a row here.
+  const client = mount(healthy())
+  const menu = document.createElement('div')
+  menu.setAttribute('role', 'menu')
+  const row = (label, selected) => '<div class="host_itemWrap"><button type="button" role="menuitem" class="host_item">'
+    + `<span class="host_itemName">${label}</span>${selected ? '<span class="host_check"></span>' : ''}</button></div>`
+  menu.innerHTML = row('标准模式', false)
+    + row('WSL · 标准模式', true) + row('WSL · PTC 模式', false) + row('WSL · 精简模式', false)
+  document.body.appendChild(menu)
+  const visible = () => [...menu.querySelectorAll('.host_itemWrap')]
+    .filter(wrap => wrap.style.display !== 'none')
+    .map(wrap => wrap.querySelector('.host_itemName').textContent)
+  try {
+    await client.render()
+    await client.act(async () => { document.body.appendChild(menu) })
+    await client.act(flush)
+    assert.deepEqual(visible(), ['WSL · 标准模式', 'WSL · PTC 模式', 'WSL · 精简模式'],
+      'a WSL session with a variant family lists that family (the documented design)')
+  } finally {
+    menu.remove()
+    await client.unmount()
   }
 })
 
@@ -613,6 +761,316 @@ test('a menu that only resembles the preset picker is not left hidden', { timeou
       'releasing the menu must not move or filter its contents')
   } finally {
     menu.remove()
-    client.unmount()
+    await client.unmount()
   }
 })
+
+
+// ---------------------------------------------------------------------------
+// Issue #129's exits. The workspace one is a mirrored row; the session one is
+// NOT a menu row — measured on a real host, a blank session carries no action
+// strip at all and every session that has a menu is locked by the host, so the
+// exit lives in the mode picker instead (see the two picker tests below).
+// ---------------------------------------------------------------------------
+
+const SESSION_MENU_SEAT = 'sidebar.workspaces.session.menu.item'
+const OVERLAY_SEAT = 'shell.overlay'
+/** One blank session in a UNC workspace, already composed onto the WSL variant. */
+const WSL_UNC = '\\\\wsl.localhost\\Ubuntu\\home\\ruler'
+
+/** The host's project rows and its workspace menu, as detached nodes. */
+function workspaceMenuDom() {
+  const rowOf = (workspaceId) => {
+    const element = document.createElement('div')
+    element.className = 'host_projectRow'
+    element.setAttribute('data-row-key', `workspace:${workspaceId}`)
+    element.innerHTML = '<span class="host_title">issue129</span>'
+    return element
+  }
+  const menu = document.createElement('div')
+  menu.setAttribute('role', 'menu')
+  menu.innerHTML = '<div class="host_itemWrap"><button type="button" role="menuitem" class="host_item">'
+    + '<span class="host_itemName">重命名</span></button></div>'
+    + '<div class="host_itemWrap"><button type="button" role="menuitem" class="host_item host_danger">'
+    + '<svg viewBox="0 0 16 16"></svg><span class="host_itemName">删除工作区</span></button></div>'
+  return { w1: rowOf('w1'), w2: rowOf('w2'), menu }
+}
+
+/**
+ * Mount the overlay seat, which is also the only thing that can take a notice
+ * down — notices are module state and outlive one test's root.
+ * @param client - a mounted client.
+ * @returns the live seat, with nothing on screen.
+ */
+async function openNoticeSeat(client) {
+  const seat = await client.renderSeat(OVERLAY_SEAT, {})
+  if (seat.container.querySelector('.host-toast') !== null) await seat.click('.host-toast')
+  return seat
+}
+
+test('nothing is contributed to the session row menu, because that exit cannot work there', { timeout: 10_000 }, async () => {
+  // The withdrawn control: the seat exists and a row in it renders, but a blank
+  // session has no menu to hold it and a started one is preset-locked, so the row
+  // could only ever report a refusal. Locked here so it does not come back.
+  const listState = { ids: ['s1'], byId: { s1: { blank: true, cwd: WSL_UNC, retainedBy: { mainView: 1 }, projectionValues: { agentPreset: 'wsl-standard' } } } }
+  const client = mount(healthy({ listState }))
+  try {
+    await client.render()
+    assert.equal(client.seats.has(SESSION_MENU_SEAT), false,
+      'the plugin contributed a row to the session menu seat')
+  } finally {
+    await client.unmount()
+  }
+})
+
+test('the workspace menu clears the registration of a WSL workspace, and only that one', { timeout: 10_000 }, async () => {
+  const workspaces = {
+    create: async () => ({ workspaceId: 'w1' }),
+    startSession: () => {},
+    list: {
+      getSnapshot: () => ({
+        items: [
+          { workspaceId: 'w1', path: 'D:\\temp\\issue129' },
+          { workspaceId: 'w2', path: 'C:\\Users\\ruler\\proj' },
+        ],
+      }),
+    },
+  }
+  const client = mount(healthy({
+    listWorkspaceRecords: [{ path: 'd:\\temp\\issue129', distro: 'Ubuntu', username: 'ruler' }],
+    removeWorkspace: { removed: 'd:\\temp\\issue129' },
+    workspaces,
+  }))
+  const { w1, w2, menu } = workspaceMenuDom()
+  let notice = null
+  try {
+    await client.render()
+    notice = await openNoticeSeat(client)
+    await client.act(async () => {
+      document.body.append(w1, w2, menu)
+      w1.classList.add('host_menuOpen')
+    })
+    await client.act(flush)
+    const exit = menu.querySelector('[data-dww-ws-exit]')
+    assert.ok(exit !== null, `the workspace menu carries no exit: ${menu.innerHTML.slice(0, 400)}`)
+    assert.equal(exit.getAttribute('data-dww-ws-exit'), 'D:\\temp\\issue129',
+      'the row targets the host path of the workspace whose menu is open')
+    assert.equal(exit.textContent.trim(), client.zh()['exit.workspace'])
+    assert.equal(exit.previousElementSibling?.querySelector('.host_itemName')?.textContent, '删除工作区',
+      'and it sits directly under the shipped delete row')
+    assert.equal(exit.querySelector('svg[viewBox="0 0 16 16"]'), null, 'the cloned trash glyph does not come with the row')
+    assert.equal(exit.querySelector('.dww-menu-icon svg[data-icon="right-up"]') !== null, true,
+      'the icon cell carries the shell’s own leave glyph instead')
+
+    await client.act(async () => { exit.querySelector('button').dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true })) })
+    await client.act(flush)
+    assert.ok(client.calls.includes('removeWorkspace'), 'the click clears the registration through the host route')
+    assert.match(notice.container.textContent, /已退出 WSL 工作区/, 'with a receipt naming the path')
+    assert.match(notice.container.textContent, /D:\\temp\\issue129/, 'the receipt carries the registration it removed')
+
+    // The negative, on the same fixture: the menu re-opens on the *other*
+    // workspace, which has no registration to clear. Closing and re-opening the
+    // menu is the tree mutation the mirror keys on, the same one the host's
+    // portal makes when a user right-clicks a different row.
+    await client.act(async () => {
+      w1.classList.remove('host_menuOpen')
+      w2.classList.add('host_menuOpen')
+      menu.remove()
+      document.body.append(menu)
+    })
+    await client.act(flush)
+    assert.equal(menu.querySelector('[data-dww-ws-exit]'), null,
+      'a workspace that is not a WSL one is offered no exit')
+  } finally {
+    notice?.dispose()
+    w1.remove()
+    w2.remove()
+    menu.remove()
+    await client.unmount()
+  }
+})
+
+test('the mode picker is the blank session’s exit: it lists every mode it can still accept', { timeout: 10_000 }, async () => {
+  // Measured on a real host: a blank session row carries NO action strip (`!row.blank`
+  // in the host's own rows), so the session menu above is unreachable for the one
+  // session that is allowed to change. Trimming that session's mode menu to the WSL
+  // family would therefore leave no way out at all.
+  const listState = {
+    ids: ['s1'],
+    byId: { s1: { blank: true, cwd: WSL_UNC, retainedBy: { mainView: 1 }, projectionValues: { agentPreset: 'wsl-standard' } } },
+  }
+  const client = mount(healthy({ listState }))
+  const menu = document.createElement('div')
+  menu.setAttribute('role', 'menu')
+  const row = (label, selected) => '<div class="host_itemWrap"><button type="button" role="menuitem" class="host_item">'
+    + `<span class="host_itemName">${label}</span>${selected ? '<span class="host_check"></span>' : ''}</button></div>`
+  menu.innerHTML = row('标准模式', false)
+    + row('WSL · 标准模式', true) + row('WSL · PTC 模式', false) + row('WSL · 精简模式', false)
+  document.body.appendChild(menu)
+  const visible = () => [...menu.querySelectorAll('.host_itemWrap')]
+    .filter(wrap => wrap.style.display !== 'none')
+    .map(wrap => wrap.querySelector('.host_itemName').textContent)
+  try {
+    await client.render()
+    await client.act(async () => { document.body.appendChild(menu) })
+    await client.act(() => new Promise(resolve => setTimeout(resolve, 100)))
+    assert.deepEqual(visible(), ['标准模式', 'WSL · 标准模式', 'WSL · PTC 模式', 'WSL · 精简模式'],
+      'a blank session is offered the plain modes too')
+    assert.equal(menu.getAttribute('data-dww-presets-ready'), '', 'and the menu is released, not left hidden')
+    assert.equal([...menu.querySelectorAll('button')].every(b => !b.disabled), true, 'no row is left unusable')
+  } finally {
+    menu.remove()
+    await client.unmount()
+  }
+})
+
+test('a blank session the user moved off a WSL variant is not bound back', { timeout: 10_000 }, async () => {
+  // The other half: picking 标准模式 in the picker above only stays picked if the
+  // binder reads it as a choice. Without the diff it recomposes the session on the
+  // next store change, which is what made the picker look broken.
+  const listState = {
+    ids: ['s1'],
+    byId: { s1: { blank: true, cwd: WSL_UNC, retainedBy: { mainView: 1 }, projectionValues: { agentPreset: 'wsl-standard' } } },
+  }
+  const client = mount(healthy({ listState }))
+  try {
+    await client.render()
+    await client.act(flush)
+    assert.equal(client.selectCalls.length, 0, 'nothing to bind: it is already a WSL variant')
+    // The user picks a plain mode in the picker; the host writes the projection.
+    listState.byId.s1.projectionValues = { agentPreset: 'standard' }
+    client.notifyList()
+    await client.act(flush)
+    client.notifyList()
+    await client.act(flush)
+    assert.deepEqual(client.selectCalls.filter(call => call.sessionId === 's1'), [],
+      `the binder recomposed the mode the user just chose: ${JSON.stringify(client.selectCalls)}`)
+  } finally {
+    await client.unmount()
+  }
+})
+
+test('a registration the host no longer has a workspace for is cleared once the list is trustworthy', { timeout: 10_000 }, async () => {
+  // Issue #129's repro step 1: delete the workspace in DSH, re-add the folder,
+  // still WSL. The two registries never talked to each other, so the record
+  // outlived the workspace. The browser holds the host's workspace list, so the
+  // reconciliation runs there — and "is that list loaded yet" is answered without
+  // `baselinesReady`, because the Desktop build this was first tried against has
+  // no such field (measured: the string is not in its bundle at all).
+  const records = [{ path: 'd:\\temp\\gone-ws', distro: 'Ubuntu' }]
+  const notify = []
+  const workspacesWith = (itemsOf) => ({
+    create: async () => ({ workspaceId: 'w1' }),
+    startSession: () => {},
+    list: {
+      getSnapshot: () => ({ items: itemsOf() }),
+      subscribe: (fn) => { notify.push(fn); return () => {} },
+    },
+  })
+
+  // A non-empty list is its own proof of having loaded, so the orphan goes at once.
+  notify.length = 0
+  const orphan = mount(healthy({
+    listWorkspaceRecords: records,
+    removeWorkspace: { removed: 'd:\\temp\\gone-ws' },
+    workspaces: workspacesWith(() => [{ workspaceId: 'w2', path: 'C:\\Users\\me\\other' }]),
+  }))
+  try {
+    await orphan.render()
+    await orphan.act(flush)
+    assert.ok(orphan.calls.includes('removeWorkspace'),
+      `another workspace is listed, so the missing one is not "still loading": ${JSON.stringify(orphan.calls)}`)
+  } finally {
+    await orphan.unmount()
+  }
+
+  // The positive control: the same record, with the host workspace still there.
+  notify.length = 0
+  const kept = mount(healthy({
+    listWorkspaceRecords: records,
+    removeWorkspace: { removed: 'd:\\temp\\gone-ws' },
+    workspaces: workspacesWith(() => [{ workspaceId: 'w1', path: 'D:\\temp\\gone-ws' }]),
+  }))
+  try {
+    await kept.render()
+    await kept.act(flush)
+    assert.equal(kept.calls.includes('removeWorkspace'), false,
+      'a registration whose workspace is still hosted must not be cleared')
+  } finally {
+    await kept.unmount()
+  }
+
+  // The guard: a list that has never had anything in it is still maybe-loading.
+  notify.length = 0
+  const loading = mount(healthy({
+    listWorkspaceRecords: records,
+    removeWorkspace: { removed: 'd:\\temp\\gone-ws' },
+    workspaces: workspacesWith(() => []),
+  }))
+  try {
+    await loading.render()
+    await loading.act(flush)
+    notify.forEach(fn => fn())
+    await loading.act(flush)
+    assert.equal(loading.calls.includes('removeWorkspace'), false,
+      'the plugin cleared registrations against a list this page never saw filled')
+  } finally {
+    await loading.unmount()
+  }
+
+  // And the case the guard must not swallow: the user deletes their only
+  // workspace. The page saw it, now the list is empty, so the record goes.
+  let hosted = [{ workspaceId: 'w1', path: 'D:\\temp\\gone-ws' }]
+  notify.length = 0
+  const lastOne = mount(healthy({
+    listWorkspaceRecords: records,
+    removeWorkspace: { removed: 'd:\\temp\\gone-ws' },
+    workspaces: workspacesWith(() => hosted),
+  }))
+  try {
+    await lastOne.render()
+    await lastOne.act(flush)
+    assert.equal(lastOne.calls.includes('removeWorkspace'), false, 'nothing to clear while it is hosted')
+    hosted = []
+    lastOne.notifyWorkspaces = () => notify.forEach(fn => fn())
+    await lastOne.act(flush)
+    // The page has now seen the workspace and watched the list empty out, which is
+    // the "deleted my only workspace" case the guard above must not swallow.
+    lastOne.notifyWorkspaces()
+    await lastOne.act(flush)
+    assert.ok(lastOne.calls.includes('removeWorkspace'),
+      `the last workspace's registration outlived it: ${JSON.stringify(lastOne.calls)}`)
+  } finally {
+    await lastOne.unmount()
+  }
+})
+
+test('creating a WSL workspace leaves a light receipt telling the user both ways out', { timeout: 10_000 }, async () => {
+  const client = mount(healthy())
+  let notice = null
+  try {
+    await client.render()
+    notice = await openNoticeSeat(client)
+    assert.equal(notice.container.querySelector('.host-toast'), null, 'nothing on screen before the create')
+    const failure = await client.face.createWorkspace('/mnt/d/temp/issue129', 'ruler', 'Ubuntu')
+    await client.act(flush)
+    assert.equal(failure, undefined, 'the create itself succeeded')
+    const card = notice.container.querySelector('.host-toast')
+    assert.ok(card !== null, 'the create left no receipt')
+    // The plate, the tone and the dismissal belong to the shell's own Toast; this
+    // plugin only supplies the line. A hand-styled card here came out on screen
+    // with no background at all, because the colour tokens were guessed.
+    assert.equal(card.dataset.tone, 'success')
+    assert.match(card.textContent, /已登记为 WSL 工作区/)
+    assert.match(card.textContent, /模式选择器/, 'the receipt names the picker as the single-session exit')
+    assert.match(card.textContent, /工作区菜单/, 'and the workspace menu as the whole-workspace exit')
+    assert.doesNotMatch(card.textContent, /会话菜单|会话的菜单/, 'the withdrawn session menu is not offered again')
+    assert.ok(card.textContent.length < 90, `the receipt grew back long: ${card.textContent.length}`)
+    await notice.click('.host-toast')
+    assert.equal(notice.container.querySelector('.host-toast'), null, 'the shell’s own dismissal takes it down')
+  } finally {
+    notice?.dispose()
+    await client.unmount()
+  }
+})
+

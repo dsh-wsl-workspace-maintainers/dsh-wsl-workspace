@@ -400,6 +400,155 @@ try {
   assert(after === before, 'the registry store is byte-for-byte untouched after the refused setUser calls')
   assert(!after.includes('attacker'), 'no refused setUser left a username in the registry store')
 
+  // ── 11. issue #129: a drive-keyed registration has an exit ─────────────
+  // Reproduction lock, kept in this file because this is the seam the dialog
+  // actually uses — the shipped route over a socket, with `registerWindows` and
+  // `listWorkspaceRecords` as the two ends the reporter read. Nothing here starts
+  // a distribution: the store is keyed on the path string, and a name that does
+  // not resolve only ever surfaces if a removal is followed by a `check`.
+  // The key is synthetic on purpose. A drive path only exists on the platform that
+  // has drive letters, so a fixture that insisted on a real folder would answer on
+  // the Windows runner and refuse on the ubuntu one — which measures the runner, not
+  // the route. The cells that genuinely need a folder on disk are tiered in §12.
+  const driveKey = 'c:\\users\\me\\documents\\github\\automation'
+  const drivePath = 'C:\\Users\\me\\Documents\\GitHub\\automation'
+  const sentinelKey = '\\\\wsl.localhost\\SentinelDistro\\home\\kept'
+  const mntPath = '/mnt/c/Users/me/Documents/GitHub/automation'
+  const plantStore = () => {
+    writeFileSync(store, JSON.stringify(
+      { [driveKey]: { distro: 'SentinelDistro' }, [sentinelKey]: { username: 'keptuser' } }, null, 2) + '\n', 'utf8')
+  }
+  const readStoreNow = () => JSON.parse(readFileSync(store, 'utf8'))
+
+  plantStore()
+  // The defect's own half, still asserted: the store's original delete resolves a
+  // UNC key and throws on a drive one, so the dialog's old exit cannot clear a
+  // `/mnt/<drive>` record. #129's answer is the method below, not a change here.
+  const refusedDrive = await post({ method: 'setUser', params: { path: drivePath, username: '' } })
+  assert(refusedDrive.envelope?.ok === false && readStoreNow()[driveKey] !== undefined,
+    `setUser still cannot clear a drive key (refused: "${String(refusedDrive.envelope?.error ?? '')}") — by design; the exit is removeWorkspace`)
+
+  // removeWorkspace takes the store key verbatim, the same spelling setUser and
+  // listWorkspaceRecords use: the dialog reads it from listWorkspaceRecords rather
+  // than canonicalising Windows paths in a browser, so that is the one spelling to serve.
+  const removed = await post({ method: 'removeWorkspace', params: { path: drivePath } })
+  assert(removed.status === 200 && removed.envelope?.ok === true && removed.envelope?.value?.removed === driveKey,
+    `removeWorkspace answers the canonical key it removed (got ${JSON.stringify(removed.envelope)})`)
+  const afterRemove = readStoreNow()
+  assert(afterRemove[driveKey] === undefined, 'the drive key is gone from the store')
+  assert(afterRemove[sentinelKey] !== undefined, 'the UNC record the drive removal was not about stays in the store')
+
+  const listAfter = await post({ method: 'listWorkspaceRecords' })
+  assert(!(listAfter.envelope?.value ?? []).some((r) => r.path === driveKey),
+    'listWorkspaceRecords no longer reports the removed workspace, so the client stops binding new sessions from it')
+
+  const again = await post({ method: 'removeWorkspace', params: { path: drivePath } })
+  assert(again.envelope?.ok === false && /registered/.test(String(again.envelope?.error)),
+    `a second removal is a REPORTED miss naming the path, not a silent success ("${String(again.envelope?.error ?? '')}")`)
+
+  // The UNC half, on the same method — and an idempotent clear is NOT enough here:
+  // a caller removing a workspace must be told when there was nothing to remove.
+  plantStore()
+  const uncRemoval = await post({ method: 'removeWorkspace', params: { path: sentinelKey } })
+  assert(uncRemoval.envelope?.ok === true && readStoreNow()[driveKey] !== undefined
+    && readStoreNow()[sentinelKey] === undefined,
+    'removeWorkspace clears a UNC record and leaves the drive record alone')
+
+  // The registration and the removal must be a pair, or the dialog list would show
+  // rows its own write never produced.
+  plantStore()
+  const registered = await post({ method: 'registerWindows', params: { distro: 'SentinelDistro', linuxPath: mntPath, username: '' } })
+  assert(registered.envelope?.ok === true && readStoreNow()[driveKey]?.distro === 'SentinelDistro',
+    'registerWindows writes the drive key that removeWorkspace clears')
+  const removeOwnKey = await post({ method: 'removeWorkspace', params: { path: driveKey } })
+  assert(removeOwnKey.envelope?.ok === true && readStoreNow()[driveKey] === undefined,
+    'the canonical key read back from listWorkspaceRecords is accepted by removeWorkspace verbatim')
+
+  for (const [label, params] of [['no path', {}], ['an empty path', { path: '   ' }], ['a foreign UNC', { path: '\\\\otherhost\\share\\x' }]]) {
+    const answer = await post({ method: 'removeWorkspace', params })
+    assert(answer.status === 200 && answer.envelope?.ok === false,
+      `removeWorkspace with ${label} answers {ok:false}, never a 500 (got ${answer.status} ${JSON.stringify(answer.envelope?.error)})`)
+  }
+
+  plantStore()
+  const cleared = await post({ method: 'setUser', params: { path: sentinelKey, username: '' } })
+  const storeCleared = readStoreNow()
+  assert(cleared.envelope?.ok === true && storeCleared[sentinelKey] === undefined
+    && storeCleared[driveKey] !== undefined,
+    'the positive control holds: setUser clears a seeded UNC key and no drive key')
+  plantStore()
+
+  // ── 12. issue #129 repro step 2: a same-name folder is a different folder ───
+  // The store is keyed by a path STRING, so deleting the directory and creating
+  // another one with the same name used to hit the old record and hand the new
+  // folder the old workspace's WSL mode. A drive registration now carries the
+  // creation time of the directory it was made for, and a read that finds a
+  // DIFFERENT directory there retires it. The positive control is the live record
+  // in the same file: it must survive every one of these reads, or the gate is
+  // just deleting things.
+  const ghostKey = join(work, 'gone-today').replace(/[\\/]+/g, '\\').toLowerCase().replace(/\\$/, '')
+  writeFileSync(store, JSON.stringify({ ...readStoreNow(), [ghostKey]: { distro: 'SentinelDistro', born: 1 } }, null, 2) + '\n', 'utf8')
+  const ghostList = await post({ method: 'listWorkspaceRecords' })
+  const afterGhost = readStoreNow()
+  // The other half of the rule, and it is a lock, not a gap: absence is not evidence.
+  // A drive that is not mounted this moment, a share that is briefly down, and a folder
+  // the user has not recreated yet all read exactly like "deleted", and an earlier cut
+  // of this feature answered them by deleting the registration during a plain read.
+  // Deleting the workspace in the host is the exit for a genuinely gone folder, and the
+  // client reconciles that (see the A1 cells in tests/client-dom.test.mjs).
+  assert(afterGhost[ghostKey] !== undefined && afterGhost[ghostKey].born === 1
+    && afterGhost[driveKey] !== undefined && afterGhost[sentinelKey] !== undefined,
+    'a read never writes: a drive record whose directory does not answer keeps its registration and stamp')
+  assert((ghostList.envelope?.value ?? []).some((r) => r.path === ghostKey),
+    'and is still reported, so remounting the drive returns the workspace rather than losing it')
+
+  // The reporter's own step 2: same name, different directory. This one needs a folder
+  // that really exists and can be replaced, which is a Windows reading — the store key
+  // has to be a drive path — so the tier is declared instead of silently green elsewhere.
+  if (process.platform !== 'win32') {
+    skip('the same-name replacement cells', 'a drive key that names an existing folder is a Windows path')
+  } else {
+    const automationDir = join(work, 'automation')
+    mkdirSync(automationDir, { recursive: true })
+    const realKey = automationDir.replace(/[\\/]+/g, '\\').toLowerCase().replace(/\\$/, '')
+    const realMnt = `/mnt/${realKey[0]}/${realKey.slice(2).replace(/\\/g, '/')}`
+    const bornOf = () => Math.round(statSync(automationDir).birthtimeMs)
+
+    // The cheap shape first: a record stamped for a different creation time than the
+    // folder that answers to its key, whatever deleted the old one.
+    writeFileSync(store, JSON.stringify({ ...readStoreNow(), [realKey]: { distro: 'SentinelDistro', born: bornOf() - 5000 } }, null, 2) + '\n', 'utf8')
+    const replacedList = await post({ method: 'listWorkspaceRecords' })
+    assert(!(replacedList.envelope?.value ?? []).some((r) => r.path === realKey),
+      'a folder whose creation time differs from the registration is treated as unregistered')
+    assert(readStoreNow()[realKey] === undefined,
+      'and the replacement is written away, so the client stops offering the old workspace its WSL mode')
+
+    // And the pair: registering a real directory stamps it, so the next read agrees.
+    const stamped = await post({ method: 'registerWindows', params: { distro: 'SentinelDistro', linuxPath: realMnt, username: '' } })
+    const born = readStoreNow()[realKey]?.born
+    assert(stamped.envelope?.ok === true && typeof born === 'number' && born > 0,
+      `registerWindows stamps the directory it registered (got ${JSON.stringify(born)})`)
+    const liveList = await post({ method: 'listWorkspaceRecords' })
+    assert((liveList.envelope?.value ?? []).some((r) => r.path === realKey),
+      'a freshly registered, existing directory survives the same validation (positive control)')
+
+    // The literal repro: delete the project, recreate it under the same name, and the
+    // fresh folder must not inherit the registration. On a file system whose creation
+    // time is too coarse to separate two writes this cell cannot be measured, and it
+    // says so rather than flaking.
+    const recreatedAt = bornOf()
+    rmSync(automationDir, { recursive: true, force: true })
+    mkdirSync(automationDir, { recursive: true })
+    if (Math.round(statSync(automationDir).birthtimeMs) === recreatedAt) {
+      skip('the delete-and-recreate cell', `the file system stamps both folders at ${recreatedAt}`)
+    } else {
+      const inheritedList = await post({ method: 'listWorkspaceRecords' })
+      assert(!(inheritedList.envelope?.value ?? []).some((r) => r.path === realKey),
+        'a folder recreated under the registered name is a new workspace, not the old one wearing its clothes')
+      assert(readStoreNow()[realKey] === undefined, 'and the inherited registration is written away, not just hidden')
+    }
+  }
+
   // ── 9. an empty picker is a reported failure (fake spawn, child process) ─
   // `listDistros()` cannot be answered honestly in this process: without the fake it
   // would run the real wsl.exe. So this one assertion runs in a child with

@@ -25,8 +25,11 @@
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
-import { check as checkApi, describe as describeApi, listDir as listDirApi, listDistros as listDistrosApi, listWorkspaceRecords as listWorkspaceRecordsApi, registerWindows as registerWindowsApi, setWorkspaceUser as setWorkspaceUserApi, variantStatus as variantStatusApi, type WslVariantOutcome, type WslWorkspaceRecord } from './api.ts'
+import { check as checkApi, describe as describeApi, listDir as listDirApi, listDistros as listDistrosApi, listWorkspaceRecords as listWorkspaceRecordsApi, registerWindows as registerWindowsApi, removeWorkspace as removeWorkspaceApi, setWorkspaceUser as setWorkspaceUserApi, variantStatus as variantStatusApi, type WslVariantOutcome, type WslWorkspaceRecord } from './api.ts'
+import { hasOptedOut, optOutSession } from './session-optout.ts'
 import { AddWslWorkspace, type AddWslWorkspaceInjected } from './AddWslWorkspace.tsx'
+import { mountWorkspaceMenuExit } from './workspaceMenuExit.ts'
+import { raiseWslNotice, WslNoticeOverlay } from './notice.tsx'
 import { ensureStyles } from './styles.ts'
 import { zh, en } from './locales.ts'
 import { canonicalWindowsPath, isWslUnc, joinUnc, mntToWindowsPath } from '../shared/paths.ts'
@@ -38,6 +41,18 @@ export const inject = ['slots', 'locale', 'sessions', 'workspaces']
 /** The legacy standalone WSL preset id (folded into the mode variants). */
 const LEGACY_WSL_PRESET_ID = 'wsl'
 
+/** One session as the list store reports it: enough to bind, and to un-bind. */
+interface WslSessionSummary {
+  blank: boolean
+  cwd?: string
+  /** The host's own retention marker: `mainView > 0` is the session on screen. */
+  retainedBy?: { mainView?: number }
+  /** v0.1.1-rc.2 direct field */
+  agentPreset?: string
+  /** v0.1.2-rc.1+ projection value */
+  projectionValues?: Readonly<{ agentPreset?: string | null }>
+}
+
 /**
  * Minimal sessions-service face. The renderer-host ctx merge types
  * `ctx.sessions` as its own SessionStore; the service the runtime actually
@@ -48,14 +63,7 @@ interface WslSessionsFace {
   list: {
     getSnapshot(): {
       ids: string[]
-      byId: Record<string, {
-        blank: boolean
-        cwd?: string
-        /** v0.1.1-rc.2 direct field */
-        agentPreset?: string
-        /** v0.1.2-rc.1+ projection value */
-        projectionValues?: Readonly<{ agentPreset?: string | null }>
-      }>
+      byId: Record<string, WslSessionSummary>
     }
     subscribe(fn: () => void): () => void
   }
@@ -63,9 +71,24 @@ interface WslSessionsFace {
   noteAgentPreset?(sessionId: string, agentPreset: string): void
 }
 
-/** Minimal workspaces-service face (create only; startSession moved out in v0.1.2-rc.1+). */
+/** Minimal workspaces-service face (create and the read side of the registry). */
 interface WslWorkspacesFace {
   create(input: { path: string }): Promise<{ workspaceId: string }>
+  /**
+   * The host's own workspace list. The workspace menu needs it to turn a row's
+   * `data-row-key="workspace:<id>"` back into the path the WSL store is keyed by.
+   * Optional in this face because a release without it must leave the menu with
+   * no exit rather than throw on opening it.
+   */
+  list?: {
+    getSnapshot(): {
+      items: readonly { workspaceId: string; path: string }[]
+      /** The host's own promise that the workspace list has been fetched. */
+      baselinesReady?: boolean
+    }
+    /** Optional: not every release's read face exposes it. */
+    subscribe?(listener: () => void): () => void
+  }
   /** v0.1.1-rc.2 only — removed in v0.1.2-rc.1+. */
   startSession?(workspaceId?: string): void
 }
@@ -78,7 +101,7 @@ interface WslUiWorkspaceFace {
 /** v0.1.2-rc.1+ agentPresets 命名空间服务（经 ctx.get('remote.agentPresets') 动态取，免 inject、无 associate 陷阱）。 */
 interface WslAgentPresetsNamespace {
   list(): Promise<{ ok: boolean; value?: { presets: { id: string; broken?: string; isDefault?: boolean }[] }; error?: { message: string } }>
-  select(sessionId: string, presetId: string): Promise<{ ok: boolean }>
+  select(sessionId: string, presetId: string): Promise<{ ok: boolean; error?: { message: string } }>
 }
 
 /**
@@ -100,7 +123,7 @@ interface WslLegacyConnection {
   api?: {
     agentPresets: {
       list(input: Record<string, never>): Promise<{ result: { ok: boolean; value?: { presets: { id: string; broken?: string; isDefault?: boolean }[] }; error?: { message: string } } }>
-      select(input: { sessionId: string; agentPreset: string }): Promise<{ result: { ok: boolean } }>
+      select(input: { sessionId: string; agentPreset: string }): Promise<{ result: { ok: boolean; error?: { message: string } } }>
     }
   }
 }
@@ -142,18 +165,29 @@ export function apply(ctx: ClientContext): void {
     return { ok: false, presets: [], error: 'no remote api available' }
   }
 
-  /** Unified agent-preset select: new `agentPresets.select(id, preset)` or legacy `connection.api.select({...})`. */
-  const selectAgentPreset = async (sessionId: string, presetId: string): Promise<{ ok: boolean }> => {
+  /**
+   * Unified agent-preset select: new `agentPresets.select(id, preset)` or legacy
+   * `connection.api.select({...})`.
+   *
+   * The refusal travels with the result because the session-level exit has to
+   * say *why* it did not happen: the host locks a preset once a session has
+   * produced output, and a row that simply stays there is issue #129's silence
+   * again.
+   */
+  const selectAgentPreset = async (sessionId: string, presetId: string): Promise<{ ok: boolean; error?: string }> => {
     const agentPresets = remoteAgentPresets()
     if (agentPresets !== undefined) {
-      return agentPresets.select(sessionId, presetId)
+      const r = await agentPresets.select(sessionId, presetId)
+      return r.ok ? { ok: true } : { ok: false, error: r.error?.message ?? `${presetId}: the host refused the change` }
     }
     const api = legacyApi()
     if (api !== undefined) {
       const r = await api.agentPresets.select({ sessionId, agentPreset: presetId })
-      return { ok: r.result.ok }
+      return r.result.ok
+        ? { ok: true }
+        : { ok: false, error: r.result.error?.message ?? `${presetId}: the host refused the change` }
     }
-    return { ok: false }
+    return { ok: false, error: `${presetId}: this release exposes no agent-preset channel` }
   }
 
   /**
@@ -267,6 +301,59 @@ export function apply(ctx: ClientContext): void {
     return lines.join('\n')
   }
 
+  /** The receipt the creation flow leaves behind: what happened, and where the way out is. */
+  const noticeCreated = (): void => {
+    raiseWslNotice('info', t('exit.toast'), t('exit.toast.body'))
+  }
+
+  /** Is this a WSL workspace's row, from the host's own path for it? */
+  const registeredWslPath = (workspaceId: string): string | undefined => {
+    const item = workspaces.list?.getSnapshot().items.find(view => view.workspaceId === workspaceId)
+    if (item === undefined) return undefined
+    return isWslWorkspace(item.path, wslWindowsPaths) ? item.path : undefined
+  }
+
+  /**
+   * Drop the workspace's WSL registration and retire what this page derived from it.
+   *
+   * The drive key set is what makes a `/mnt/<drive>` cwd look like WSL, so
+   * leaving it behind would keep binding new sessions to a workspace the user
+   * just opted out of, until the sixty-second refresh happened to clear it.
+   * @param path - the workspace path as the host spells it.
+   * @returns undefined on success, the host's own refusal otherwise.
+   */
+  const exitWorkspace = async (path: string): Promise<string | undefined> => {
+    let removed: string
+    try {
+      removed = (await removeWorkspaceApi(path)).removed
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error)
+    }
+    const canonical = canonicalWindowsPath(removed)
+    if (canonical !== null) {
+      wslWindowsPaths = new Set([...wslWindowsPaths].filter(key => key !== canonical))
+      driveDistros = new Map([...driveDistros].filter(([key]) => key !== canonical))
+      // Same late-input rule as the refreshes: the key sets are an input to
+      // binding, and a session created in the meantime must not stay a candidate.
+      maybeBindNow()
+    }
+    return undefined
+  }
+
+  /**
+   * The binding pass, published by the mode-variant effect below so an exit can
+   * re-run it immediately instead of waiting for the next store change. A no-op
+   * until that effect mounts.
+   */
+  let maybeBindNow: () => void = () => {}
+
+  /**
+   * Whether the session on screen can still change its own mode. Published by the
+   * binding effect; the mode picker reads it to decide whether to offer the other
+   * family, because a blank session has no row menu to hold an exit.
+   */
+  let sessionSwitchable: () => boolean = () => false
+
   const injected = (): AddWslWorkspaceInjected => ({
     t,
     checkPreset: async (): Promise<string | undefined> => {
@@ -329,6 +416,9 @@ export function apply(ctx: ClientContext): void {
       return t('error.presetMissing')
     },
     listDistros: () => listDistrosApi(),
+    // Read on every pass, never once: the binding effect publishes it after this
+    // face is built, and a cached value would freeze at `false`.
+    sessionSwitchable: () => sessionSwitchable(),
     // Advisory data for the help panel: a host that cannot answer reports an
     // unavailable description instead of breaking the dialog.
     describe: () => describeApi(),
@@ -353,12 +443,14 @@ export function apply(ctx: ClientContext): void {
             driveDistros = new Map(driveDistros).set(canonical, distro)
           }
           await startSession(view.workspaceId)
+          noticeCreated()
           return undefined
         }
         const uncPath = joinUnc(distro, linuxPath)
         const view = await workspaces.create({ path: uncPath })
         await setWorkspaceUserApi(uncPath, username)
         await startSession(view.workspaceId)
+        noticeCreated()
         return undefined
       } catch (error) {
         return error instanceof Error ? error.message : String(error)
@@ -377,6 +469,33 @@ export function apply(ctx: ClientContext): void {
     'dsh-wsl-workspace: sidebar footer action',
   )
 
+  // Issue #129's two exits. They are two because the two things a user may mean
+  // are two operations: this conversation out of the WSL world, or this
+  // workspace's registration itself.
+  //
+  // The notice is the receipt channel for both, plus the creation flow: the
+  // workspace browser's own toasts carry a CLOSED set of kinds a third-party
+  // bundle cannot extend, so this rides the host's overlay seat instead.
+  ctx.effect(
+    () => ctx.slots.inject(
+      'shell.overlay',
+      () => ctx.slots.register({ name: 'shell.overlay', id: 'wsl-workspace:notice' }, WslNoticeOverlay),
+    ),
+    'dsh-wsl-workspace: overlay notice',
+  )
+
+  ctx.effect(
+    () => mountWorkspaceMenuExit({
+      label: () => t('exit.workspace'),
+      doneTitle: () => t('exit.workspace.done'),
+      doneBody: (path) => `${t('exit.workspace.done.body')}${path}`,
+      failedTitle: () => t('exit.workspace.failed'),
+      registeredPath: registeredWslPath,
+      onExit: exitWorkspace,
+    }),
+    'dsh-wsl-workspace: workspace menu exit row',
+  )
+
   // Mode-variant binding: a blank session whose workspace is a WSL UNC path
   // is recomposed to the WSL variant of the mode it currently runs — plain
   // 标准 becomes `wsl-standard`, PTC becomes `wsl-code`, and so on — so the
@@ -386,6 +505,9 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => {
     const inFlight = new Set<string>()
     const attempts = new Map<string, number>()
+    // The preset each session was last seen with, so a move from `wsl-*` back to
+    // a plain mode can be recognised as the user's own choice.
+    const lastPreset = new Map<string, string>()
     const MAX_ATTEMPTS = 3
     // Healthy `wsl-<mode>` variant ids plus the roster's default preset id
     // (what a session with no explicit choice gets). Refreshed periodically
@@ -423,6 +545,63 @@ export function apply(ctx: ClientContext): void {
       })
     }
     refreshRoster()
+    /**
+     * The store key as the browser can compute it: the host's workspace paths
+     * arrive in the same two shapes the store is keyed by, and both sides need
+     * one spelling before they can be compared.
+     * @param path - a workspace path in any spelling.
+     * @returns the comparable key.
+     */
+    const storeKey = (path: string): string =>
+      isWslUnc(path) ? path.replace(/[\\/]+/g, '\\').toLowerCase() : canonicalWindowsPath(path) ?? path
+    /** Whether this page has ever seen a non-empty host workspace list. */
+    let seenNonEmptyHostList = false
+    /**
+     * Whether the host's workspace list can be trusted to be complete right now.
+     *
+     * `baselinesReady` is the flag the current runtime exposes for exactly this,
+     * but it is not universal: measured against the Desktop's own bundle the
+     * string `baselinesReady` does not appear in it at all (nor
+     * `recentWorkspaceId`), so a gate that needs it never fires there — which is
+     * what the live check caught. The replacement is version-free and simpler:
+     * **a non-empty list is its own proof of having loaded**, because a list that
+     * is still loading, or whose fetch failed, is an empty one. An empty list
+     * therefore only justifies pruning once this page has seen workspaces and
+     * watched them go away; on a fresh page that never had any, nothing is deleted.
+     * @param items - the host's workspaces as listed by this read.
+     * @returns true when a missing workspace is really missing.
+     */
+    const hostListSettled = (items: readonly unknown[]): boolean => {
+      if (workspaces.list?.getSnapshot().baselinesReady === true) return true
+      if (items.length > 0) {
+        seenNonEmptyHostList = true
+        return true
+      }
+      return seenNonEmptyHostList
+    }
+    /**
+     * Retire registrations the host no longer has a workspace for (issue #129's
+     * repro step 1: delete the workspace, re-add the folder, still WSL).
+     *
+     * The host keeps its own registry (`storages/workspace.json`) and this plugin
+     * keeps `wsl-workspaces.json`, and nothing connected them — the plugin's
+     * `apply()` subscribes to no lifecycle event, which is exactly the "生命周期不联动"
+     * the report names. The browser does hold the host's workspace list, so the
+     * reconciliation runs there, against the same read the binder already uses.
+     * @param records - the registrations this read returned.
+     */
+    const reconcileRegistrations = (records: WslWorkspaceRecord[]): void => {
+      const state = workspaces.list?.getSnapshot()
+      if (state === undefined || !Array.isArray(state.items) || !hostListSettled(state.items)) return
+      const hosted = new Set(state.items.map(item => storeKey(item.path)))
+      for (const record of records) {
+        if (hosted.has(storeKey(record.path))) continue
+        // A failed removal is not retried here: the next refresh re-reads the
+        // store and re-asks, and a registration that outlived its workspace is
+        // worse than one that takes a minute longer to go.
+        void removeWorkspaceApi(record.path).catch(() => {})
+      }
+    }
     const refreshWorkspaces = (): void => {
       void listWorkspaceRecordsApi().then((records: WslWorkspaceRecord[]) => {
         const keys = new Set<string>()
@@ -438,6 +617,7 @@ export function apply(ctx: ClientContext): void {
         // Same late-input rule as the roster: the `/mnt/<drive>` key set
         // decides binding for drive-cwd sessions.
         maybeBind()
+        reconcileRegistrations(records)
       }).catch(() => {
         // A failed store read leaves the previous sets; sessions stay on
         // their current composition until the next refresh.
@@ -456,7 +636,28 @@ export function apply(ctx: ClientContext): void {
         const isWsl = isWslUnc(summary.cwd)
           || (canonical !== null && wslWindowsPaths.has(canonical))
         if (!isWsl) continue
+        // A session the user took out of the WSL world stays out: without this the
+        // scan below would recompose it on the next tick (issue #129's session exit).
+        if (hasOptedOut(id)) continue
         const current = getAgentPreset(summary)
+        // A blank session that moved off a `wsl-*` variant got there by the user:
+        // the mode picker is the only control a blank session actually exposes
+        // (the host renders no row menu for one), and the binder below would
+        // otherwise recompose it on the next tick and make the picker look broken.
+        const previous = lastPreset.get(id)
+        lastPreset.set(id, current ?? '')
+        // Only the session on screen: its picker is what a plain value can come
+        // from. A `wsl-*` → plain change on any other blank session is the host
+        // handing back a default after a roster change, not somebody choosing.
+        if ((summary.retainedBy?.mainView ?? 0) > 0
+          && previous !== undefined && previous.startsWith('wsl-')
+          && current !== undefined && !current.startsWith('wsl-')) {
+          optOutSession(id)
+          // The pass that recognises the user's choice must not also undo it:
+          // the binding below would run on the same tick, before the opt-out
+          // check got another look at this session.
+          continue
+        }
         if (current !== undefined && current.startsWith('wsl-')) continue
         // Legacy standalone `wsl` (now folded into the variants): remap it to
         // the default mode's variant, since the standalone preset no longer
@@ -486,7 +687,22 @@ export function apply(ctx: ClientContext): void {
       }
     }
     maybeBind()
+    maybeBindNow = maybeBind
+    // The picker needs to know whether the session on screen can still be
+    // recomposed. A blank session has no sidebar row menu at all (the host draws
+    // no action strip for one), so the picker is the only place its WSL exit can
+    // live; a session that has started is locked by the host either way.
+    sessionSwitchable = (): boolean => {
+      const state = sessions.list.getSnapshot()
+      const id = state.ids.find(each => (state.byId[each]?.retainedBy?.mainView ?? 0) > 0)
+      return id === undefined ? false : state.byId[id]?.blank === true
+    }
     const unsubscribe = sessions.list.subscribe(() => maybeBind())
+    // The host's workspace list is the reconciliation's other input. Subscribing
+    // means a workspace deleted in DSH retires its registration on the spot,
+    // instead of waiting for the sixty-second refresh — which a backgrounded page
+    // may not get at all, because a frozen tab freezes its timers.
+    const unsubscribeWorkspaces = workspaces.list?.subscribe?.(() => { refreshWorkspaces() }) ?? (() => {})
     // Variants are generated at host boot; a page loaded before that would
     // never see them without a periodic refresh.
     //
@@ -502,7 +718,10 @@ export function apply(ctx: ClientContext): void {
     }, 60_000)
     return () => {
       unsubscribe()
+      unsubscribeWorkspaces()
       window.clearInterval(timer)
+      maybeBindNow = () => {}
+      sessionSwitchable = () => false
     }
   }, 'dsh-wsl-workspace: WSL mode-variant binding')
 
@@ -534,9 +753,17 @@ export function apply(ctx: ClientContext): void {
         return () => {}
       }
       const sessionOf = (sessionId: string): ReferenceSession | undefined => {
-        const cwd = sessions.list.getSnapshot().byId[sessionId]?.cwd
+        const summary = sessions.list.getSnapshot().byId[sessionId]
+        if (summary === undefined) return undefined
+        const cwd = summary.cwd
         if (cwd === undefined || cwd === '') return undefined
         if (!isWslWorkspace(cwd, wslWindowsPaths)) return undefined
+        // A session the user took out of the WSL world writes Windows paths, and
+        // rewriting them by the WSL rule is how a reference lands on the wrong
+        // share. An unreported preset stays translated: that is the host not
+        // having written it yet, not a choice.
+        const preset = getAgentPreset(summary)
+        if (preset !== undefined && !preset.startsWith('wsl-') && preset !== LEGACY_WSL_PRESET_ID) return undefined
         return { cwd, distro: distroOfWorkspace(cwd, driveDistros) }
       }
       controller.openResource = (address: string, options?: unknown): void => {

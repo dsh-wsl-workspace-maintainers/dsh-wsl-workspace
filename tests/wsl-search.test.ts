@@ -344,6 +344,9 @@ describe('target and argv resolution', () => {
     // drvfs. The generated `search-wsl` row carries no `config:` block, so `configured` is
     // undefined here exactly as it is in a real session — the distribution can only come from the
     // registration, and the Linux workdir only from the drive translation.
+    // The path is synthetic on purpose: this cell measures string derivation, and a fixture folder
+    // can only be created on the platform whose drive letters it names (the ubuntu runner has no
+    // `F:`), which would make the reading platform-shaped rather than code-shaped.
     withStore({ 'f:\\techenergy\\code\\scanner': { distro: 'Ubuntu-24.04', username: 'linte' } }, () => {
       const target = resolveTarget('F:\\TechEnergy\\Code\\Scanner', undefined)
       assert.equal(target?.distro, 'Ubuntu-24.04', 'the registered distribution, not whatever the registry calls default')

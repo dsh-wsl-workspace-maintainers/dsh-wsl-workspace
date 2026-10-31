@@ -399,6 +399,17 @@ const STYLES = `
 body[data-dww-presets-pending] [data-menu-backing] {
   visibility: hidden !important;
 }
+
+/* The icon cell a mirrored row keeps where the shipped row's glyph was: the
+   shell's own icon component renders into it, at the shipped 16px box. */
+.dww-menu-icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
 `
 
 /**

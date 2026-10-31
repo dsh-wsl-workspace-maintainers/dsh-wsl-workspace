@@ -1,5 +1,7 @@
 # Testing
 
+> **Repository-only paths.** The package publishes only `lib/`, `cordis.patch.yml`, both READMEs, this file, both CHANGELOGs, `LICENSE`, `NOTICE` and `docs/driving.*`. Everything below that names `src/`, `tests/`, `scripts/`, `ci/` or the rest of `docs/` is a repository coordinate and is **not published** — those commands need the repository, not the tarball.
+
 This document describes how to verify `dsh-wsl-workspace` after a change or before a release. The suite covers unit tests, the two preset-channel integration tests (the retired directory generation and the declaration generation), a real-WSL smoke test, and a post-build lib verification gate.
 
 > **Fast path (same commands CI runs):** after `npm ci && node ci/install-pinned.mjs`,
@@ -10,6 +12,8 @@ This document describes how to verify `dsh-wsl-workspace` after a change or befo
 > The full inventory of every check — command, prerequisites, CI home, and what is
 > still human — is [docs/CHECK-CATALOG.md](docs/CHECK-CATALOG.md). This document keeps
 > the background and the release checklist.
+>
+> **Two document gates run at the end of `npm run test:unit`** (repository-only): `node scripts/check-doc-paths.mjs` fails when a document names a path that does not exist — including **bare file names** (`PITFALLS.md`) that are neither published nor covered by a repository-only banner, and **concrete absolute local paths** (`C:\Users\<name>\…`, `D:\Temp\x`) — placeholders such as `<install>` and `D:\path\to\…`, and elided forms, pass; a concrete one must carry a `maintainer-local` mark or sit inside a changelog's append-only-history banner. Its `--pack <dir>` mode checks the published artifact, where `src/`, `tests/`, `scripts/`, `ci/` and most of `docs/` are declared repository-only; `node scripts/check-discoverability.mjs` builds the packed artifact and fails when any of the five driving questions (start / login / route / composer / provider) stops being answerable from it.
 
 ## Prerequisites
 
@@ -142,7 +146,7 @@ The WSL skill provider publishes `.dsh/skills` / `.agents/skills` from nested pr
    node scripts/repro-e2e.mjs
    ```
 
-   The target defaults to `\\wsl.localhost\<distro>\home\<user>\repro-ws-root`; override the distro/user with `WSL_COMPAT_DISTRO` / `WSL_COMPAT_USER` and the tree location with `WSL_REPRO_ROOT` (no path editing needed). Two Git Bash traps, both hit on the maintainer machine while re-establishing this run: a bare `wsl.exe -d <distro> -- bash /tmp/repro-setup.sh` has its `/tmp/…` argument rewritten to the Windows temp directory (run it through `bash -c "…"` instead, as above), and `WSL_REPRO_ROOT=/home/…` is rewritten the same way by MSYS, so prefix the run with `MSYS_NO_PATHCONV=1`. The second one is silent and total: the UNC becomes `…\C:\Users\…\.qoder-cn\bin\git\home\…`, the listing comes back empty, and — before this change — the script still exited 0.
+   The target defaults to `\\wsl.localhost\<distro>\home\<user>\repro-ws-root`; override the distro/user with `WSL_COMPAT_DISTRO` / `WSL_COMPAT_USER` and the tree location with `WSL_REPRO_ROOT` (no path editing needed). Two Git Bash traps, both hit on the maintainer machine while re-establishing this run: a bare `wsl.exe -d <distro> -- bash /tmp/repro-setup.sh` has its `/tmp/…` argument rewritten to the Windows temp directory (run it through `bash -c "…"` instead, as above), and `WSL_REPRO_ROOT=/home/…` is rewritten the same way by MSYS, so prefix the run with `MSYS_NO_PATHCONV=1`. The second one is silent and total: the UNC becomes `…\C:\Users\<user>\…\home\…`, the listing comes back empty, and — before this change — the script still exited 0.
 3. In the running harness, open a session on the repro workspace and ask the agent to load the nested skills (`brainstorming`, `systematic-debugging`, `writing-plans`) through its skill tool — each must load with the `wsl-workspace` provider attribution, and no duplicate entries may appear. In a non-WSL workspace session the same skills must be "unknown".
 4. Clean-install check (simulates another user): `npm pack`, `npm install <tarball>` in an empty temp project (peers must resolve), then `dsh plugin --profile web add <extracted tarball dir>`, restart `dsh web`, and repeat the end-to-end checks below plus the nested-skill probe above.
 
@@ -162,7 +166,7 @@ After installing the plugin into a profile and restarting `dsh web`:
 
 Whenever compatibility testing is requested, each release under test must cover **all six items**, not just the harness checks: (1) the dialog lists the distributions and "Create & open" produces a session, (2) a file-tool write, (3) a file-tool read, (4) `bash` one-shot *and* its persistence across two separate calls (record which of the two it is — `0.1.0-rc.7` has no Windows process inspector and keeps a one-shot shell), (5) `skills` loading a fixture skill and reporting its token, and (6) the frontend open/reload check in step 7 above. Re-read the written file independently on the Linux side (`wsl.exe … cat`), and keep `web.err` at 0 bytes. The version *count* is conditional (spread it out before a release or when asked); the six items are not.
 
-Because issue #35/#36 only reproduce under the Desktop host, a release that touches the `wsl.exe` call path should also be exercised with the wrapper simulated: load `.test-runs/child-process-hide.mjs` (plain `exec`/`execFile` wrappers plus `syncBuiltinESMExports()`, the same shape as the Desktop hook) into a real `dsh web` via `NODE_OPTIONS="--import file:///…/child-process-hide.mjs"`, and compare the published release against the fixed build through `POST /wsl-workspace/api`.
+Because issue #35/#36 only reproduce under the Desktop host, a release that touches the `wsl.exe` call path should also be exercised with the wrapper simulated: load `.test-runs/child-process-hide.mjs` (plain `exec`/`execFile` wrappers plus `syncBuiltinESMExports()`, the same shape as the Desktop hook) into a real `dsh web` via `NODE_OPTIONS="--import file:///…/child-process-hide.mjs"`, and compare the published release against the fixed build through `POST /wsl-workspace/api`. (`.test-runs/**` is dev-only — 开发树才有，不随包发布; a published copy cannot run these.)
 
 ### The persistent shell on DSH Desktop (issue #40)
 
@@ -177,7 +181,7 @@ Two levels, in order of cost:
    #    https://download.deepseek.com/desktop/dsh-latest-windows-x64.exe  ->  <dir>/
    # 2. Point the simulation at it and run:
    $env:DSH_DESKTOP_DIR = 'D:\path\to\extracted'
-   node .test-runs/desktop-pty-sim.mjs
+   node .test-runs/desktop-pty-sim.mjs   # dev-only, not published
    ```
 
    It runs `resolveRelayNode()` *inside* the extracted `DeepSeek Harness.exe` (node mode, the Desktop's own argv and environment) and asserts it picks `resources/runtime/primary-runtime/dependencies/node/bin/node.exe` rather than the Electron executable — from the argv payload and, without it, from the executable-relative lookup — then runs the real `lib/wsl-relay.js` under a real ConPTY on both interpreters and asserts the Electron one gives 0 bytes and an exit while the resolved one gives a live bash prompt. The extracted installer is ~1 GB; nothing is installed and nothing is launched beyond that binary in node mode.
@@ -185,14 +189,14 @@ Two levels, in order of cost:
 2. **End to end inside the real Desktop.** This needs no installation: the unpacked installer from step 1 *is* a runnable Electron application. Run it against a scratch `DSH_HOME` and with remote debugging on, install the build through the Desktop's own plugin panel, and drive the window over CDP:
 
    ```powershell
-   $env:DSH_HOME = 'D:\scratch\dsh-desktop-home'   # never the real profile
+   $env:DSH_HOME = 'D:\path\to\dsh-desktop-home'   # never the real profile
    # copy settings.yaml / .credentials.yaml in, so the first-run welcome is skipped
    Start-Process '<dir>\DeepSeek Harness.exe' -ArgumentList `
-     '--remote-debugging-port=9333','--remote-allow-origins=*','--user-data-dir=D:\scratch\ud'
+     '--remote-debugging-port=9333','--remote-allow-origins=*','--user-data-dir=D:\path\to\ud'
 
-   node .test-runs/desktop-cdp.mjs 9333 text                      # read the window
-   node .test-runs/desktop-cdp.mjs 9333 eval .test-runs/<probe>.mjs
-   node .test-runs/desktop-cdp.mjs 9333 reload                    # the F5 check
+   node .test-runs/desktop-cdp.mjs 9333 text                      # read the window (dev-only, not published)
+   node .test-runs/desktop-cdp.mjs 9333 eval .test-runs/<probe>.mjs  # dev-only, not published
+   node .test-runs/desktop-cdp.mjs 9333 reload                    # the F5 check (dev-only, not published)
    ```
 
    In the window: 插件 → 添加插件 → a local directory path (the unpacked tarball) → 安装 → the switch on the installed card. Then run the six-item pass above. `bash` must reach a prompt; `pwd` in a second, separate call must still be where the first one left the shell (`cd /tmp` → `/tmp`), which is the persistence the Desktop lost in #40; and `bash_background` + `job_list` must produce a job id and a `running`/`completed` status (that path failed separately — see below). The boot log must contain `dsh-wsl-workspace: persistent shell: relay interpreter is …`, naming the interpreter it chose. When no candidate answers as a real node the line instead reads `persistent shell: not mounted, …` and lists every candidate it rejected and why — since issue #51 that is a **demotion, not a warning**: the Electron executable is what such a host falls back to, #40 measured that a PTY child started from it writes nothing, so the world ships without the PTY rows and keeps the one-shot `bash` (no shell state across calls, but every call works). Close the window and stop the process when done.
@@ -219,7 +223,7 @@ group 2  cd /tmp/state2/gone && rmdir … && pwd                          # dele
          foo(){ echo FUNC_OK; }; export -f foo; bash -c 'foo'           # exported function
          (sleep 40 & echo $!) ; disown; jobs -l | wc -l                 # detached inside the call
          pkill -f 'sleep 40' ; exec bash --norc                         # kills its own tree; replaces it
-group 3  wslpath -u 'C:\Program Files\node\node.exe'                    # spaces across the boundary
+group 3  wslpath -u 'C:\path\to\program.exe'                    # spaces across the boundary
          node -e "…process.env.DEEPSEEK_HARNESS_ROOT…"                 # does the host env travel
          ls /mnt/c/Users | head -5; du -sh /mnt/c/Users                # the 9P cost case
          git init + git commit --allow-empty; then git log | wc -l      # real side effect at a deadline

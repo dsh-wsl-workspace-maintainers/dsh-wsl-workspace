@@ -1,5 +1,7 @@
 # Third-party notices
 
+> **Source coordinates.** Paths named below (`src/…`, `apps/…`) identify files in the source repository for attribution; they are not shipped in this package, which contains only `lib/` and the documentation files listed in `package.json#files`.
+
 This plugin is published under the MIT License (see [LICENSE](LICENSE)). It
 adapts source code and references the design of the following projects. All
 are permissive licenses (MIT / BSD-3-Clause) that permit modification and

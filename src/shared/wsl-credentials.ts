@@ -8,7 +8,7 @@
  * @module dsh-wsl-workspace/shared/wsl-credentials
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { canonicalWindowsPath, isValidWslUsername, joinUnc, parseWslUnc } from './paths.ts'
@@ -24,6 +24,15 @@ interface WorkspaceEntry {
    * uses to hand a distro to the shell executor.
    */
   distro?: string
+  /**
+   * The registered directory's creation time, in milliseconds. The store is
+   * keyed by a path STRING, so deleting the directory and creating one with the
+   * same name hits the same key — which is how issue #129's repro step 2 read as
+   * "the new folder inherited the old one's WSL mode". This stamp is what tells
+   * the two directories apart; absent on records written before it existed, and
+   * never trusted for a UNC record (a 9P `stat` is not worth the latency here).
+   */
+  born?: number
 }
 
 /** The stored form: canonical UNC or Windows drive workspace path → credentials. */
@@ -44,6 +53,72 @@ function readStore(): WorkspaceStore {
   } catch {
     return {}
   }
+}
+
+/**
+ * The creation time of the directory a drive key names right now, in milliseconds,
+ * or undefined when no directory answers.
+ *
+ * Absent says nothing about the record, and that is deliberate: a drive that is not
+ * mounted this moment, a share that is briefly down, and a folder the user has not
+ * recreated yet all read the same way as "gone", and a read of the store must not
+ * destroy a working registration because of them. Only the positive form below — a
+ * directory is there, and it is not the one that was registered — retires anything.
+ * @param path - the store key (a canonical Windows drive path).
+ * @returns the birthtime, or undefined.
+ */
+function directoryBorn(path: string): number | undefined {
+  try {
+    const stat = statSync(path)
+    return stat.isDirectory() ? Math.round(stat.birthtimeMs) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Persist the store. One writer, so every exit path leaves the same shape.
+ * @param store - the records to write.
+ */
+function writeStore(store: WorkspaceStore): void {
+  const file = storePath()
+  mkdirSync(dirname(file), { recursive: true })
+  writeFileSync(file, JSON.stringify(store, null, 2) + '\n', 'utf8')
+}
+
+/**
+ * The store as the file system supports it right now.
+ *
+ * A drive-shaped record is dropped when a directory answers to its path but is not
+ * the directory that was registered — a different creation time means the folder in
+ * `F:\proj` is a NEW folder that happens to wear the old one's name, which is issue
+ * #129's repro step 2 reading as "the new project inherited the old one's WSL mode".
+ * The drop is written back, so the client's next read sees one fewer workspace
+ * instead of re-deciding it per lookup.
+ *
+ * What does NOT drop a record: the directory being absent. That reads identically for
+ * "the user deleted it" and "this drive is not mounted right now", and the second is
+ * a working registration a cold read would destroy. Deleting the workspace in the
+ * host is the exit for the first, and the client reconciles it (see `src/client/index.ts`).
+ * UNC records are left alone either way: their share is the distribution's own, and a
+ * 9P `stat` per read is not a price worth paying when the reported symptom is about drive paths.
+ * @returns the surviving records, and the keys retired on the way.
+ */
+function liveStore(): { store: WorkspaceStore; dropped: string[] } {
+  const store = readStore()
+  const dropped: string[] = []
+  for (const [key, entry] of Object.entries(store)) {
+    // A record stamped before this field existed has nothing to compare against, and a
+    // record without a distro is a UNC one; neither is this function's business.
+    if (entry.distro === undefined || entry.born === undefined) continue
+    const born = directoryBorn(key)
+    if (born !== undefined && born !== entry.born) {
+      delete store[key]
+      dropped.push(key)
+    }
+  }
+  if (dropped.length > 0) writeStore(store)
+  return { store, dropped }
 }
 
 /**
@@ -113,25 +188,52 @@ export function registerWindowsWorkspace(winPath: string, distro: string, userna
   }
   const store = readStore()
   store[key] = entry
-  const path = storePath()
-  mkdirSync(dirname(path), { recursive: true })
-  writeFileSync(path, JSON.stringify(store, null, 2) + '\n', 'utf8')
+  // Stamp the directory this registration was made for, so a same-name
+  // replacement is recognised as a different folder (see {@link WorkspaceEntry.born}).
+  // No directory answers to the key, so there is nothing to be born of: leave the
+  // field absent rather than stamping a guess, and the record simply never expires.
+  const born = directoryBorn(key)
+  if (born !== undefined) entry.born = born
+  writeStore(store)
 }
 
 /**
  * Read the stored credentials of a Windows-drive workspace.
  * @param winPath - the Windows drive path (any spelling).
- * @returns the stored entry, or undefined when none is registered.
+ * @returns the stored entry, or undefined when none is registered — including when
+ * a record exists but a different directory now answers to its path.
  */
 export function getWindowsWorkspace(winPath: string): WorkspaceEntry | undefined {
   const key = canonicalWindowsPath(winPath)
   if (key === null) return undefined
-  return readStore()[key]
+  return liveStore().store[key]
+}
+
+/**
+ * Remove one workspace's registration, whichever dialog route wrote it.
+ *
+ * The store had exactly one exit before this function: `setWorkspaceUsername`'s
+ * `delete`, which resolves its key through `canonicalWslUnc()` and therefore
+ * throws on a drive key. A `/mnt/<drive>` workspace written by `registerWindows`
+ * had no way back out — deleting the session, deleting the workspace in the host,
+ * and deleting the directory itself all leave the record behind, and the client
+ * re-binds every new session from it (issue #129).
+ * @param path - a WSL UNC path or a Windows drive path, in any spelling.
+ * @returns the key removed from the store, or null when the path names neither.
+ */
+export function unregisterWorkspace(path: string): string | null {
+  const key = canonicalWslUnc(path) ?? canonicalWindowsPath(path)
+  if (key === null) return null
+  const store = readStore()
+  if (!(key in store)) return null
+  delete store[key]
+  writeStore(store)
+  return key
 }
 
 /** Every stored workspace key (canonical UNC and Windows drive paths). */
 export function listWorkspaceKeys(): string[] {
-  return Object.keys(readStore())
+  return Object.keys(liveStore().store)
 }
 
 /** One stored workspace as the client reads it back. */
@@ -151,10 +253,11 @@ export interface WorkspaceRecord {
  * to know which distribution a `/mnt/<drive>` workspace belongs to, because a
  * path outside the drive mounts can only be opened through that distribution's
  * UNC share. The keys alone cannot say.
- * @returns one record per stored workspace.
+ * @returns one record per stored workspace whose directory still answers as the
+ * registered one (a folder replaced by a newer one retires its record here).
  */
 export function listWorkspaceRecords(): WorkspaceRecord[] {
-  return Object.entries(readStore()).map(([path, entry]) => {
+  return Object.entries(liveStore().store).map(([path, entry]) => {
     const record: WorkspaceRecord = { path }
     if (entry.distro !== undefined && entry.distro !== '') record.distro = entry.distro
     if (entry.username !== undefined && entry.username !== '') record.username = entry.username

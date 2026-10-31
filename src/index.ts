@@ -34,7 +34,7 @@ import { dirname, isAbsolute, join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir } from 'node:os'
 import { joinUnc, mntToWindowsPath, normalizeLinuxPath, isAbsoluteLinuxPath, isValidWslUsername, parseWslUnc } from './shared/paths.ts'
-import { canonicalWslUnc, getWindowsWorkspace, getWorkspaceUsername, listWorkspaceKeys, listWorkspaceRecords, registerWindowsWorkspace, setWorkspaceUsername } from './shared/wsl-credentials.ts'
+import { canonicalWslUnc, getWindowsWorkspace, getWorkspaceUsername, listWorkspaceKeys, listWorkspaceRecords, registerWindowsWorkspace, setWorkspaceUsername, unregisterWorkspace } from './shared/wsl-credentials.ts'
 import { defaultDistro, listDistros } from './shared/wsl.ts'
 import { isElectronHost, persistentShellAllowed, resolveRelayNode } from './shared/relay-node.ts'
 import { probePersistentShellReadiness } from './host/pty-readiness.ts'
@@ -87,11 +87,17 @@ function variantName(presetId: string, sourceName: string): string {
   return labels === undefined ? `WSL · ${sourceName}` : `WSL · ${labels.en}（${labels.zh}）`
 }
 
-/** The variant description for one shipped mode (bilingual) or a custom preset. */
-function variantDescription(presetId: string): string {
-  const labels = MODE_DISPLAY_LABELS[presetId]
-  const display = labels === undefined ? presetId : `${labels.en}（${labels.zh}）`
-  return `WSL execution world for ${display}: bash and file tools run inside the WSL distribution.`
+/**
+ * The variant description, shown as the mode menu's second line.
+ *
+ * Deliberately the SAME line for every variant, and it does not name the mode:
+ * the row's own title already reads `WSL · PTC mode（PTC 模式）`, so an earlier
+ * draft that repeated that inside the description made eight rows read as eight
+ * copies of one sentence. Chinese carries the copy because the product copy is
+ * Chinese; the mode names stay bilingual in the title.
+ */
+function variantDescription(): string {
+  return 'bash 与文件工具在发行版内运行 · 退出：模式选择器（单会话）／工作区菜单（整个工作区）'
 }
 
 /** Plugin config. */
@@ -231,6 +237,17 @@ function requireWslUnc(value: unknown): string {
 }
 
 /**
+ * Validate a wire-supplied workspace path in **either** key shape the store
+ * uses: a WSL UNC path, or the Windows drive path a `/mnt/<drive>` workspace is
+ * registered under. `requireWslUnc` cannot serve the second, and folding it into
+ * a `{exists:false}`-style answer is exactly what made issue #129 unrecoverable.
+ */
+function requireWorkspacePath(value: unknown): string {
+  if (typeof value !== 'string' || value.trim() === '') throw new Error('path must be a workspace path')
+  return value
+}
+
+/**
  * Resolve one directory listing for the dialog. The 9P share (`\\wsl.localhost\…`)
  * serves only the ext4 volume: `/mnt/<drive>` (drvfs) reads return Access
  * denied, so drvfs paths are read through their Windows drive spelling and
@@ -347,29 +364,133 @@ function writeVariantOutcome(
 }
 
 /**
- * Read this plugin's own `package.json` for the dialog's help panel: the
- * published version and the declared `dsh.compatibility.dshReleases` matrix.
+ * Stable marker for "which bytes am I actually running": grep it in the
+ * installed `lib/index.js`. A version string cannot answer that (a `file:` copy
+ * goes stale silently), so this literal is the install proof.
+ */
+const INSTALL_MARKER = 'wsl-workspace:methods-v1'
+
+type MethodRow = { name: string; mutates: boolean; params: Record<string, string>; returns: string }
+
+/**
+ * The one method table. `dispatch` implements exactly these names and
+ * `scripts/check-discoverability.mjs` fails when the two disagree, so
+ * `describe` cannot advertise a method the switch does not serve.
+ */
+const METHOD_TABLE: readonly MethodRow[] = [
+  { name: 'listDistros', mutates: false, params: {}, returns: 'string[] — installed distributions, default first' },
+  { name: 'listDir', mutates: false, params: { distro: 'string', path: 'linux path' }, returns: 'directory listing entries' },
+  { name: 'check', mutates: false, params: { distro: 'string', path: 'linux path' }, returns: '{ exists: boolean, isDirectory: boolean }' },
+  { name: 'registerWindows', mutates: true, params: { distro: 'string', linuxPath: '/mnt/<drive>/…', username: 'optional linux user' }, returns: 'null' },
+  { name: 'listWorkspaces', mutates: false, params: {}, returns: 'string[] — registered workspace paths' },
+  { name: 'removeWorkspace', mutates: true, params: { path: 'registered WSL UNC or Windows drive path' }, returns: '{ removed: string }' },
+  { name: 'listWorkspaceRecords', mutates: false, params: {}, returns: 'workspace records (path, distro, username)' },
+  { name: 'setUser', mutates: true, params: { path: 'WSL UNC workspace', username: 'linux user, or "" to clear' }, returns: 'null' },
+  { name: 'variantStatus', mutates: false, params: {}, returns: 'preset-variant registration outcome for this process' },
+  { name: 'describe', mutates: false, params: {}, returns: 'this object' },
+]
+
+/**
+ * What another agent needs before it can drive this plugin. The long form is
+ * `docs/driving.md` / `docs/driving.zh.md`; this card exists so the facts travel
+ * with the HTTP surface even when nobody opens the docs.
+ */
+const DRIVING = {
+  start: {
+    command: 'DSH_HOME=<temp dir outside the real profile> "<exe>" --expose-internals "<exe dir>/resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/cli.js" web --no-open --host 127.0.0.1 --port <port>',
+    mustUnset: ['ELECTRON_RUN_AS_NODE'],
+    whyUnset: 'With ELECTRON_RUN_AS_NODE=1 inherited, that exe runs as Node: a bare launch exits 0 with zero output and zero processes, which reads exactly like a held single-instance lock. `"<exe>" -v` printing a node version is the tell.',
+    notes: ['DSH_HOME must point outside the real profile', 'the CLI prints `dsh web: http://…/?token=…` on stdout'],
+  },
+  login: {
+    where: 'stdout line `dsh web: http://127.0.0.1:<port>/?token=<t>`',
+    use: 'GET that URL once; it answers 303 + set-cookie for a dsh-auth-* cookie and the page continues authenticated',
+    reuse: 'measured: the token is NOT consumed — for the life of that process every GET with it answers 303 and the same cookie (a wrong token gets 401 + the official sentence). Treat it as a process-lifetime secret: do not log it, and restart the instance to invalidate it',
+  },
+  composer: {
+    element: '[contenteditable][data-lexical-editor]',
+    event: 'one beforeinput with inputType "insertText" and data',
+    then: 'click the send control: the one button[aria-label] that became enabled after the insert (its disabled flag flips). Do not match a translated label — the UI ships more than one language',
+    doNot: [
+      'document.execCommand("insertText") — returns false on Lexical, the text stays empty',
+      'dispatching input in addition to beforeinput — the text doubles',
+      'assuming an enabled composer before a workspace is selected (contenteditable is "false")',
+    ],
+    viewport: 'innerWidth/innerHeight 0 and visibilityState "hidden" do not block this JS path; they only block trusted click/hover/screenshots',
+  },
+  provider: {
+    file: '<DSH_HOME>/profiles/web/cordis.patch.yml',
+    entries: [
+      '- id: llm-pi-ai → config.providers.<name>.{api, baseURL, apiKeyEnv, models[], retryPolicy}',
+      '- id: agent-default-model → config.{provider, model}',
+    ],
+    keyOffDisk: 'the key lives in the environment variable named by apiKeyEnv; the patch carries only that name',
+    appliesTo: 'sessions created after the patch — an already-created session keeps its recorded model',
+    symptomOfDefault: 'a fresh isolated home falls back to deepseek-official and every turn ends with MISSING_CREDENTIAL / 401',
+  },
+  docs: { zh: 'docs/driving.zh.md', en: 'docs/driving.md' },
+} as const
+
+/** The route this process actually serves; set from Config in `apply`. */
+let servedRoute: string = DEFAULT_ROUTE
+
+/**
+ * Read this plugin's own `package.json` for the dialog's help panel (version and
+ * the declared compatibility matrix), and append the driving card: route,
+ * loopback fence, method table, install proof and the five operational answers.
  * A plugin directory that cannot be read reports empty values rather than
- * failing the dialog, and the result is cached for the process lifetime.
+ * failing the dialog, and the package facts are cached for the process lifetime.
+ * @param route - the route this process actually serves (from Config).
  * @returns the self-description served by the `describe` method.
  */
-function describeSelf(): { version: string; releases: { id: string; status: string }[] } {
-  if (selfDescription !== undefined) return selfDescription
-  try {
-    const raw = readFileSync(new URL('../package.json', import.meta.url), 'utf8')
-    const parsed = JSON.parse(raw) as {
-      version?: unknown
-      dsh?: { compatibility?: { dshReleases?: Record<string, unknown> } }
+function describeSelf(route: string = servedRoute): {
+  version: string
+  releases: { id: string; status: string }[]
+  route: Record<string, string>
+  loopbackOnly: Record<string, unknown>
+  installProof: Record<string, string>
+  methods: readonly MethodRow[]
+  driving: typeof DRIVING
+} {
+  if (selfDescription === undefined) {
+    try {
+      const raw = readFileSync(new URL('../package.json', import.meta.url), 'utf8')
+      const parsed = JSON.parse(raw) as {
+        version?: unknown
+        dsh?: { compatibility?: { dshReleases?: Record<string, unknown> } }
+      }
+      selfDescription = {
+        version: typeof parsed.version === 'string' ? parsed.version : 'unknown',
+        releases: Object.entries(parsed.dsh?.compatibility?.dshReleases ?? {})
+          .map(([id, status]) => ({ id, status: String(status) })),
+      }
+    } catch {
+      selfDescription = { version: 'unknown', releases: [] }
     }
-    selfDescription = {
-      version: typeof parsed.version === 'string' ? parsed.version : 'unknown',
-      releases: Object.entries(parsed.dsh?.compatibility?.dshReleases ?? {})
-        .map(([id, status]) => ({ id, status: String(status) })),
-    }
-  } catch {
-    selfDescription = { version: 'unknown', releases: [] }
   }
-  return selfDescription
+  return {
+    ...selfDescription,
+    route: {
+      method: 'POST',
+      path: route,
+      body: '{ "method": "<name>", "params": { … } }',
+      response: '{ ok: true, value } | { ok: false, error }',
+      auth: 'none — loopback only (403 for a non-loopback socket address or Host header)',
+      discover: 'call this method ("describe") for the method table; there is no separate index route',
+    },
+    loopbackOnly: {
+      enforced: true,
+      hosts: [...LOOPBACK_HOSTNAMES],
+      detail: 'a non-loopback remoteAddress or Host header is rejected with 403 loopback-only (DNS-rebinding fence)',
+    },
+    installProof: {
+      marker: INSTALL_MARKER,
+      grep: `grep -c "${INSTALL_MARKER}" <installed>/lib/index.js`,
+      note: 'count > 0 proves the loaded copy carries this method table; a version string alone cannot (file: copies go stale silently)',
+    },
+    methods: METHOD_TABLE,
+    driving: DRIVING,
+  }
 }
 
 /** Route one method dispatch. */
@@ -427,6 +548,18 @@ async function dispatch(method: string, params: Record<string, unknown>): Promis
       // the client uses the drive keys to recognize `/mnt` workspaces.
       return listWorkspaceKeys()
     }
+    case 'removeWorkspace': {
+      // The exit `registerWindows` never had (issue #129): a `/mnt/<drive>`
+      // workspace is stored under its Windows drive key, and the only delete in
+      // the store resolved its key as a UNC path, so that key threw and nothing
+      // else could remove it. One method answers for both key shapes — the drive
+      // spelling a `/mnt` workspace was registered under, and the UNC spelling a
+      // `remove` of an in-distribution workspace would use.
+      const path = requireWorkspacePath(params.path)
+      const removed = unregisterWorkspace(path)
+      if (removed === null) throw new Error('path must be a registered WSL or Windows-drive workspace path')
+      return { removed }
+    }
     case 'listWorkspaceRecords': {
       // The keys plus the stored credentials. The client half needs the distro
       // of a `/mnt/<drive>` workspace to translate a file reference that leaves
@@ -436,8 +569,10 @@ async function dispatch(method: string, params: Record<string, unknown>): Promis
     }
     case 'describe': {
       // The dialog's help panel reports what this build declares, so the
-      // compatibility list can never drift from package.json.
-      return describeSelf()
+      // compatibility list can never drift from package.json; the same object
+      // also carries the route, method table and driving card another agent
+      // needs (docs/driving.*).
+      return describeSelf(servedRoute)
     }
     case 'setUser': {
       const path = requireWslUnc(params.path)
@@ -990,7 +1125,7 @@ async function materializeOne(
     const declaration: PresetDeclaration = {
       id: variantId,
       name: variantName(preset.id, composition.name ?? preset.name ?? preset.id),
-      description: variantDescription(preset.id),
+      description: variantDescription(),
       ...(preset.order === undefined ? {} : { order: preset.order }),
       plugins,
     }
@@ -1035,7 +1170,7 @@ async function materializeOne(
     join(staging, 'preset.yml'),
     `name: ${yamlScalar(name)}\n`
     + orderLine
-    + `description: ${yamlScalar(variantDescription(preset.id))}\n`,
+    + `description: ${yamlScalar(variantDescription())}\n`,
     'utf8',
   )
   publishVariant(staging, dir)
@@ -1064,6 +1199,8 @@ export const Config: z<Config> = z.object({
  */
 export function apply(ctx: Context, config: Config): void {
   const resolved = config as ResolvedConfig
+  // `describe` reports the route this process actually serves, not the default one.
+  servedRoute = resolved.route
   const dshHome = process.env.DSH_HOME ?? join(homedir(), '.dsh')
   const packageRoot = fileURLToPath(new URL('..', import.meta.url))
   const shellPath = join(packageRoot, 'lib', 'shell.js').replace(/\\/g, '/')

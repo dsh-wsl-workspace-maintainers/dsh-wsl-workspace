@@ -45,10 +45,15 @@ function fixture({ legacy = false, late = false, startService = legacy ? 'legacy
   let outcome = variantStatus;
   const effects = [], calls = [], opened = [], pending = [];
   const apiSignals = [];
+  // `retainedBy.mainView` is the host's own marker for the session on screen
+  // (`mainSessionId` reads it), and the plugin needs it: a plain preset arriving
+  // on that session is somebody choosing it, while on any other blank session it
+  // is the host handing back a default.
   const summary = legacy
-    ? { blank: true, cwd: '\\\\wsl.localhost\\Ubuntu\\tmp\\fixture', agentPreset: 'standard' }
-    : { blank: true, cwd: '\\\\wsl.localhost\\Ubuntu\\tmp\\fixture', projectionValues: { agentPreset: 'standard' } };
+    ? { blank: true, cwd: '\\\\wsl.localhost\\Ubuntu\\tmp\\fixture', agentPreset: 'standard', retainedBy: { mainView: 0 } }
+    : { blank: true, cwd: '\\\\wsl.localhost\\Ubuntu\\tmp\\fixture', projectionValues: { agentPreset: 'standard' }, retainedBy: { mainView: 0 } };
   const state = { ids: ['s1'], byId: { s1: summary } };
+  const onScreen = () => { summary.retainedBy = { mainView: 1 } };
   const setPreset = value => {
     if (legacy) summary.agentPreset = value;
     else summary.projectionValues = { agentPreset: value };
@@ -123,7 +128,10 @@ function fixture({ legacy = false, late = false, startService = legacy ? 'legacy
     effect: fn => effects.push(fn()),
     inject: (deps, callback) => { pending.push({ deps, callback }); runInjections(); },
     locale: { register: () => () => {}, bind: () => key => key },
-    slots: { inject: (_name, fn) => fn(), register: config => { dialog = config.inject(); return () => {}; } },
+    // The footer action carries the dialog's inject face; the mode-variant seat
+    // and the overlay notice contribute rows of their own, and must not be
+    // mistaken for it.
+    slots: { inject: (_name, fn) => fn(), register: config => { if (config.name === 'sidebar.footer.action') dialog = config.inject(); return () => {}; } },
   };
   services.slots = ctx.slots;
 
@@ -230,7 +238,7 @@ function fixture({ legacy = false, late = false, startService = legacy ? 'legacy
   });
   plugin.apply(ctx);
   return {
-    calls, services, dialog, mount, summary, setPreset, opened, pending,
+    calls, services, dialog, mount, summary, setPreset, onScreen, opened, pending,
     emit: () => subscriber?.(),
     tick: () => tick?.(),
     dispose: () => effects.reverse().forEach(fn => typeof fn === 'function' && fn()),
@@ -270,14 +278,38 @@ for (const legacy of [true, false]) {
   });
 
   test(`${line}: every mode converges to its WSL variant`, async () => {
-    const f = fixture({ legacy });
-    await flush();
     for (const mode of ['code', 'ptc', 'minimal', 'cordis', 'custom']) {
+      // A fresh session per mode: this is the arrival path, where the preset the
+      // host gave the session names a plain mode and nothing has composed it yet.
+      const f = fixture({ legacy });
+      await flush();
       f.setPreset(mode);
       f.emit();
       await flush();
       assert.equal(f.selected().at(-1), `wsl-${mode}`);
+      f.dispose();
     }
+  });
+
+  test(`${line}: picking a plain mode in the picker takes that session out of the WSL world`, async () => {
+    // The other side of the same projection. A blank session has no sidebar row
+    // menu (measured on a real host: the host draws no action strip for a blank
+    // row), so the mode picker is where its exit has to be — which only works if
+    // a plain pick is read as a choice instead of as something to recompose.
+    const f = fixture({ legacy });
+    await flush();
+    assert.deepEqual(f.selected(), ['wsl-standard'], 'the blank WSL session arrives composed onto its variant');
+    // One pass to record the variant it now carries, then the pick itself.
+    f.emit();
+    await flush();
+    f.onScreen();
+    f.setPreset('standard');
+    f.emit();
+    await flush();
+    f.emit();
+    await flush();
+    assert.deepEqual(f.selected(), ['wsl-standard'],
+      `the binder undid the mode the user just chose: ${JSON.stringify(f.selected())}`);
     f.dispose();
   });
 
@@ -396,6 +428,21 @@ test('current: a WSL reference is translated to the file the model named', async
   const inside = addressFor('s1', cwd, '/tmp/fixture/VERSION');
   f.services.sidebarRight.openResource(inside);
   assert.deepEqual(f.opened, [['openResource', 'dsh-resource://file/session/s1/VERSION', undefined]]);
+  f.dispose();
+});
+
+test('current: a session the user took out of the WSL world keeps its Windows addresses', async () => {
+  // The other half of the reference rule: the workspace is still registered, but
+  // this session runs the host's own tools now, so a path it names is a Windows
+  // path. Rewriting it by the WSL rule is how a reference lands on the wrong share.
+  const f = fixture({ legacy: false, sidebarRight: true });
+  await flush();
+  assert.equal(f.summary.projectionValues.agentPreset, 'wsl-standard', 'the blank WSL session was composed onto its variant');
+  f.setPreset('standard');
+  const address = addressFor('s1', f.summary.cwd, '/mnt/d/x.txt');
+  f.services.sidebarRight.openResource(address);
+  assert.deepEqual(f.opened, [['openResource', address, undefined]],
+    'the WSL rewrite was still applied to a session that left the WSL world');
   f.dispose();
 });
 

@@ -61,12 +61,16 @@ function readablePath(distro: string, linuxPath: string): string {
  * Which distribution and Linux directory a session cwd names.
  *
  * Two workspace shapes reach this provider: a WSL UNC path (the distribution is in the path) and a
- * Windows drive path registered as a `/mnt/<drive>` workspace (9P cannot serve drvfs, so those register
- * under their drive path and the distribution comes from the store the dialog wrote, then the session's
- * own env fact, then the registry default — the same chain bash resolves). Returning `null` here is what
- * made a drive-path workspace show **no skills and no error**: the provider only knew the UNC shape, and
- * a lookup that declines silently reads exactly like a project without skills (issue #101, G1's
- * `skills/drive-workspace`).
+ * Windows drive path **registered as a `/mnt/<drive>` workspace** (9P cannot serve drvfs, so those
+ * register under their drive path and the distribution comes from the store the dialog wrote).
+ * Returning `null` for a drive path the store does not know is the point of this function: an
+ * earlier draft let the chain continue into `DSH_WSL_DISTRO ?? defaultDistroSync()`, which on any
+ * machine with a default distribution turned *every* plain Windows folder into a WSL workspace and
+ * had this provider walk it through the distribution. The fallback survives only for a record that
+ * exists but predates the `distro` field — a legacy registration, not an unregistered folder.
+ *
+ * A lookup that declines silently reads exactly like a project without skills (issue #101, G1's
+ * `skills/drive-workspace`), which is why the drive shape is registered rather than inferred.
  * @param cwd - the session workspace path.
  * @returns `{distro, linuxPath}`, or null when this cwd is not a WSL workspace.
  */
@@ -77,7 +81,11 @@ function workspaceOf(cwd: string | undefined): { distro: string; linuxPath: stri
   const linuxPath = windowsToMntPath(cwd)
   if (linuxPath === null) return null
   const stored = getWindowsWorkspace(cwd)
-  const distro = stored?.distro ?? process.env.DSH_WSL_DISTRO ?? defaultDistroSync()
+  // An unregistered drive folder is not a WSL workspace, whatever the registry
+  // default says. Falling through here is what made every plain Windows project
+  // get walked through the distribution.
+  if (stored === undefined) return null
+  const distro = stored.distro ?? process.env.DSH_WSL_DISTRO ?? defaultDistroSync()
   if (distro === undefined || distro === '') return null
   return { distro, linuxPath }
 }
