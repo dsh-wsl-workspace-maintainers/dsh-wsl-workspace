@@ -26,9 +26,8 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import { check as checkApi, describe as describeApi, listDir as listDirApi, listDistros as listDistrosApi, listWorkspaceRecords as listWorkspaceRecordsApi, registerWindows as registerWindowsApi, removeWorkspace as removeWorkspaceApi, setWorkspaceUser as setWorkspaceUserApi, variantStatus as variantStatusApi, type WslVariantOutcome, type WslWorkspaceRecord } from './api.ts'
-import { hasOptedOut, optInSession, optOutSession, unmarkOptOut } from './session-optout.ts'
+import { hasOptedOut, optOutSession } from './session-optout.ts'
 import { AddWslWorkspace, type AddWslWorkspaceInjected } from './AddWslWorkspace.tsx'
-import { mountSessionMenuExit, type SessionExitLabels, type SessionMenuSlotRegistry } from './sessionMenuExit.tsx'
 import { mountWorkspaceMenuExit } from './workspaceMenuExit.ts'
 import { raiseWslNotice, WslNoticeOverlay } from './notice.tsx'
 import { ensureStyles } from './styles.ts'
@@ -41,34 +40,6 @@ export const inject = ['slots', 'locale', 'sessions', 'workspaces']
 
 /** The legacy standalone WSL preset id (folded into the mode variants). */
 const LEGACY_WSL_PRESET_ID = 'wsl'
-
-/** What the session menu can offer for one session, given the WSL world it runs in. */
-export interface SessionWslControls {
-  /** Whether this session's workspace is one the WSL world reaches — what decides if a row is offered. */
-  isWslSession(sessionId: string): boolean
-  /** Whether this session was taken out of the WSL world by the user's choice. */
-  optedOut(sessionId: string): boolean
-  /**
-   * Take one session out of the WSL world (it keeps running as a plain session).
-   * @returns undefined when the host accepted, or its own refusal, verbatim.
-   */
-  exit(sessionId: string): Promise<string | undefined>
-  /**
-   * Put one session back, so the mode-variant composition is rebuilt for it.
-   * @returns undefined when the host accepted, or the reason it did not.
-   */
-  rejoin(sessionId: string): Promise<string | undefined>
-}
-
-/**
- * The session-level exit, published by the mode-variant binding effect below.
- *
- * That effect is the only place holding the roster, the select channel and the
- * opt-out list together, so it owns the implementation; the host context-menu
- * mirror renders from here. A boot without the effect (no sessions service)
- * leaves this null and the menu offers nothing rather than half-working.
- */
-export let sessionWslControls: SessionWslControls | null = null
 
 /** One session as the list store reports it: enough to bind, and to un-bind. */
 interface WslSessionSummary {
@@ -329,17 +300,6 @@ export function apply(ctx: ClientContext): void {
     raiseWslNotice('info', t('exit.toast'), t('exit.toast.body'))
   }
 
-  /** The session menu row's copy, read per render so a language change lands. */
-  const sessionExitLabels = (): SessionExitLabels => ({
-    exit: t('exit.session'),
-    rejoin: t('exit.session.rejoin'),
-    failed: t('exit.failed'),
-    exitedTitle: t('exit.session.done'),
-    exitedBody: t('exit.session.done.body'),
-    rejoinedTitle: t('exit.session.rejoin.done'),
-    rejoinedBody: t('exit.session.rejoin.done.body'),
-  })
-
   /** Is this a WSL workspace's row, from the host's own path for it? */
   const registeredWslPath = (workspaceId: string): string | undefined => {
     const item = workspaces.list?.getSnapshot().items.find(view => view.workspaceId === workspaceId)
@@ -519,14 +479,6 @@ export function apply(ctx: ClientContext): void {
   )
 
   ctx.effect(
-    () => mountSessionMenuExit(
-      ctx.slots as unknown as SessionMenuSlotRegistry,
-      () => ({ controls: () => sessionWslControls, labels: sessionExitLabels }),
-    ),
-    'dsh-wsl-workspace: session menu exit row',
-  )
-
-  ctx.effect(
     () => mountWorkspaceMenuExit({
       label: () => t('exit.workspace'),
       doneTitle: () => t('exit.workspace.done'),
@@ -672,10 +624,6 @@ export function apply(ctx: ClientContext): void {
     }
     maybeBind()
     maybeBindNow = maybeBind
-    // The session-level exit, published for the host context-menu mirror. It owns
-    // the opt-out list because only this effect knows the roster, the base mode and
-    // the select channel together.
-    const summaryOf = (id: string): WslSessionSummary | undefined => sessions.list.getSnapshot().byId[id]
     // The picker needs to know whether the session on screen can still be
     // recomposed. A blank session has no sidebar row menu at all (the host draws
     // no action strip for one), so the picker is the only place its WSL exit can
@@ -684,54 +632,6 @@ export function apply(ctx: ClientContext): void {
       const state = sessions.list.getSnapshot()
       const id = state.ids.find(each => (state.byId[each]?.retainedBy?.mainView ?? 0) > 0)
       return id === undefined ? false : state.byId[id]?.blank === true
-    }
-    /** The WSL test the binder itself uses, so the menu offers an exit for exactly the sessions the binder reaches. */
-    const isWslSession = (id: string): boolean => {
-      const cwd = summaryOf(id)?.cwd
-      if (cwd === undefined) return false
-      const canonical = canonicalWindowsPath(cwd)
-      return isWslUnc(cwd) || (canonical !== null && wslWindowsPaths.has(canonical))
-    }
-    /** The plain mode a `wsl-<mode>` variant was composed from. */
-    const baseModeOf = (summary: WslSessionSummary): string => {
-      const current = getAgentPreset(summary)
-      if (current !== undefined && current.startsWith('wsl-')) return current.slice('wsl-'.length)
-      return current === LEGACY_WSL_PRESET_ID ? (defaultPreset ?? 'standard') : (current ?? defaultPreset ?? 'standard')
-    }
-    sessionWslControls = {
-      isWslSession,
-      optedOut: (id) => hasOptedOut(id),
-      exit: async (id) => {
-        const summary = summaryOf(id)
-        if (summary === undefined) return 'this session is no longer in the list'
-        const base = baseModeOf(summary)
-        optOutSession(id)
-        const result = await selectAgentPreset(id, base)
-          .catch((error: unknown) => ({ ok: false, error: error instanceof Error ? error.message : String(error) }))
-        if (!result.ok) {
-          // The host refuses a session that already produced output. Leaving it
-          // opted out would be the silent half-answer #129 was about: the binder
-          // would skip a session that still runs in the WSL world.
-          unmarkOptOut(id)
-          return result.error ?? `the host would not move this session back to ${base}`
-        }
-        noteAgentPresetCompat(id, base)
-        return undefined
-      },
-      rejoin: async (id) => {
-        const summary = summaryOf(id)
-        if (summary === undefined) return 'this session is no longer in the list'
-        const target = `wsl-${baseModeOf(summary).toLowerCase()}`
-        if (!variants.has(target)) return `${target} is not published as a healthy variant`
-        const result = await selectAgentPreset(id, target)
-          .catch((error: unknown) => ({ ok: false, error: error instanceof Error ? error.message : String(error) }))
-        if (!result.ok) return result.error ?? `the host would not move this session to ${target}`
-        // The user's intent now stands either way: an accepted swap clears the
-        // opt-out, and the binder is free to recompose this session again.
-        optInSession(id)
-        noteAgentPresetCompat(id, target)
-        return undefined
-      },
     }
     const unsubscribe = sessions.list.subscribe(() => maybeBind())
     // Variants are generated at host boot; a page loaded before that would
@@ -750,7 +650,6 @@ export function apply(ctx: ClientContext): void {
     return () => {
       unsubscribe()
       window.clearInterval(timer)
-      sessionWslControls = null
       maybeBindNow = () => {}
       sessionSwitchable = () => false
     }

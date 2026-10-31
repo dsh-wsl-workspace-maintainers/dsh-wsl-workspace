@@ -34,6 +34,25 @@ declare module '@deepseek-ai/dsh-client-ui-primitives' {
   /** The themed hover/focus bubble the shell's own controls use. */
   export function Tooltip(props: TooltipProps): ReactElement
 
+  /** Props of the shell's transient notice: one line, a tone, and its own dismissal. */
+  export interface ToastProps {
+    /** The line to show; the host passes localized text here. */
+    text: ReactNode
+    /** Called when the bubble is dismissed or its hold expires — the host's own clock. */
+    onDone: () => void
+    /** The shell's tone vocabulary, as used by its own notices. */
+    tone?: 'success' | 'warning' | 'danger' | 'info' | 'neutral'
+    /** Leading icon; the host supplies one for a warning. */
+    icon?: ReactElement
+    /** How long the bubble holds before it reports done. */
+    holdMs?: number
+    /** Trailing actions; the host puts an undo here for its archive notice. */
+    actions?: ReactNode
+  }
+
+  /** The transient notice the shell uses for its own receipts (archive, copy, failure). */
+  export function Toast(props: ToastProps): ReactElement
+
   /**
    * The upper-right arrow the shell draws for "leave this / send elsewhere"
    * affordances. Declared with the same empty-props shape the host's own call

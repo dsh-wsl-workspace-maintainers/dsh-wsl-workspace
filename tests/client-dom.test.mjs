@@ -65,6 +65,12 @@ const primitives = {
   // The shipped icon components take no props and render an `<svg>`; the stub
   // keeps the shape so a row's icon cell can be asserted without the platform table.
   IconRightUpOutlineRegular: () => React.createElement('svg', { 'data-icon': 'right-up' }),
+  // The shell's own notice: it owns the plate, the tone and the hold, and calls
+  // `onDone` when it goes away. The stub keeps that contract (click = done) so a
+  // test can prove the plugin renders *through* Toast rather than around it.
+  Toast: ({ text, tone, onDone }) => React.createElement('div', {
+    className: 'host-toast', 'data-tone': tone, onClick: () => onDone(),
+  }, String(text)),
 }
 const source = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
 const flush = () => new Promise(resolve => setTimeout(resolve, 0))
@@ -759,27 +765,18 @@ test('a menu that only resembles the preset picker is not left hidden', { timeou
   }
 })
 
+
 // ---------------------------------------------------------------------------
-// Issue #129's two exits: one conversation out of the WSL world, and one
-// workspace's registration out. Both are rendered here rather than called,
-// because the defect was never a missing method — it was a surface with no way
-// back, and a refusal no one could see.
+// Issue #129's exits. The workspace one is a mirrored row; the session one is
+// NOT a menu row — measured on a real host, a blank session carries no action
+// strip at all and every session that has a menu is locked by the host, so the
+// exit lives in the mode picker instead (see the two picker tests below).
 // ---------------------------------------------------------------------------
 
 const SESSION_MENU_SEAT = 'sidebar.workspaces.session.menu.item'
 const OVERLAY_SEAT = 'shell.overlay'
 /** One blank session in a UNC workspace, already composed onto the WSL variant. */
 const WSL_UNC = '\\\\wsl.localhost\\Ubuntu\\home\\ruler'
-
-/** The host's session menu, carrying the shipped row this plugin borrows geometry from. */
-function sessionMenuDom() {
-  const menu = document.createElement('div')
-  menu.setAttribute('role', 'menu')
-  menu.innerHTML = '<div class="host_itemWrap"><button type="button" role="menuitem" class="host_item">'
-    + '<span class="host_itemName">复制 Session ID</span></button></div>'
-  document.body.appendChild(menu)
-  return menu
-}
 
 /** The host's project rows and its workspace menu, as detached nodes. */
 function workspaceMenuDom() {
@@ -807,108 +804,21 @@ function workspaceMenuDom() {
  */
 async function openNoticeSeat(client) {
   const seat = await client.renderSeat(OVERLAY_SEAT, {})
-  if (seat.container.querySelector('.dww-notice-close') !== null) await seat.click('.dww-notice-close')
+  if (seat.container.querySelector('.host-toast') !== null) await seat.click('.host-toast')
   return seat
 }
 
-test('the session menu gives one conversation its own way out of the WSL world', { timeout: 10_000 }, async () => {
-  const listState = { ids: ['s1'], byId: { s1: { blank: true, cwd: WSL_UNC, projectionValues: { agentPreset: 'wsl-standard' } } } }
+test('nothing is contributed to the session row menu, because that exit cannot work there', { timeout: 10_000 }, async () => {
+  // The withdrawn control: the seat exists and a row in it renders, but a blank
+  // session has no menu to hold it and a started one is preset-locked, so the row
+  // could only ever report a refusal. Locked here so it does not come back.
+  const listState = { ids: ['s1'], byId: { s1: { blank: true, cwd: WSL_UNC, retainedBy: { mainView: 1 }, projectionValues: { agentPreset: 'wsl-standard' } } } }
   const client = mount(healthy({ listState }))
-  const menu = sessionMenuDom()
-  let closed = false
-  const useMenuOpenState = () => [true, (open) => { closed = !open }]
-  let seat = null
-  let notice = null
   try {
     await client.render()
-    notice = await openNoticeSeat(client)
-    assert.ok(notice.container.querySelector('.dww-notice') === null, 'no receipt before anything happens')
-    seat = await client.renderSeat(SESSION_MENU_SEAT, { sessionId: 's1', displayTitle: 'issue129', useMenuOpenState }, menu)
-    const row = seat.container.querySelector('[data-dww-session-exit]')
-    assert.ok(row !== null, `the seat contributed no row: ${menu.innerHTML.slice(0, 300)}`)
-    assert.equal(row.textContent.trim(), client.zh()['exit.session'], 'the row names the exit')
-    assert.equal(row.className, 'host_item', 'the row borrows the shipped row geometry instead of a lookalike')
-    assert.equal(row.querySelector('span')?.className, 'host_itemName', 'and the shipped label span')
-    assert.equal(row.parentElement?.className, 'host_itemWrap',
-      'and sits inside the shipped wrapper — the slot outlet is display:contents, so a bare button collapses one glyph per line')
-    assert.equal(row.querySelector('svg[data-icon="right-up"]') !== null, true,
-      'the row carries the shell’s own leave glyph, not a hand-drawn one')
-
-    await seat.click('[data-dww-session-exit]')
-    assert.deepEqual(client.selectCalls.filter(call => call.sessionId === 's1'),
-      [{ sessionId: 's1', agentPreset: 'standard' }], 'the session is composed back onto the plain mode')
-    assert.equal(closed, true, 'the menu comes down once the host accepted')
-    assert.equal(notice.container.querySelector('.dww-notice')?.dataset.level, 'info', 'the receipt is on screen')
-    assert.match(notice.container.textContent, /该会话已退出 WSL 模式/)
-
-    // Redrawn for the next open, the row offers the way back in — the state is
-    // the session's, not the menu's.
-    seat.dispose()
-    seat = await client.renderSeat(SESSION_MENU_SEAT, { sessionId: 's1', displayTitle: 'issue129', useMenuOpenState }, menu)
-    assert.equal(seat.container.querySelector('[data-dww-session-exit]')?.textContent.trim(),
-      client.zh()['exit.session.rejoin'], 'and it can be undone from the same place')
-
-    // The regression lock for the late-input trap: the roster and the workspace
-    // registry land after the first pass, and a binder that re-scans must not
-    // recompose a session the user just took out.
-    const before = client.selectCalls.length
-    client.notifyList()
-    await client.act(flush)
-    assert.equal(client.selectCalls.length, before, 'the binder left the opted-out session alone')
+    assert.equal(client.seats.has(SESSION_MENU_SEAT), false,
+      'the plugin contributed a row to the session menu seat')
   } finally {
-    seat?.dispose()
-    notice?.dispose()
-    menu.remove()
-    await client.unmount()
-  }
-})
-
-test('a refused session exit says why, in the host’s own words, and does not pretend', { timeout: 10_000 }, async () => {
-  // The host locks a preset once a session has produced output. Swallowing that
-  // refusal is how #129 read as "nothing happened".
-  const listState = { ids: ['s1'], byId: { s1: { blank: true, cwd: WSL_UNC, projectionValues: { agentPreset: 'wsl-standard' } } } }
-  const client = mount(healthy({ listState, selectRefuses: true }))
-  const menu = sessionMenuDom()
-  let closed = false
-  const useMenuOpenState = () => [true, (open) => { closed = !open }]
-  let seat = null
-  let notice = null
-  try {
-    await client.render()
-    notice = await openNoticeSeat(client)
-    seat = await client.renderSeat(SESSION_MENU_SEAT, { sessionId: 's1', displayTitle: 'issue129', useMenuOpenState }, menu)
-    await seat.click('[data-dww-session-exit]')
-    const row = seat.container.querySelector('[data-dww-session-exit]')
-    assert.match(row.textContent, /agent-preset-locked/, 'the host\'s own reason is on the row')
-    assert.equal(closed, false, 'the menu stays open so the refusal is not missed')
-    assert.equal(row.dataset.dwwSessionExit, 'exit', 'the session is still in the WSL world: the opt-out was rolled back')
-    assert.equal(notice.container.querySelector('.dww-notice')?.dataset.level, 'error')
-    assert.match(notice.container.textContent, /更改 WSL 模式失败/)
-  } finally {
-    seat?.dispose()
-    notice?.dispose()
-    menu.remove()
-    await client.unmount()
-  }
-})
-
-test('a session the WSL world does not reach is offered no exit row', { timeout: 10_000 }, async () => {
-  // The pair of the row above: the seat renders for every session, so a plain
-  // workspace's row must draw nothing rather than a control that cannot work.
-  const listState = { ids: ['s9'], byId: { s9: { blank: true, cwd: 'C:\\Users\\ruler\\proj', projectionValues: { agentPreset: 'standard' } } } }
-  const client = mount(healthy({ listState }))
-  const menu = sessionMenuDom()
-  let seat = null
-  try {
-    await client.render()
-    seat = await client.renderSeat(SESSION_MENU_SEAT, {
-      sessionId: 's9', displayTitle: 'plain', useMenuOpenState: () => [true, () => {}],
-    }, menu)
-    assert.equal(seat.container.querySelector('[data-dww-session-exit]'), null,
-      `a plain session was offered a WSL exit: ${seat.container.innerHTML}`)
-  } finally {
-    seat?.dispose()
-    menu.remove()
     await client.unmount()
   }
 })
@@ -1040,24 +950,28 @@ test('a blank session the user moved off a WSL variant is not bound back', { tim
   }
 })
 
-test('creating a WSL workspace leaves a light receipt telling the user both ways out', { timeout: 10_000 }, async () => {  const client = mount(healthy())
+test('creating a WSL workspace leaves a light receipt telling the user both ways out', { timeout: 10_000 }, async () => {
+  const client = mount(healthy())
   let notice = null
   try {
     await client.render()
     notice = await openNoticeSeat(client)
-    assert.equal(notice.container.querySelector('.dww-notice'), null, 'nothing on screen before the create')
+    assert.equal(notice.container.querySelector('.host-toast'), null, 'nothing on screen before the create')
     const failure = await client.face.createWorkspace('/mnt/d/temp/issue129', 'ruler', 'Ubuntu')
     await client.act(flush)
     assert.equal(failure, undefined, 'the create itself succeeded')
-    const card = notice.container.querySelector('.dww-notice')
+    const card = notice.container.querySelector('.host-toast')
     assert.ok(card !== null, 'the create left no receipt')
-    assert.equal(card.dataset.level, 'info')
+    // The plate, the tone and the dismissal belong to the shell's own Toast; this
+    // plugin only supplies the line. A hand-styled card here came out on screen
+    // with no background at all, because the colour tokens were guessed.
+    assert.equal(card.dataset.tone, 'success')
     assert.match(card.textContent, /已登记为 WSL 工作区/)
     assert.match(card.textContent, /退出 WSL 工作区/, 'the receipt names the workspace exit')
     assert.match(card.textContent, /模式选择器/, 'and points the single-session exit at the picker, which a blank session actually has')
     assert.doesNotMatch(card.textContent, /会话的菜单/, 'the session menu is NOT offered: a blank session has none')
-    await notice.click('.dww-notice-close')
-    assert.equal(notice.container.querySelector('.dww-notice'), null, 'the user can take it down')
+    await notice.click('.host-toast')
+    assert.equal(notice.container.querySelector('.host-toast'), null, 'the shell’s own dismissal takes it down')
   } finally {
     notice?.dispose()
     await client.unmount()

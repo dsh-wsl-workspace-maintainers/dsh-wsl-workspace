@@ -1,24 +1,25 @@
 /**
- * The plugin's own transient notice — the light receipt the two exits and the
- * creation flow need, mounted through the host's own overlay seat.
+ * The plugin's own transient notice — the light receipt the exits and the
+ * creation flow need.
  *
- * `shell.overlay` is a `list` slot (`dsh-client-runtime`'s slot registry says so
- * in as many words: for a surface of your own that floats over the whole app,
- * register into `shell.overlay`), so this entry sits beside the host's dialogs
- * instead of opening a second portal this plugin has to keep above them.
+ * It renders through the shell's **own** `Toast` primitive (the same component
+ * the workspace browser uses for "Session archived" and "Copy failed"), mounted
+ * on the host's overlay seat (`shell.overlay`, a `list` slot and the documented
+ * place for a surface of one's own). An earlier build drew its own card here and
+ * guessed at the shell's colour tokens; on screen that came out as text with no
+ * plate under it. Nothing is styled here now — the tone, the plate, the hold and
+ * the dismissal all belong to the host.
  *
- * Why this exists at all: the workspace browser's own notices (`RowToast`) are a
- * CLOSED set of kinds raised by the browser's internal store, and the
- * `workspace.toast` dispatcher only renders while one of those is on screen. A
- * third-party bundle cannot push a kind into it, which is why the exits'
- * receipts and refusals are carried here — the failure half matters as much as
- * the success half, because a refusal the user cannot see is issue #129's
- * silence wearing a new face.
+ * Why a notice at all: the workspace browser's own notices (`RowToast`) are a
+ * closed set of kinds raised by its internal store, and the `workspace.toast`
+ * dispatcher only renders while one of those is on screen, so a third-party
+ * bundle cannot push a kind into it.
  * @module dsh-wsl-workspace/client/notice
  */
 
 import { useEffect, useState } from 'react'
 import type { ReactElement } from 'react'
+import { Toast } from '@deepseek-ai/dsh-client-ui-primitives'
 
 /** One notice on screen. `error` is a refusal the user has to act on. */
 export interface WslNotice {
@@ -28,7 +29,7 @@ export interface WslNotice {
   body: string
 }
 
-/** How long a notice holds before it takes itself down (a refusal gets more). */
+/** How long each level holds, in the shell's own `holdMs` currency. */
 const HOLD_MS = 5_000
 const ERROR_HOLD_MS = 9_000
 
@@ -54,7 +55,7 @@ export function raiseWslNotice(level: 'info' | 'error', title: string, body: str
 
 /**
  * Take a notice down, but only the one named — a newer notice must survive the
- * older one's timer.
+ * older one's hold.
  * @param id - the notice whose hold expired.
  */
 export function dismissWslNotice(id: number): void {
@@ -79,30 +80,21 @@ export function subscribeWslNotice(listener: () => void): () => void {
 }
 
 /**
- * The `shell.overlay` entry that renders the notice.
- * @returns the notice card, or nothing while no notice is on screen.
+ * The `shell.overlay` entry that shows the notice.
+ * @returns the shell's toast, or nothing while no notice is on screen.
  */
 export function WslNoticeOverlay(): ReactElement | null {
   const [notice, setNotice] = useState<WslNotice | null>(peekWslNotice())
   useEffect(() => subscribeWslNotice(() => setNotice(peekWslNotice())), [])
-  useEffect(() => {
-    if (notice === null) return
-    const hold = notice.level === 'error' ? ERROR_HOLD_MS : HOLD_MS
-    const timer = window.setTimeout(() => { dismissWslNotice(notice.id) }, hold)
-    return () => { window.clearTimeout(timer) }
-  }, [notice])
   if (notice === null) return null
+  const text = notice.body === '' ? notice.title : `${notice.title}：${notice.body}`
   return (
-    <div className="dww-notice" data-level={notice.level} role="status">
-      <div className="dww-notice-title">{notice.title}</div>
-      <div className="dww-notice-body">{notice.body}</div>
-      <button
-        type="button"
-        className="dww-notice-close"
-        onClick={() => { dismissWslNotice(notice.id) }}
-      >
-        ×
-      </button>
-    </div>
+    <Toast
+      key={notice.id}
+      text={text}
+      tone={notice.level === 'error' ? 'danger' : 'success'}
+      holdMs={notice.level === 'error' ? ERROR_HOLD_MS : HOLD_MS}
+      onDone={() => { dismissWslNotice(notice.id) }}
+    />
   )
 }
