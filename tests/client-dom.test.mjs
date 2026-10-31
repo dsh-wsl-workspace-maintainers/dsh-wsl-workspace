@@ -950,33 +950,46 @@ test('a blank session the user moved off a WSL variant is not bound back', { tim
   }
 })
 
-test('a registration the host no longer has a workspace for is cleared on the next read', { timeout: 10_000 }, async () => {
+test('a registration the host no longer has a workspace for is cleared once the list is trustworthy', { timeout: 10_000 }, async () => {
   // Issue #129's repro step 1: delete the workspace in DSH, re-add the folder,
   // still WSL. The two registries never talked to each other, so the record
   // outlived the workspace. The browser holds the host's workspace list, so the
-  // reconciliation runs there — but only once that list says it is loaded.
+  // reconciliation runs there — and "is that list loaded yet" is answered without
+  // `baselinesReady`, because the Desktop build this was first tried against has
+  // no such field (measured: the string is not in its bundle at all).
   const records = [{ path: 'd:\\temp\\gone-ws', distro: 'Ubuntu' }]
-  const list = (items, ready) => ({ create: async () => ({ workspaceId: 'w1' }), startSession: () => {}, list: { getSnapshot: () => ({ items, baselinesReady: ready }) } })
+  const notify = []
+  const workspacesWith = (itemsOf) => ({
+    create: async () => ({ workspaceId: 'w1' }),
+    startSession: () => {},
+    list: {
+      getSnapshot: () => ({ items: itemsOf() }),
+      subscribe: (fn) => { notify.push(fn); return () => {} },
+    },
+  })
 
+  // A non-empty list is its own proof of having loaded, so the orphan goes at once.
+  notify.length = 0
   const orphan = mount(healthy({
     listWorkspaceRecords: records,
     removeWorkspace: { removed: 'd:\\temp\\gone-ws' },
-    workspaces: list([{ workspaceId: 'w2', path: 'C:\\Users\\me\\other' }], true),
+    workspaces: workspacesWith(() => [{ workspaceId: 'w2', path: 'C:\\Users\\me\\other' }]),
   }))
   try {
     await orphan.render()
     await orphan.act(flush)
     assert.ok(orphan.calls.includes('removeWorkspace'),
-      `the orphaned registration was left in place: ${JSON.stringify(orphan.calls)}`)
+      `another workspace is listed, so the missing one is not "still loading": ${JSON.stringify(orphan.calls)}`)
   } finally {
     await orphan.unmount()
   }
 
   // The positive control: the same record, with the host workspace still there.
+  notify.length = 0
   const kept = mount(healthy({
     listWorkspaceRecords: records,
     removeWorkspace: { removed: 'd:\\temp\\gone-ws' },
-    workspaces: list([{ workspaceId: 'w1', path: 'D:\\temp\\gone-ws' }], true),
+    workspaces: workspacesWith(() => [{ workspaceId: 'w1', path: 'D:\\temp\\gone-ws' }]),
   }))
   try {
     await kept.render()
@@ -987,19 +1000,48 @@ test('a registration the host no longer has a workspace for is cleared on the ne
     await kept.unmount()
   }
 
-  // And the guard: an empty list before the baseline is loaded is not a deletion.
+  // The guard: a list that has never had anything in it is still maybe-loading.
+  notify.length = 0
   const loading = mount(healthy({
     listWorkspaceRecords: records,
     removeWorkspace: { removed: 'd:\\temp\\gone-ws' },
-    workspaces: list([], false),
+    workspaces: workspacesWith(() => []),
   }))
   try {
     await loading.render()
     await loading.act(flush)
+    notify.forEach(fn => fn())
+    await loading.act(flush)
     assert.equal(loading.calls.includes('removeWorkspace'), false,
-      'the plugin cleared a registration against a workspace list the host had not finished loading')
+      'the plugin cleared registrations against a list this page never saw filled')
   } finally {
     await loading.unmount()
+  }
+
+  // And the case the guard must not swallow: the user deletes their only
+  // workspace. The page saw it, now the list is empty, so the record goes.
+  let hosted = [{ workspaceId: 'w1', path: 'D:\\temp\\gone-ws' }]
+  notify.length = 0
+  const lastOne = mount(healthy({
+    listWorkspaceRecords: records,
+    removeWorkspace: { removed: 'd:\\temp\\gone-ws' },
+    workspaces: workspacesWith(() => hosted),
+  }))
+  try {
+    await lastOne.render()
+    await lastOne.act(flush)
+    assert.equal(lastOne.calls.includes('removeWorkspace'), false, 'nothing to clear while it is hosted')
+    hosted = []
+    lastOne.notifyWorkspaces = () => notify.forEach(fn => fn())
+    await lastOne.act(flush)
+    // The page has now seen the workspace and watched the list empty out, which is
+    // the "deleted my only workspace" case the guard above must not swallow.
+    lastOne.notifyWorkspaces()
+    await lastOne.act(flush)
+    assert.ok(lastOne.calls.includes('removeWorkspace'),
+      `the last workspace's registration outlived it: ${JSON.stringify(lastOne.calls)}`)
+  } finally {
+    await lastOne.unmount()
   }
 })
 

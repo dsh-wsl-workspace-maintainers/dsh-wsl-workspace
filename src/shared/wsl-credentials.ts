@@ -38,15 +38,6 @@ interface WorkspaceEntry {
 /** The stored form: canonical UNC or Windows drive workspace path → credentials. */
 type WorkspaceStore = Record<string, WorkspaceEntry>
 
-/** What a directory lookup can say about a registered path. */
-type DirectoryState =
-  /** Present, with its creation time in whole seconds. */
-  | { state: 'present'; born: number }
-  /** Gone: ENOENT or not a directory any more. */
-  | { state: 'missing' }
-  /** Unreadable for another reason (locked, transient share error) — say nothing. */
-  | { state: 'unknown' }
-
 /** The store file lives under the harness home so both host halves share it. */
 function storePath(): string {
   const dshHome = process.env.DSH_HOME ?? join(homedir(), '.dsh')
@@ -65,21 +56,23 @@ function readStore(): WorkspaceStore {
 }
 
 /**
- * What the file system says about a registered directory right now.
+ * The creation time of the directory a drive key names right now, in milliseconds,
+ * or undefined when no directory answers.
+ *
+ * Absent says nothing about the record, and that is deliberate: a drive that is not
+ * mounted this moment, a share that is briefly down, and a folder the user has not
+ * recreated yet all read the same way as "gone", and a read of the store must not
+ * destroy a working registration because of them. Only the positive form below — a
+ * directory is there, and it is not the one that was registered — retires anything.
  * @param path - the store key (a canonical Windows drive path).
- * @returns present with its creation time, missing, or unknown.
+ * @returns the birthtime, or undefined.
  */
-function directoryState(path: string): DirectoryState {
+function directoryBorn(path: string): number | undefined {
   try {
     const stat = statSync(path)
-    if (!stat.isDirectory()) return { state: 'missing' }
-    return { state: 'present', born: Math.round(stat.birthtimeMs) }
-  } catch (error) {
-    // Only a missing directory retires a record. A share that is briefly
-    // unavailable, or a path this process cannot open, must not read as
-    // "the user deleted it" — that would silently drop a working registration.
-    const code = (error as { code?: string }).code
-    return code === 'ENOENT' || code === 'ENOTDIR' ? { state: 'missing' } : { state: 'unknown' }
+    return stat.isDirectory() ? Math.round(stat.birthtimeMs) : undefined
+  } catch {
+    return undefined
   }
 }
 
@@ -96,28 +89,30 @@ function writeStore(store: WorkspaceStore): void {
 /**
  * The store as the file system supports it right now.
  *
- * A drive-shaped record is dropped when its directory is gone, or when the
- * directory that answers to the path was created at a different time than the
- * one registered — the same-name-new-folder case in issue #129's repro. The drop
- * is written back, so the client's next read sees one fewer workspace instead of
- * re-deciding it per lookup. UNC records are left alone: their share is the
- * distribution's own, and a 9P `stat` per read is not a price worth paying when
- * the reported symptom is about drive paths.
+ * A drive-shaped record is dropped when a directory answers to its path but is not
+ * the directory that was registered — a different creation time means the folder in
+ * `F:\proj` is a NEW folder that happens to wear the old one's name, which is issue
+ * #129's repro step 2 reading as "the new project inherited the old one's WSL mode".
+ * The drop is written back, so the client's next read sees one fewer workspace
+ * instead of re-deciding it per lookup.
+ *
+ * What does NOT drop a record: the directory being absent. That reads identically for
+ * "the user deleted it" and "this drive is not mounted right now", and the second is
+ * a working registration a cold read would destroy. Deleting the workspace in the
+ * host is the exit for the first, and the client reconciles it (see `src/client/index.ts`).
+ * UNC records are left alone either way: their share is the distribution's own, and a
+ * 9P `stat` per read is not a price worth paying when the reported symptom is about drive paths.
  * @returns the surviving records, and the keys retired on the way.
  */
 function liveStore(): { store: WorkspaceStore; dropped: string[] } {
   const store = readStore()
   const dropped: string[] = []
   for (const [key, entry] of Object.entries(store)) {
-    if (entry.distro === undefined) continue
-    const directory = directoryState(key)
-    if (directory.state === 'unknown') continue
-    if (directory.state === 'missing') {
-      delete store[key]
-      dropped.push(key)
-      continue
-    }
-    if (entry.born !== undefined && entry.born !== directory.born) {
+    // A record stamped before this field existed has nothing to compare against, and a
+    // record without a distro is a UNC one; neither is this function's business.
+    if (entry.distro === undefined || entry.born === undefined) continue
+    const born = directoryBorn(key)
+    if (born !== undefined && born !== entry.born) {
       delete store[key]
       dropped.push(key)
     }
@@ -195,16 +190,18 @@ export function registerWindowsWorkspace(winPath: string, distro: string, userna
   store[key] = entry
   // Stamp the directory this registration was made for, so a same-name
   // replacement is recognised as a different folder (see {@link WorkspaceEntry.born}).
-  const directory = directoryState(key)
-  if (directory.state === 'present') entry.born = directory.born
+  // No directory answers to the key, so there is nothing to be born of: leave the
+  // field absent rather than stamping a guess, and the record simply never expires.
+  const born = directoryBorn(key)
+  if (born !== undefined) entry.born = born
   writeStore(store)
 }
 
 /**
  * Read the stored credentials of a Windows-drive workspace.
  * @param winPath - the Windows drive path (any spelling).
- * @returns the stored entry, or undefined when none is registered — including
- * when a record exists but its directory is gone or has been replaced.
+ * @returns the stored entry, or undefined when none is registered — including when
+ * a record exists but a different directory now answers to its path.
  */
 export function getWindowsWorkspace(winPath: string): WorkspaceEntry | undefined {
   const key = canonicalWindowsPath(winPath)
@@ -257,7 +254,7 @@ export interface WorkspaceRecord {
  * path outside the drive mounts can only be opened through that distribution's
  * UNC share. The keys alone cannot say.
  * @returns one record per stored workspace whose directory still answers as the
- * registered one (a replaced or deleted folder retires its record here).
+ * registered one (a folder replaced by a newer one retires its record here).
  */
 export function listWorkspaceRecords(): WorkspaceRecord[] {
   return Object.entries(liveStore().store).map(([path, entry]) => {

@@ -86,6 +86,8 @@ interface WslWorkspacesFace {
       /** The host's own promise that the workspace list has been fetched. */
       baselinesReady?: boolean
     }
+    /** Optional: not every release's read face exposes it. */
+    subscribe?(listener: () => void): () => void
   }
   /** v0.1.1-rc.2 only — removed in v0.1.2-rc.1+. */
   startSession?(workspaceId?: string): void
@@ -552,6 +554,31 @@ export function apply(ctx: ClientContext): void {
      */
     const storeKey = (path: string): string =>
       isWslUnc(path) ? path.replace(/[\\/]+/g, '\\').toLowerCase() : canonicalWindowsPath(path) ?? path
+    /** Whether this page has ever seen a non-empty host workspace list. */
+    let seenNonEmptyHostList = false
+    /**
+     * Whether the host's workspace list can be trusted to be complete right now.
+     *
+     * `baselinesReady` is the flag the current runtime exposes for exactly this,
+     * but it is not universal: measured against the Desktop's own bundle the
+     * string `baselinesReady` does not appear in it at all (nor
+     * `recentWorkspaceId`), so a gate that needs it never fires there — which is
+     * what the live check caught. The replacement is version-free and simpler:
+     * **a non-empty list is its own proof of having loaded**, because a list that
+     * is still loading, or whose fetch failed, is an empty one. An empty list
+     * therefore only justifies pruning once this page has seen workspaces and
+     * watched them go away; on a fresh page that never had any, nothing is deleted.
+     * @param items - the host's workspaces as listed by this read.
+     * @returns true when a missing workspace is really missing.
+     */
+    const hostListSettled = (items: readonly unknown[]): boolean => {
+      if (workspaces.list?.getSnapshot().baselinesReady === true) return true
+      if (items.length > 0) {
+        seenNonEmptyHostList = true
+        return true
+      }
+      return seenNonEmptyHostList
+    }
     /**
      * Retire registrations the host no longer has a workspace for (issue #129's
      * repro step 1: delete the workspace, re-add the folder, still WSL).
@@ -561,15 +588,11 @@ export function apply(ctx: ClientContext): void {
      * `apply()` subscribes to no lifecycle event, which is exactly the "生命周期不联动"
      * the report names. The browser does hold the host's workspace list, so the
      * reconciliation runs there, against the same read the binder already uses.
-     *
-     * It waits for `baselinesReady`: that flag is the host's own promise that the
-     * workspace list has been fetched, and pruning before it would read an empty
-     * list as "the user deleted every workspace".
      * @param records - the registrations this read returned.
      */
     const reconcileRegistrations = (records: WslWorkspaceRecord[]): void => {
       const state = workspaces.list?.getSnapshot()
-      if (state === undefined || state.baselinesReady !== true) return
+      if (state === undefined || !Array.isArray(state.items) || !hostListSettled(state.items)) return
       const hosted = new Set(state.items.map(item => storeKey(item.path)))
       for (const record of records) {
         if (hosted.has(storeKey(record.path))) continue
@@ -675,6 +698,11 @@ export function apply(ctx: ClientContext): void {
       return id === undefined ? false : state.byId[id]?.blank === true
     }
     const unsubscribe = sessions.list.subscribe(() => maybeBind())
+    // The host's workspace list is the reconciliation's other input. Subscribing
+    // means a workspace deleted in DSH retires its registration on the spot,
+    // instead of waiting for the sixty-second refresh — which a backgrounded page
+    // may not get at all, because a frozen tab freezes its timers.
+    const unsubscribeWorkspaces = workspaces.list?.subscribe?.(() => { refreshWorkspaces() }) ?? (() => {})
     // Variants are generated at host boot; a page loaded before that would
     // never see them without a periodic refresh.
     //
@@ -690,6 +718,7 @@ export function apply(ctx: ClientContext): void {
     }, 60_000)
     return () => {
       unsubscribe()
+      unsubscribeWorkspaces()
       window.clearInterval(timer)
       maybeBindNow = () => {}
       sessionSwitchable = () => false

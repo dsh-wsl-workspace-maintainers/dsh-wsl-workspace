@@ -10,7 +10,7 @@
 
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ItemRetainer } from '@deepseek-ai/dsh-output-retention'
@@ -79,29 +79,6 @@ function withStore(entries: Record<string, { distro?: string; username?: string 
   const outcome = run()
   if (outcome instanceof Promise) return outcome.finally(restore)
   restore()
-}
-
-/**
- * A real directory to register as a `/mnt/<drive>` workspace.
- *
- * A drive registration is now checked against the file system (issue #129's
- * "delete the folder, create one with the same name" case), so a fixture cannot
- * name `F:\TechEnergy\…` and expect the registration to count — it has to point
- * at a folder that exists. The store key is the canonical spelling the module
- * computes, and `mnt` is the Linux half the same folder must resolve to.
- * @param name - the folder to create.
- * @returns the directory, its store key, and its `/mnt/<drive>` spelling.
- */
-function realWorkspace(name: string): { root: string; dir: string; key: string; mnt: string } {
-  const root = mkdtempSync(join(tmpdir(), 'dsh-wsl-drive-'))
-  const dir = join(root, name)
-  mkdirSync(dir, { recursive: true })
-  return {
-    root,
-    dir,
-    key: dir.replace(/[\\/]+/g, '\\').toLowerCase(),
-    mnt: `/mnt/${dir.slice(0, 1).toLowerCase()}${dir.slice(2).replace(/[\\/]+/g, '/')}`,
-  }
 }
 
 describe('parseGrepRecords', () => {
@@ -363,56 +340,31 @@ describe('target and argv resolution', () => {
   })
 
   it('resolves a registered drive-letter workspace from its registration (issue #86)', () => {
-    // The reported shape: a drive cwd, registered because 9P cannot export drvfs.
-    // The generated `search-wsl` row carries no `config:` block, so `configured` is
-    // undefined here exactly as it is in a real session — the distribution can only
-    // come from the registration, and the Linux workdir only from the drive translation.
-    const ws = realWorkspace('Scanner')
-    try {
-      withStore({ [ws.key]: { distro: 'Ubuntu-24.04', username: 'linte' } }, () => {
-        const target = resolveTarget(ws.dir, undefined)
-        assert.equal(target?.distro, 'Ubuntu-24.04', 'the registered distribution, not whatever the registry calls default')
-        assert.equal(target?.linuxCwd, ws.mnt, 'the same translation the file tools apply')
-        assert.equal(target?.username, 'linte', 'the stored run-as user, symmetric with the UNC branch')
-      })
-    } finally {
-      rmSync(ws.root, { recursive: true, force: true })
-    }
+    // The reported shape: cwd `F:\TechEnergy\Code\Scanner`, registered because 9P cannot export
+    // drvfs. The generated `search-wsl` row carries no `config:` block, so `configured` is
+    // undefined here exactly as it is in a real session — the distribution can only come from the
+    // registration, and the Linux workdir only from the drive translation.
+    // The path is synthetic on purpose: this cell measures string derivation, and a fixture folder
+    // can only be created on the platform whose drive letters it names (the ubuntu runner has no
+    // `F:`), which would make the reading platform-shaped rather than code-shaped.
+    withStore({ 'f:\\techenergy\\code\\scanner': { distro: 'Ubuntu-24.04', username: 'linte' } }, () => {
+      const target = resolveTarget('F:\\TechEnergy\\Code\\Scanner', undefined)
+      assert.equal(target?.distro, 'Ubuntu-24.04', 'the registered distribution, not whatever the registry calls default')
+      assert.equal(target?.linuxCwd, '/mnt/f/TechEnergy/Code/Scanner', 'the same translation the file tools apply')
+      assert.equal(target?.username, 'linte', 'the stored run-as user, symmetric with the UNC branch')
+    })
   })
 
   it('keeps the distribution chain of its sibling providers for a drive cwd', () => {
-    const ws = realWorkspace('proj')
-    try {
-      withStore({ [ws.key]: { distro: 'Ubuntu-24.04' } }, () => {
-        // configured → stored entry → registry default, the order src/host/wsl-relay.ts walks, so
-        // `grep` searches the distribution the session's `bash` runs in.
-        assert.equal(resolveTarget(ws.dir, 'Debian')?.distro, 'Debian', 'the row config wins over the registration')
-        assert.equal(resolveTarget(ws.dir, '   ')?.distro, 'Ubuntu-24.04', 'a blank config is no config')
-        const stored = resolveTarget(ws.dir, undefined)
-        assert.equal(stored?.linuxCwd, ws.mnt)
-        assert.equal('username' in (stored ?? {}), false, 'no stored user means the distribution default, stated by absence not by an empty string')
-      })
-    } finally {
-      rmSync(ws.root, { recursive: true, force: true })
-    }
-  })
-
-  it('a registration whose folder no longer exists stops answering as the registration', () => {
-    // Issue #129's other half. The store is keyed by a path string, so a record
-    // left behind by a deleted folder used to answer forever — and the client kept
-    // binding new sessions from it. A drive cwd in a WSL session still resolves
-    // (the session chose the world; the chain falls through to the registry
-    // default), so what this can assert is the thing that changed: the retired
-    // record's distribution and user are no longer the answer.
-    const ws = realWorkspace('was-there')
-    rmSync(ws.dir, { recursive: true, force: true })
-    withStore({ [ws.key]: { distro: 'Ubuntu-24.04', username: 'linte' } }, () => {
-      const target = resolveTarget(ws.dir, undefined)
-      assert.notEqual(target?.distro, 'Ubuntu-24.04', 'the deleted folder no longer answers with its old registration')
-      assert.notEqual(target?.username, 'linte', 'and not with its old run-as user either')
-      assert.equal(target?.linuxCwd, ws.mnt, 'the drive translation itself is unaffected — it is the record that retired')
+    withStore({ 'f:\\proj': { distro: 'Ubuntu-24.04' } }, () => {
+      // configured → stored entry → registry default, the order src/host/wsl-relay.ts walks, so
+      // `grep` searches the distribution the session's `bash` runs in.
+      assert.equal(resolveTarget('F:\\proj', 'Debian')?.distro, 'Debian', 'the row config wins over the registration')
+      assert.equal(resolveTarget('F:\\proj', '   ')?.distro, 'Ubuntu-24.04', 'a blank config is no config')
+      const stored = resolveTarget('F:\\proj', undefined)
+      assert.equal(stored?.linuxCwd, '/mnt/f/proj')
+      assert.equal('username' in (stored ?? {}), false, 'no stored user means the distribution default, stated by absence not by an empty string')
     })
-    rmSync(ws.root, { recursive: true, force: true })
   })
 
   it('uses the configured or default distribution for a Linux-absolute cwd', () => {

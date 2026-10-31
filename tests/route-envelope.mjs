@@ -406,20 +406,17 @@ try {
   // `listWorkspaceRecords` as the two ends the reporter read. Nothing here starts
   // a distribution: the store is keyed on the path string, and a name that does
   // not resolve only ever surfaces if a removal is followed by a `check`.
-  // A real directory, because a registration now has to name one that exists: the
-  // store is keyed by a path string, and issue #129's repro step 2 (delete the
-  // folder, create a new one with the same name) is only detectable against a
-  // folder whose creation time can be read.
-  const automationDir = join(work, 'automation')
-  mkdirSync(automationDir, { recursive: true })
-  const driveKey = automationDir.replace(/[\\/]+/g, '\\').toLowerCase().replace(/\\$/, '')
-  const drivePath = automationDir
-  const mntPath = `/mnt/${driveKey[0]}/${driveKey.slice(2).replace(/\\/g, '/')}`
+  // The key is synthetic on purpose. A drive path only exists on the platform that
+  // has drive letters, so a fixture that insisted on a real folder would answer on
+  // the Windows runner and refuse on the ubuntu one — which measures the runner, not
+  // the route. The cells that genuinely need a folder on disk are tiered in §12.
+  const driveKey = 'c:\\users\\me\\documents\\github\\automation'
+  const drivePath = 'C:\\Users\\me\\Documents\\GitHub\\automation'
   const sentinelKey = '\\\\wsl.localhost\\SentinelDistro\\home\\kept'
-  const bornOf = () => Math.round(statSync(automationDir).birthtimeMs)
+  const mntPath = '/mnt/c/Users/me/Documents/GitHub/automation'
   const plantStore = () => {
     writeFileSync(store, JSON.stringify(
-      { [driveKey]: { distro: 'SentinelDistro', born: bornOf() }, [sentinelKey]: { username: 'keptuser' } }, null, 2) + '\n', 'utf8')
+      { [driveKey]: { distro: 'SentinelDistro' }, [sentinelKey]: { username: 'keptuser' } }, null, 2) + '\n', 'utf8')
   }
   const readStoreNow = () => JSON.parse(readFileSync(store, 'utf8'))
 
@@ -485,32 +482,72 @@ try {
   // The store is keyed by a path STRING, so deleting the directory and creating
   // another one with the same name used to hit the old record and hand the new
   // folder the old workspace's WSL mode. A drive registration now carries the
-  // creation time of the directory it was made for, and a read that disagrees
-  // retires it. The positive control is the live record in the same file: it must
-  // survive every one of these reads, or the gate is just deleting things.
+  // creation time of the directory it was made for, and a read that finds a
+  // DIFFERENT directory there retires it. The positive control is the live record
+  // in the same file: it must survive every one of these reads, or the gate is
+  // just deleting things.
   const ghostKey = join(work, 'gone-today').replace(/[\\/]+/g, '\\').toLowerCase().replace(/\\$/, '')
   writeFileSync(store, JSON.stringify({ ...readStoreNow(), [ghostKey]: { distro: 'SentinelDistro', born: 1 } }, null, 2) + '\n', 'utf8')
   const ghostList = await post({ method: 'listWorkspaceRecords' })
-  assert(!(ghostList.envelope?.value ?? []).some((r) => r.path === ghostKey),
-    'a record whose directory does not exist is not reported, so nothing binds a new session from it')
   const afterGhost = readStoreNow()
-  assert(afterGhost[ghostKey] === undefined && afterGhost[driveKey] !== undefined && afterGhost[sentinelKey] !== undefined,
-    'the missing folder is written away while the live record and the UNC record (never validated) stay')
+  // The other half of the rule, and it is a lock, not a gap: absence is not evidence.
+  // A drive that is not mounted this moment, a share that is briefly down, and a folder
+  // the user has not recreated yet all read exactly like "deleted", and an earlier cut
+  // of this feature answered them by deleting the registration during a plain read.
+  // Deleting the workspace in the host is the exit for a genuinely gone folder, and the
+  // client reconciles that (see the A1 cells in tests/client-dom.test.mjs).
+  assert(afterGhost[ghostKey] !== undefined && afterGhost[ghostKey].born === 1
+    && afterGhost[driveKey] !== undefined && afterGhost[sentinelKey] !== undefined,
+    'a read never writes: a drive record whose directory does not answer keeps its registration and stamp')
+  assert((ghostList.envelope?.value ?? []).some((r) => r.path === ghostKey),
+    'and is still reported, so remounting the drive returns the workspace rather than losing it')
 
-  // The reporter's own step 2: same name, different directory.
-  writeFileSync(store, JSON.stringify({ ...readStoreNow(), [driveKey]: { distro: 'SentinelDistro', born: bornOf() - 5000 } }, null, 2) + '\n', 'utf8')
-  const replacedList = await post({ method: 'listWorkspaceRecords' })
-  assert(!(replacedList.envelope?.value ?? []).some((r) => r.path === driveKey),
-    'a folder whose creation time differs from the registration is treated as unregistered')
+  // The reporter's own step 2: same name, different directory. This one needs a folder
+  // that really exists and can be replaced, which is a Windows reading — the store key
+  // has to be a drive path — so the tier is declared instead of silently green elsewhere.
+  if (process.platform !== 'win32') {
+    skip('the same-name replacement cells', 'a drive key that names an existing folder is a Windows path')
+  } else {
+    const automationDir = join(work, 'automation')
+    mkdirSync(automationDir, { recursive: true })
+    const realKey = automationDir.replace(/[\\/]+/g, '\\').toLowerCase().replace(/\\$/, '')
+    const realMnt = `/mnt/${realKey[0]}/${realKey.slice(2).replace(/\\/g, '/')}`
+    const bornOf = () => Math.round(statSync(automationDir).birthtimeMs)
 
-  // And the pair: registering a real directory stamps it, so the next read agrees.
-  const stamped = await post({ method: 'registerWindows', params: { distro: 'SentinelDistro', linuxPath: mntPath, username: '' } })
-  const born = readStoreNow()[driveKey]?.born
-  assert(stamped.envelope?.ok === true && typeof born === 'number' && born > 0,
-    `registerWindows stamps the directory it registered (got ${JSON.stringify(born)})`)
-  const liveList = await post({ method: 'listWorkspaceRecords' })
-  assert((liveList.envelope?.value ?? []).some((r) => r.path === driveKey),
-    'a freshly registered, existing directory survives the same validation (positive control)')
+    // The cheap shape first: a record stamped for a different creation time than the
+    // folder that answers to its key, whatever deleted the old one.
+    writeFileSync(store, JSON.stringify({ ...readStoreNow(), [realKey]: { distro: 'SentinelDistro', born: bornOf() - 5000 } }, null, 2) + '\n', 'utf8')
+    const replacedList = await post({ method: 'listWorkspaceRecords' })
+    assert(!(replacedList.envelope?.value ?? []).some((r) => r.path === realKey),
+      'a folder whose creation time differs from the registration is treated as unregistered')
+    assert(readStoreNow()[realKey] === undefined,
+      'and the replacement is written away, so the client stops offering the old workspace its WSL mode')
+
+    // And the pair: registering a real directory stamps it, so the next read agrees.
+    const stamped = await post({ method: 'registerWindows', params: { distro: 'SentinelDistro', linuxPath: realMnt, username: '' } })
+    const born = readStoreNow()[realKey]?.born
+    assert(stamped.envelope?.ok === true && typeof born === 'number' && born > 0,
+      `registerWindows stamps the directory it registered (got ${JSON.stringify(born)})`)
+    const liveList = await post({ method: 'listWorkspaceRecords' })
+    assert((liveList.envelope?.value ?? []).some((r) => r.path === realKey),
+      'a freshly registered, existing directory survives the same validation (positive control)')
+
+    // The literal repro: delete the project, recreate it under the same name, and the
+    // fresh folder must not inherit the registration. On a file system whose creation
+    // time is too coarse to separate two writes this cell cannot be measured, and it
+    // says so rather than flaking.
+    const recreatedAt = bornOf()
+    rmSync(automationDir, { recursive: true, force: true })
+    mkdirSync(automationDir, { recursive: true })
+    if (Math.round(statSync(automationDir).birthtimeMs) === recreatedAt) {
+      skip('the delete-and-recreate cell', `the file system stamps both folders at ${recreatedAt}`)
+    } else {
+      const inheritedList = await post({ method: 'listWorkspaceRecords' })
+      assert(!(inheritedList.envelope?.value ?? []).some((r) => r.path === realKey),
+        'a folder recreated under the registered name is a new workspace, not the old one wearing its clothes')
+      assert(readStoreNow()[realKey] === undefined, 'and the inherited registration is written away, not just hidden')
+    }
+  }
 
   // ── 9. an empty picker is a reported failure (fake spawn, child process) ─
   // `listDistros()` cannot be answered honestly in this process: without the fake it
