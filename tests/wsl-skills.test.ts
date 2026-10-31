@@ -214,6 +214,26 @@ test('returns nothing for non-WSL cwds', async () => {
   assert.deepEqual(await provider.list({ cwd: '/home/mille/proj' }), [])
 })
 
+test('an unregistered drive folder is never walked through the distribution', async () => {
+  // The green above does not prove the decline: with a default distribution
+  // installed, an unregistered `D:\…` cwd used to resolve through
+  // `DSH_WSL_DISTRO ?? defaultDistroSync()` and the walk simply found no skills,
+  // so `list()` answered `[]` for the wrong reason. Counting the listings is the
+  // only assertion that can tell "declined" from "scanned and empty".
+  let listings = 0
+  const inner = createIo(tree())
+  const io = {
+    ...inner,
+    readdir: async (path: string, options: { withFileTypes: true }) => {
+      listings += 1
+      return inner.readdir(path, options)
+    },
+  }
+  const provider = new WslSkillsProvider(control(), io)
+  assert.deepEqual(await provider.list({ cwd: 'D:\\ProgramData\\dsh-wsl-workspace' }), [])
+  assert.equal(listings, 0, `the provider made ${listings} listing calls into a plain Windows folder`)
+})
+
 test('discovers nested project skills under a WSL workspace root', async () => {
   const root = tree()
   dir(root, ['home', 'mille', 'repro-ws-root', 'proj-a', '.dsh', 'skills'])

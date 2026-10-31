@@ -431,6 +431,21 @@ test('current: a WSL reference is translated to the file the model named', async
   f.dispose();
 });
 
+test('current: a session the user took out of the WSL world keeps its Windows addresses', async () => {
+  // The other half of the reference rule: the workspace is still registered, but
+  // this session runs the host's own tools now, so a path it names is a Windows
+  // path. Rewriting it by the WSL rule is how a reference lands on the wrong share.
+  const f = fixture({ legacy: false, sidebarRight: true });
+  await flush();
+  assert.equal(f.summary.projectionValues.agentPreset, 'wsl-standard', 'the blank WSL session was composed onto its variant');
+  f.setPreset('standard');
+  const address = addressFor('s1', f.summary.cwd, '/mnt/d/x.txt');
+  f.services.sidebarRight.openResource(address);
+  assert.deepEqual(f.opened, [['openResource', address, undefined]],
+    'the WSL rewrite was still applied to a session that left the WSL world');
+  f.dispose();
+});
+
 test('current: the translation also covers a tab action, and is undone on dispose', async () => {
   const f = fixture({ legacy: false, sidebarRight: true });
   await flush();

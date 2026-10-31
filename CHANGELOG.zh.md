@@ -20,6 +20,8 @@
 
 - **新增宿主路由 `removeWorkspace`**（[#129](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/129)）。`registerWindows` 从第一版起就往 `wsl-workspaces.json` 写盘符键，而登记表里唯一的删除动作先把键解析成 WSL UNC 路径——于是这条记录在删会话、在宿主里删工作区、甚至删掉目录之后都还在，该路径下每个新会话仍被改写成 WSL 模式，且没有任何退回办法。新路由接受两种键形（`canonicalWslUnc()` 再 `canonicalWindowsPath()`，与 `listWorkspaceRecords` 给出的同一对），删不到时如实报错，不静默返回"成功"。
 - **模式选择器不会再只剩一行**（[#129](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/129)）。0.7.11 加入的裁剪按宿主的显示名匹配；当某个 WSL 会话的同族在菜单里没有第二行时，裁剪后只剩已选中的那一行——那等于一个没得选的选择器。这种形状现在整份放行菜单，与"无法识别的菜单"已有的处理一致。
+- **普通 Windows 目录不再被当成 WSL 扫一遍。** 技能目录提供者的 `workspaceOf` 过去把盘符 cwd 沿 `登记表 → DSH_WSL_DISTRO → 默认发行版` 一路退下去，于是只要机器上配了默认发行版，**每一个没登记的 Windows 工作区**都长得像 WSL 工作区，并按 4 层 / 64 个技能根 / 4096 个目录的额度去走一遍，符号链接还逐条交给 `wsl.exe`。现在盘符形状必须有对话框写下的登记记录才算数；env/默认那条链只留给没有 `distro` 字段的旧记录。原有的"非 WSL cwd 返回空"测试看不见这件事——它断言的是"空"，而"扫了但没找到"也是空——所以新锁数的是 `readdir` 调用次数，一次就红。变异验证过：把闸门去掉，它会说 `the provider made 1 listing calls into a plain Windows folder`。
+- **文件引用翻译跟着会话走，不再只看目录。** 侧栏导航的改写钩子原来只按 cwd 判断，于是被用户退出 WSL 世界的会话（跑的是宿主工具、写的是 Windows 路径）仍会被按 WSL 规则改写地址。现在宿主已写明是普通模式的会话原样放过；宿主还没写出模式的会话照旧翻译（那只是尚未写入，不是选择）。
 - `host-api.mjs` 覆盖注销动作与它对记录列表的影响，探针地板从 13 抬到 15。`tests/route-envelope.mjs` 在对话框真正使用的那条 HTTP 缝上锁住盘符键注销（阳性对照：`setUser` 仍能删 UNC 键、仍删不掉盘符键），`test:client` 锁住"只剩一行"的菜单形状。
 
 **退出是两件事，于是给了两个出口。**

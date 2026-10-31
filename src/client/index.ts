@@ -683,9 +683,17 @@ export function apply(ctx: ClientContext): void {
         return () => {}
       }
       const sessionOf = (sessionId: string): ReferenceSession | undefined => {
-        const cwd = sessions.list.getSnapshot().byId[sessionId]?.cwd
+        const summary = sessions.list.getSnapshot().byId[sessionId]
+        if (summary === undefined) return undefined
+        const cwd = summary.cwd
         if (cwd === undefined || cwd === '') return undefined
         if (!isWslWorkspace(cwd, wslWindowsPaths)) return undefined
+        // A session the user took out of the WSL world writes Windows paths, and
+        // rewriting them by the WSL rule is how a reference lands on the wrong
+        // share. An unreported preset stays translated: that is the host not
+        // having written it yet, not a choice.
+        const preset = getAgentPreset(summary)
+        if (preset !== undefined && !preset.startsWith('wsl-') && preset !== LEGACY_WSL_PRESET_ID) return undefined
         return { cwd, distro: distroOfWorkspace(cwd, driveDistros) }
       }
       controller.openResource = (address: string, options?: unknown): void => {
