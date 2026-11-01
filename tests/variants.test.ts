@@ -696,6 +696,11 @@ const DELEGATION_GROUP_SHAPE = `- id: persona
         provider: spawn
         toolName: subagent
         modelSelectionSettings: true
+    - id: tool-subagent-fork
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: fork
+        toolName: subagent_fork
     - id: workflow-ptc
       name: '@deepseek-ai/dsh-workflow-ptc'
       config:
