@@ -163,6 +163,7 @@ export async function withReleaseSession({ cwd, preset = 'wsl-standard', evidenc
     const created = await controller.create({ cwd: workspace, agentPreset })
     const { sessionId } = created
     assert.equal(created.agentPreset, agentPreset)
+    await persistence.flush()
     await controller.selectModel({ sessionId, provider, model })
     async function call(name, args, { timeoutMs = 120_000, onCall } = {}) {
       assert(!pending.has(sessionId), 'cannot overlap calls in the same acceptance session')
@@ -173,11 +174,18 @@ export async function withReleaseSession({ cwd, preset = 'wsl-standard', evidenc
       let transcript
       try {
         const signal = AbortSignal.timeout(timeoutMs)
-        transcript = await persistence.open(sessionId, 'read', { signal })
         await controller.prompt({
           requestId: randomUUID(), sessionId, mode: 'queue',
           content: [{ type: 'text', text: 'Execute one scripted release acceptance tool call.' }],
         }, signal)
+        transcript = await until(async () => {
+          try {
+            return await persistence.open(sessionId, 'read', { signal })
+          } catch (error) {
+            if (error?.name !== 'SessionPersistenceNotFoundError' || error.sessionId !== sessionId) throw error
+            return undefined
+          }
+        }, timeoutMs, 'DSH did not make the new session durable: ' + sessionId)
         const persisted = await until(async () => {
           const { events: records } = await transcript.read(undefined, undefined, { signal })
           const call = records.find(event => event.type === 'tool/call' && event.data.callId === request.block.id)
@@ -204,9 +212,9 @@ export async function withReleaseSession({ cwd, preset = 'wsl-standard', evidenc
         writeFileSync(join(output, id + '.json'), JSON.stringify(evidence, null, 2) + '\n')
         return evidence
       } finally {
-        await transcript?.close()
         pending.delete(sessionId)
         executions.delete(request.block.id)
+        await transcript?.close()
       }
     }
     function setSandboxMode(mode) {

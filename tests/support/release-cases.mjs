@@ -46,14 +46,14 @@ writeFileSync(join(evidence, 'matrix-environment.json'), JSON.stringify({
 }, null, 2))
 
 let nativeSequence = 0
-const native = async (command, { interactive = false, nativeLimit = 20_000, pty = false, noControllingTty = false, keepStdinOpen = false } = {}) => {
+const native = async (command, { interactive = false, nativeLimit = 20_000, pty = false, noControllingTty = false, keepStdinOpen = false, workdir = linuxCwd } = {}) => {
   const script = `${linuxCwd}/.matrix-native-${++nativeSequence}.sh`
   wsl(`cat > ${sh(script)} <<'DSH_NATIVE_${runId}'\n${command}\nDSH_NATIVE_${runId}`)
   const started = Date.now()
   const timeout = String(Math.max(1, nativeLimit) / 1000)
   const bash = `bash ${interactive ? '-i ' : ''}${sh(script)}`
   const invocation = pty ? `script -q -e -c ${sh(bash)} /dev/null` : noControllingTty ? `setsid --wait ${bash}` : bash
-  const launcher = `cd ${sh(linuxCwd)} && exec timeout --signal=TERM --kill-after=1s ${timeout}s ${invocation}`
+  const launcher = `cd ${sh(workdir)} && exec timeout --signal=TERM --kill-after=1s ${timeout}s ${invocation}`
   const proc = spawn('wsl.exe', [...wslPrefix, '--exec', 'bash', '-c', launcher], { windowsHide: true })
   const out = [], err = []
   proc.stdout.on('data', chunk => out.push(chunk))
@@ -105,9 +105,12 @@ const regular = (id, command, opts = {}) => register(id, async (session, record)
 }, opts.isolate)
 
 // Priority cells whose historical evidence is incomplete.
-regular('3.6', 'cd /mnt/c/Windows && cmd.exe /c ver 2>&1 | head -2', {
+regular('3.6', 'cmd.exe /c ver 2>&1 | head -2', {
+  // cmd.exe prints an unrelated UNC-cwd warning before ver. Use the same
+  // Windows-backed cwd in each arm without changing the command's first token.
   isolate: true,
-  native: { interactive: true },
+  native: { interactive: true, workdir: '/mnt/c/Windows' },
+  args: { workdir: '/mnt/c/Windows' },
   judge: (p, n) => !bytes(p, { ...n, stdout: withoutStartupNotice(n.stdout) })
     ? verdict(false, 'Windows interop bytes/CRLF differ from native interactive bash')
     : /command not found/.test(n.stdout)
@@ -374,9 +377,17 @@ regular('6.4', 'top -bn1 | head -3', {
   judge: (p, n) => verdict(exit(p) === n.status && /^top - /m.test(n.stdout) && /^top - /m.test(stdout(p))
     && !/twice|re-ran|re-run/i.test(notes(p)), 'both return a top snapshot without promoting a noninteractive command'),
 })
-regular('6.5', 'timeout 3 cat < <(sleep 4)', {
-  judge: (p, n) => verdict(exit(p) === n.status && exit(p) === 124 && !p.value?.timedOut && !notes(p).includes('timed out'),
-    'the timeout command owns the deadline and returns 124'),
+register('6.5', async (session, record) => {
+  for (const [command, expected] of [['timeout 3 cat </dev/null', 0], ['timeout 3 cat < <(sleep 4)', 124]]) {
+    const n = await native(command)
+    const p = await productBash(session, command)
+    record.native.push(n)
+    record.product.push(p)
+    if (!bytes(p, n) || exit(p) !== expected || p.value?.timedOut || notes(p).includes('timed out')) {
+      return verdict(false, `matched stdin fixture expected command status ${expected}, without a DSH deadline`)
+    }
+  }
+  return verdict(true, 'closed input gives EOF; on an open idle stream the timeout command owns the deadline and returns 124')
 })
 regular('6.8', 'stty -a | head -2', {
   judge: (p, n) => bytes(p, n) && /ioctl/i.test(n.stderr)
@@ -410,13 +421,13 @@ register('7.1', async (session, record) => {
     'pkill reaches the dedicated uniquely named fixture process and the active shell remains usable')
 }, true)
 register('7.2', async (session, record) => {
-  const command = `setsid --fork --wait bash -c 'trap "exit 130" INT; kill -INT -- -$$'`
+  const command = `setsid --fork --wait bash -c 'trap "echo SIGINT_GROUP; exit 130" INT; kill -INT -- -$$; exit 99'`
   const n = await native(command)
   const p = await productBash(session, command)
   const alive = await productBash(session, 'printf "SIGINT_SESSION_OK\\n"')
   record.native.push(n)
   record.product.push(p, alive)
-  return verdict(bytes(p, n) && n.status === 130 && stdout(alive).includes('SIGINT_SESSION_OK'),
+  return verdict(bytes(p, n) && n.status === 130 && n.stdout === 'SIGINT_GROUP\n' && stdout(alive).includes('SIGINT_SESSION_OK'),
     'SIGINT affects the dedicated subprocess group and leaves the product shell alive')
 }, true)
 const detached = '(setsid sleep 37 </dev/null >/dev/null 2>&1 & disown); echo DETACHED=$!'
@@ -463,9 +474,16 @@ register('8.8', async (session, record) => {
   wsl(`mkdir ${dirs.map(sh).join(' ')}`)
   const peers = [session, peer]
   const commands = dirs.map(dir => `cd ${sh(dir)}`)
-  record.product.push(...await Promise.all(commands.map((command, index) => productBash(peers[index], command))))
-  const p = await Promise.all(peers.map(owner => productBash(owner, 'pwd')))
-  record.product.push(...p)
+  const callTogether = async requests => {
+    const outcomes = await Promise.allSettled(requests)
+    const completed = outcomes.filter(outcome => outcome.status === 'fulfilled').map(outcome => outcome.value)
+    record.product.push(...completed)
+    const errors = outcomes.filter(outcome => outcome.status === 'rejected').map(outcome => outcome.reason)
+    if (errors.length > 0) throw new Error(errors.map(error => error?.message ?? String(error)).join(' / '))
+    return completed
+  }
+  await callTogether(commands.map((command, index) => productBash(peers[index], command)))
+  const p = await callTogether(peers.map(owner => productBash(owner, 'pwd')))
   record.native.push(...await Promise.all(commands.map(command => native(`${command}\npwd`))))
   return verdict(p.every((call, index) => bytes(call, record.native[index]) && stdout(call).trim() === dirs[index]),
     'two concurrent Agent sessions keep independent directories')
