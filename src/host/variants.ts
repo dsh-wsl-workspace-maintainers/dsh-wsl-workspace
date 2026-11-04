@@ -514,20 +514,36 @@ function appendPersona(lines: readonly string[], span: { start: number; end: num
 }
 
 /**
- * Whether a top-level row's own `name:` mounts the delegation package.
- *
- * The row's own keys sit at exactly two spaces (the `- id: ` line is column 0), while anything
- * nested inside a group's config is deeper — so a group that merely *mentions* the package in a
- * nested row does not read as a delegation row, and a group carrying one nested inside it is
- * beyond this text-level transform's reach either way (its top-level rows are all it edits).
- * @param block - the row's lines.
- * @returns true when the row mounts {@link SUBAGENT_DELEGATION_PACKAGE}.
+ * The filesystem channel on older hosts keeps the original top-level match.
+ * Declaration hosts prune parsed entries before registering them.
  */
 function mountsSubagentDelegation(block: readonly string[]): boolean {
   return block.some((line) => {
     const match = /^  name: (.+)$/.exec(line)
     return match !== null && unquoteScalar((match[1] ?? '').trim()) === SUBAGENT_DELEGATION_PACKAGE
   })
+}
+
+/**
+ * Drop the complete top-level entry carrying a delegation mount. In shipped 0.2.x
+ * presets the group also mounts tools that require the subagents service, so
+ * removing only the subagent rows leaves an inactive group (#132).
+ *
+ * Walk only loader groups. Prompts and ordinary plugin config can mention the
+ * package name without mounting it. Filtering the parsed list also preserves
+ * references from kept entries to data originally anchored inside a removed group.
+ */
+export function withoutSubagentDelegation(rows: unknown[]): unknown[] {
+  function mounts(row: unknown, seen: Set<object>): boolean {
+    if (row === null || typeof row !== 'object' || seen.has(row)) return false
+    seen.add(row)
+    const entry = row as { name?: unknown; group?: unknown; config?: unknown }
+    if (entry.name === SUBAGENT_DELEGATION_PACKAGE) return true
+    const group = entry.group === true || entry.name === 'cordis:group'
+    return group && Array.isArray(entry.config) && entry.config.some(child => mounts(child, seen))
+  }
+
+  return rows.filter(row => !mounts(row, new Set()))
 }
 
 /**
@@ -630,13 +646,15 @@ export function isWslVariantId(id: string): boolean {
 /**
  * Whether the host family still carries the upstream duplicate-registration defect.
  *
- * `@deepseek-ai/dsh-tool-subagent` installs on every `agent/created` event with no
- * `belongsToComposition` gate and dedupes by object identity, so each live copy of the
- * delegation row is one more composition, and at six Desktop session creation fails outright
- * (issue #60; deepseek-ai/deepseek-harness discussion #6751). Verified absent in every release
- * of the current compat window — `@deepseek-ai/dsh-tools` 0.2.0-rc.1 through 0.2.1-rc.2, the
- * installed tree carrying no `belongsToComposition` at all — so while the window head stays in
- * 0.2.x the predicate says the gate is missing. When a fixed release becomes the window head,
+ * `@deepseek-ai/dsh-tool-subagent` mounts once per live copy of the delegation row with no
+ * `belongsToComposition` gate on the composition path and dedupes by object identity, so each
+ * live copy of the delegation row is one more composition, and at six Desktop session creation
+ * fails outright (issue #60; deepseek-ai/deepseek-harness discussion #6751). The package does
+ * carry `belongsToComposition` on its standing `modelSelectionSettings` install path (verified
+ * in the installed tree at 0.2.1-rc.2, and reported unchanged on 0.2.1-rc.5 in issue #132) —
+ * but that gate only scopes the `agents.list()` reconcile loop; a composition that mounts the
+ * package is still one more ungated registration. While the window head stays in 0.2.x the
+ * predicate therefore says the gate is missing. When a fixed release becomes the window head,
  * narrow this predicate: the delegation row comes back, and with it `subagent` delegation
  * inside WSL sessions.
  *
