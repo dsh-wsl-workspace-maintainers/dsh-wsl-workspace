@@ -6,6 +6,8 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
 
 ## 0.7.13 — 2026-11-04
 
+- On cancellation, verify the session token and stop the Linux Bash process before terminating its Windows launcher. On WSL1, terminating the launcher first could interrupt the foreground child and let Bash run a subsequent command.
+
 - Give a terminal read running in the persistent Bash shell time to reach its own short deadline before the watchdog restarts the shell. This addresses premature retries observed with Bash 5.1.
 
 - Foreground WSL bash calls reject zero or negative `timeoutMs` before starting a command. These values used to disable the deadline.
