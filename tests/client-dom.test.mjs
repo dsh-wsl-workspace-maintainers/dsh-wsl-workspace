@@ -104,6 +104,9 @@ function mount(scenario, { wide = true } = {}) {
     if (answer === 'refuse') {
       return { ok: true, status: 200, json: async () => ({ ok: false, error: `${method} refused by the host` }) }
     }
+    if (answer?.failureCode) {
+      return { ok: true, status: 200, json: async () => ({ ok: false, error: 'account settings refused', code: answer.failureCode }) }
+    }
     if (answer && answer.then !== undefined) return answer
     return { ok: true, status: 200, json: async () => ({ ok: true, value: answer ?? [] }) }
   }
@@ -294,6 +297,7 @@ function healthy(overrides = {}) {
     listDistros: ['Ubuntu-24.04'],
     listDir: { path: '/', parent: null, entries: [{ name: 'home', kind: 'directory' }] },
     describe: { version: '0.7.8', releases: [] },
+    headlessAuthCheck: { status: 'connected' },
     ...overrides,
   }
 }
@@ -302,6 +306,12 @@ function healthy(overrides = {}) {
 async function open(client) {
   await client.render()
   await client.click('.dww-action')
+}
+
+/** Open the dialog, then the account popover behind the header pill. */
+async function openAuth(client) {
+  await open(client)
+  await client.click('.dww-auth-chip')
 }
 
 test('a healthy install opens the dialog and draws no error row at all', { timeout: 10_000 }, async () => {
@@ -438,8 +448,8 @@ test('Escape closes an idle dialog and is ignored while a create is in flight', 
     assert.ok(client.container.querySelector('.dww-card') === null, 'Escape closes an idle dialog')
 
     await client.click('.dww-action')
-    await client.click('.dww-btn--primary')
-    assert.equal(client.container.querySelector('.dww-btn--primary').disabled, true, 'the create is in flight')
+    await client.click('.dww-actions .dww-btn--primary')
+    assert.equal(client.container.querySelector('.dww-actions .dww-btn--primary').disabled, true, 'the create is in flight')
     await client.escape()
     assert.ok(client.container.querySelector('.dww-card') !== null, 'Escape must not close a busy dialog')
     release({ ok: true, status: 200, json: async () => ({ ok: true, value: { exists: true, isDirectory: true } }) })
@@ -460,6 +470,101 @@ test('the help panel opens over the form and closing it restores the same messag
     await client.click('.dww-help-btn')
     assert.equal(client.container.querySelector('.dww-error')?.textContent ?? '', before,
       'closing the panel must return the same message, not a cleared one')
+  } finally { await client.unmount() }
+})
+
+test('opening the dialog checks the account once and the header pill turns green only on success', async () => {
+  let release
+  const pending = new Promise(resolve => { release = resolve })
+  const client = mount(healthy({ headlessAuthCheck: pending }))
+  try {
+    await open(client)
+    const chip = client.container.querySelector('.dww-header .dww-auth-chip')
+    assert.ok(chip !== null, 'the account pill must sit in the dialog header, visible without opening help')
+    assert.equal(client.calls.filter(name => name === 'headlessAuthCheck').length, 1, 'opening the dialog sends exactly one account check')
+    assert.equal(chip.dataset.state, 'checking', 'the pill shows progress, not green, while the check is in flight')
+    assert.equal(client.container.querySelector('.dww-signin-notice'), null, 'settings stay folded until the pill is pressed')
+    await client.click('.dww-auth-chip')
+    assert.equal(chip.getAttribute('aria-expanded'), 'true')
+    const notice = client.container.querySelector('.dww-signin-notice')
+    assert.ok(notice !== null, 'pressing the pill opens the account settings')
+    const status = notice.querySelector('.dww-auth-status')
+    assert.equal(status.dataset.state, 'checking')
+    assert.equal(notice.querySelector('.dww-auth-check').disabled, true)
+    assert.equal(notice.querySelector('.dww-auth-apply').disabled, true)
+    await client.act(async () => {
+      release({ ok: true, status: 200, json: async () => ({ ok: true, value: { status: 'connected' } }) })
+      await flush()
+    })
+    assert.equal(status.dataset.state, 'connected')
+    assert.match(status.textContent, /账号连接正常/)
+    assert.equal(chip.dataset.state, 'connected', 'the header pill turns green with the check')
+    assert.equal(notice.querySelector('.dww-auth-apply').disabled, false)
+    assert.equal(client.calls.filter(name => name === 'headlessAuthCheck').length, 1, 'opening the popover must not send a second check')
+    assert.ok(!client.calls.includes('headlessAuthOverlay'), 'checking connectivity must not fetch the overlay')
+  } finally { await client.unmount() }
+})
+
+for (const answer of [{ status: 'failed' }, { status: 'signed-out' }, { status: 'unavailable' }, { status: 'failed', reason: 'timeout' }, { status: 'unexpected' }]) {
+  test(`an account check reports ${JSON.stringify(answer)} without enabling setup`, async () => {
+    const scenario = healthy({ headlessAuthCheck: answer })
+    const client = mount(scenario)
+    try {
+      await openAuth(client)
+      await client.click('.dww-auth-check')
+      const status = client.container.querySelector('.dww-auth-status')
+      assert.notEqual(status.dataset.state, 'connected')
+      assert.ok(status.textContent.trim() !== '' && !status.textContent.includes('auth.status.'), 'failure needs readable text as well as a color')
+      assert.equal(client.container.querySelector('.dww-auth-apply').disabled, true)
+      scenario.headlessAuthCheck = { status: 'connected' }
+      await client.click('.dww-auth-check')
+      assert.equal(status.dataset.state, 'connected', 'retry must run another check')
+    } finally { await client.unmount() }
+  })
+}
+
+test('Download hands over the host overlay as a file and offers nothing that writes settings', async () => {
+  let downloadedBlob
+  let downloadedName
+  const originalCreate = URL.createObjectURL
+  const originalRevoke = URL.revokeObjectURL
+  const originalClick = dom.window.HTMLAnchorElement.prototype.click
+  URL.createObjectURL = blob => { downloadedBlob = blob; return 'blob:fixture' }
+  URL.revokeObjectURL = () => {}
+  dom.window.HTMLAnchorElement.prototype.click = function () { downloadedName = this.download }
+  const yaml = '- id: credentials\n  disabled: false\n'
+  const client = mount(healthy({ headlessAuthOverlay: { yaml, filename: 'headless-account.patch.yml' } }))
+  try {
+    await openAuth(client)
+    const popover = client.container.querySelector('.dww-signin-notice')
+    assert.equal(popover.querySelectorAll('input, .dww-auth-reset').length, 0, 'no remember/restore controls remain')
+    assert.match(popover.textContent, /--patch/, 'the popover says how the file is used')
+    await client.click('.dww-auth-apply')
+    assert.equal(client.calls.filter(name => name === 'headlessAuthOverlay').length, 1)
+    assert.equal(downloadedName, 'headless-account.patch.yml')
+    assert.equal(await downloadedBlob.text(), yaml)
+    assert.match(client.container.querySelector('.dww-auth-feedback').textContent, /已下载/)
+    assert.equal(client.container.querySelector('.dww-auth-feedback').dataset.tone, 'success')
+  } finally {
+    await client.unmount()
+    URL.createObjectURL = originalCreate
+    URL.revokeObjectURL = originalRevoke
+    dom.window.HTMLAnchorElement.prototype.click = originalClick
+  }
+})
+
+test('a refused or malformed overlay is reported as a failed download, not a success', async () => {
+  const scenario = healthy({ headlessAuthOverlay: { failureCode: 'CONFIG_INVALID' } })
+  const client = mount(scenario)
+  try {
+    await openAuth(client)
+    await client.click('.dww-auth-apply')
+    const feedback = () => client.container.querySelector('.dww-auth-feedback')
+    assert.match(feedback().textContent, /下载失败/)
+    assert.equal(feedback().dataset.tone, 'error')
+    scenario.headlessAuthOverlay = {}
+    await client.click('.dww-auth-apply')
+    assert.match(feedback().textContent, /下载失败/, 'an overlay without yaml must not be handed over')
   } finally { await client.unmount() }
 })
 

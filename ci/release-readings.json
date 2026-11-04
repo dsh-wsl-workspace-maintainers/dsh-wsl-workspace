@@ -65,8 +65,8 @@
       }
     },
     "0.7.12": {
-      "takenAt": "2026-10-30 1300",
-      "head": "b23cf3f",
+      "takenAt": "2026-11-04 0133",
+      "head": "254c1e1",
       "tableSha": "9c8f2536f1d8",
       "replay": {
         "caught": 20,
@@ -80,7 +80,7 @@
         ]
       },
       "contract": {
-        "services": 21,
+        "services": 23,
         "worlds": 8,
         "collisions": 0
       }

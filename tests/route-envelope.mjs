@@ -70,13 +70,17 @@ let server
 try {
   const { apply } = await import(pathToFileURL(join(repo, 'lib', 'index.js')).href)
   const registrations = []
-  // Only `webServer` is answered: with `agentPresets` absent the preset materializer
-  // never runs, so this harness spawns nothing and writes nothing but the temp home.
+  const accountCalls = []
+  let accountOutcome = { status: 'ready' }
+  // No real account is consulted. With `agentPresets` absent the materializer
+  // never runs, and every configuration write stays inside this temporary home.
   const fakeCtx = {
     get: (key) =>
       key === 'webServer'
         ? { register: (route) => { registrations.push(route); return () => {} } }
-        : undefined,
+        : key === 'deepseekAccount'
+          ? { getBalance: async client => { accountCalls.push(client); return accountOutcome } }
+          : undefined,
     effect: (fn) => { fn(); return () => {} },
   }
   apply(fakeCtx, { route: '/dsh-wsl-workspace/api' })
@@ -285,6 +289,28 @@ try {
     'describe reports each release with the status the manifest declares')
   assert(runtime?.version === manifest?.version,
     `describe reports package.json's version (runtime ${runtime?.version} vs manifest ${manifest?.version})`)
+
+  // The account check and launch overlay cross the same loopback/JSON route as the shipped dialog.
+  const authHeaders = { 'content-type': 'application/json' }
+  const headlessProfile = join(home, 'profiles', 'headless', 'cordis.patch.yml')
+  const blockedOverlay = await post({ method: 'headlessAuthOverlay' })
+  assert(blockedOverlay.status === 403 && accountCalls.length === 0,
+    'a form-compatible non-JSON account request is rejected before it reaches the account service')
+  const connected = await post({ method: 'headlessAuthCheck' }, { headers: authHeaders })
+  assert(connected.envelope?.value?.status === 'connected' && accountCalls.length === 1,
+    'the account check calls the account service and reports its fresh result')
+  accountOutcome = null
+  const signedOut = await post({ method: 'headlessAuthCheck' }, { headers: authHeaders })
+  assert(signedOut.envelope?.value?.status === 'signed-out' && accountCalls.length === 2,
+    'a previous success is not reused after the account service reports signed out')
+  assert(!connected.text.includes('token') && !connected.text.includes('wallet'),
+    'the account response exposes no credentials or balance')
+  const overlay = await post({ method: 'headlessAuthOverlay' }, { headers: authHeaders })
+  assert(overlay.envelope?.ok === true && typeof overlay.envelope.value.yaml === 'string'
+    && overlay.envelope.value.filename === 'headless-account.patch.yml' && !existsSync(headlessProfile),
+    'the launch overlay is returned without writing anything under the headless profile')
+  assert(!overlay.text.includes('token') && accountCalls.length === 2,
+    'the overlay carries no credentials and sends no account request')
 
   // ── 7. the headers the code sets ────────────────────────────────────────
   for (const [label, answer] of [
