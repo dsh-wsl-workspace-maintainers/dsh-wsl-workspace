@@ -6,6 +6,8 @@
 
 ## 0.7.13 — 2026-11-04
 
+- WSL bash 前台调用会在启动命令前拒绝为零或负数的 `timeoutMs`。此前这些值会让调用失去超时限制。
+
 - 受影响的 DSH 宿主在生成 WSL 变体时，会移除实际挂载 subagent 包的整个委派组，避免重复注册，也避免组内工具在失去依赖服务后仍被挂载。仅在提示词或普通配置中提到包名的无关条目会保留。感谢 @stallenlu 提供复现、@Ruler4396 验证宿主行为并提交初版修复，以及 @raylei50653 提供误删反例（[#132](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/132)、[#133](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/133)、[#134](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/134)）。
 - 将 js-yaml 最低版本提升至锁文件已使用的 4.3.2，继续使用 4.x API。
 - 两份 README 补充了 WSL 文件轮询唤醒 WSLg 的原因，以及无需 Linux GUI 应用时如何规避焦点切换。感谢 @friedwm 的排查（[#130](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/130)）。

@@ -6,6 +6,8 @@ All notable changes to `dsh-wsl-workspace`, newest first. Back to the [README](R
 
 ## 0.7.13 — 2026-11-04
 
+- Foreground WSL bash calls reject zero or negative `timeoutMs` before starting a command. These values used to disable the deadline.
+
 - WSL variants on affected DSH hosts remove the whole delegation group when it mounts the subagent package. This avoids duplicate registration and keeps dependent delegation tools from starting without their service. The transform preserves unrelated rows whose prompts or configuration mention the package. Thanks to @stallenlu for the reproduction, @Ruler4396 for the host verification and initial fix, and @raylei50653 for the cases that exposed false matches ([#132](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/132), [#133](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/133), [#134](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/134)).
 - The minimum js-yaml version is now 4.3.2. The runtime stays on the 4.x API and uses the version already recorded in the lockfile.
 - Both READMEs document how WSL file polling can wake WSLg and how to avoid focus changes if you can disable Linux GUI apps. Thanks to @friedwm for tracing the issue ([#130](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/130)).
