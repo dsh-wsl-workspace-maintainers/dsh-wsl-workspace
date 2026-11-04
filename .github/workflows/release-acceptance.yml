@@ -1,0 +1,139 @@
+name: 0.7.13 real DSH acceptance
+on:
+  push:
+    branches: [acceptance/v0.7.13]
+permissions:
+  contents: read
+concurrency:
+  group: dsh-release-acceptance-0713
+  cancel-in-progress: true
+jobs:
+  acceptance:
+    name: DSH 0.2.1-rc.2 / ${{ matrix.distro }} / WSL${{ matrix.wsl }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { distro: Ubuntu-22.04, wsl: 2 }
+          - { distro: Ubuntu-24.04, wsl: 1 }
+          - { distro: Ubuntu-24.04, wsl: 2 }
+    env:
+      DSH_WSL_DISTRO: ${{ matrix.distro }}
+      DSH_WSL_USER: dsh-release
+      DSH_RELEASE_EVIDENCE_DIR: ${{ github.workspace }}/release-evidence
+      MSYS_NO_PATHCONV: '1'
+      MSYS2_ARG_CONV_EXCL: '*'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.21.0
+          cache: npm
+      - name: Install candidate and pinned host dependencies
+        run: |
+          npm ci
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $hostRoot = Join-Path $PWD 'ci/deps/release-host'
+          New-Item -ItemType Directory -Force $hostRoot | Out-Null
+          npm install --prefix $hostRoot --no-audit --no-fund --no-package-lock '@deepseek-ai/dsh@0.2.1-rc.2' 'js-yaml@4.3.2'
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          "DSH_RELEASE_HOST_DIR=$hostRoot" >> $env:GITHUB_ENV
+      - name: Pack exact candidate and record its identity
+        shell: pwsh
+        env:
+          CANDIDATE: 52c526d8ecd703427472950bb0bea5a945a7eb42
+        run: |
+          git diff --exit-code $env:CANDIDATE -- src lib package.json package-lock.json cordis.patch.yml README.md README.zh.md CHANGELOG.md CHANGELOG.zh.md docs/driving.md docs/driving.zh.md
+          if ($LASTEXITCODE) { throw 'The files shipped in the acceptance package differ from the candidate' }
+          $pack = Join-Path $PWD 'ci/deps/release-pack'
+          $dest = Join-Path $env:DSH_RELEASE_HOST_DIR 'release-artifact'
+          New-Item -ItemType Directory -Force $pack, $dest, $env:DSH_RELEASE_EVIDENCE_DIR | Out-Null
+          npm pack --ignore-scripts --pack-destination $pack
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $tgz = Join-Path $pack 'dsh-wsl-workspace-0.7.13.tgz'
+          tar.exe -xf $tgz -C $dest --strip-components=1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $manifest = Get-Content (Join-Path $dest 'package.json') -Raw | ConvertFrom-Json
+          $artifactHash = (Get-FileHash -Algorithm SHA256 $tgz).Hash.ToLowerInvariant()
+          $libHash = (Get-FileHash -Algorithm SHA256 (Join-Path $dest 'lib/index.js')).Hash.ToLowerInvariant()
+          [pscustomobject]@{
+            candidate = $env:CANDIDATE
+            acceptanceHead = $env:GITHUB_SHA
+            packageVersion = $manifest.version
+            packageSha256 = $artifactHash
+            indexSha256 = $libHash
+            distro = $env:DSH_WSL_DISTRO
+            wslVersion = "${{ matrix.wsl }}"
+          } | ConvertTo-Json | Set-Content (Join-Path $env:DSH_RELEASE_EVIDENCE_DIR 'artifact.json')
+          "DSH_RELEASE_PACKAGE=$dest" >> $env:GITHUB_ENV
+      - name: Provision isolated WSL instance
+        uses: Vampire/setup-wsl@v3
+        with:
+          distribution: ${{ matrix.distro }}
+          wsl-version: ${{ matrix.wsl }}
+          set-as-default: 'true'
+          systemd: 'false'
+          use-headless: 'false'
+      - name: Verify WSL kernel and provision Linux user and tools
+        id: provision
+        shell: bash
+        env:
+          WSL_VERSION: ${{ matrix.wsl }}
+        run: |
+          set -euo pipefail
+          wsl.exe -l -v | tr -d '\000\r' | tee "$DSH_RELEASE_EVIDENCE_DIR/wsl-list.txt"
+          if ! grep -E "$DSH_WSL_DISTRO[[:space:]].*[[:space:]]${WSL_VERSION}$" "$DSH_RELEASE_EVIDENCE_DIR/wsl-list.txt"; then
+            wsl.exe --set-version "$DSH_WSL_DISTRO" "$WSL_VERSION"
+            wsl.exe -l -v | tr -d '\000\r' | tee "$DSH_RELEASE_EVIDENCE_DIR/wsl-list.txt"
+            grep -E "$DSH_WSL_DISTRO[[:space:]].*[[:space:]]${WSL_VERSION}$" "$DSH_RELEASE_EVIDENCE_DIR/wsl-list.txt"
+          fi
+          wsl.exe -d "$DSH_WSL_DISTRO" -u root -- bash -seu <<'WSL_SETUP'
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get -o Acquire::Retries=3 update -qq
+          apt-get -o Acquire::Retries=3 install -y -qq ca-certificates curl git locales make openssh-client python3-venv sudo vim
+          locale-gen zh_CN.UTF-8
+          id dsh-release >/dev/null 2>&1 || useradd -m -s /bin/bash -G sudo dsh-release
+          work=$(mktemp -d)
+          name=node-v24.21.0-linux-x64.tar.xz
+          curl -fSsL --retry 3 --max-time 120 -o "$work/$name" "https://nodejs.org/dist/v24.21.0/$name"
+          printf '%s  %s\n' fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6 "$work/$name" | sha256sum -c -
+          mkdir -p /opt/dsh-release-node
+          tar -xJf "$work/$name" -C /opt/dsh-release-node --strip-components=1
+          for binary in node npm npx; do ln -s "/opt/dsh-release-node/bin/$binary" "/usr/local/bin/$binary"; done
+          nohup sleep 2400 >/dev/null 2>&1 &
+          WSL_SETUP
+          wsl.exe -d "$DSH_WSL_DISTRO" -u "$DSH_WSL_USER" -- bash -lc 'id; uname -a; node --version; npm --version' | tee "$DSH_RELEASE_EVIDENCE_DIR/linux.txt"
+      - name: TypeScript package and native bash parity
+        if: ${{ !cancelled() && steps.provision.outcome == 'success' }}
+        run: node tests/support/release-typescript.mjs
+      - name: Windows ACL denial and native bash parity
+        if: ${{ !cancelled() && steps.provision.outcome == 'success' }}
+        run: node tests/support/release-acl.mjs
+      - name: Release behavior matrix
+        if: ${{ !cancelled() && steps.provision.outcome == 'success' }}
+        env:
+          DSH_MATRIX_ROWS: implemented
+        run: node tests/support/release-cases.mjs tests/support/release-session.mjs "$env:DSH_RELEASE_EVIDENCE_DIR/matrix-user"
+      - name: Root arm of the release behavior matrix
+        if: ${{ !cancelled() && steps.provision.outcome == 'success' }}
+        env:
+          DSH_WSL_USER: root
+          DSH_MATRIX_ROWS: '1.1,1.2,1.3,1.4,1.5,1.6,1.7,1.8,2.1,2.2,2.3,2.4,2.5,2.6,2.7,2.8,4.1,4.2,4.3,4.5,4.6,4.7,5.6'
+        run: node tests/support/release-cases.mjs tests/support/release-session.mjs "$env:DSH_RELEASE_EVIDENCE_DIR/matrix-root"
+      - name: Windows ACL denial with the Linux root account
+        if: ${{ !cancelled() && steps.provision.outcome == 'success' }}
+        env:
+          DSH_WSL_USER: root
+          DSH_RELEASE_EVIDENCE_DIR: ${{ github.workspace }}/release-evidence/matrix-root
+        run: node tests/support/release-acl.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: acceptance-${{ matrix.distro }}-wsl${{ matrix.wsl }}
+          path: release-evidence/
+          if-no-files-found: error
