@@ -103,17 +103,20 @@ jobs:
           apt-get -o Acquire::Retries=3 install -y -qq ca-certificates curl git locales make openssh-client python3-venv sudo vim
           locale-gen zh_CN.UTF-8
           id dsh-release >/dev/null 2>&1 || useradd -m -s /bin/bash -G sudo dsh-release
+          node_version=v24.21.0
+          sha=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
           if [ "$1" = 1 ]; then
-            apt-get -o Acquire::Retries=3 install -y -qq nodejs npm
-          else
-            work=$(mktemp -d)
-            name=node-v24.21.0-linux-x64.tar.xz
-          curl -fSsL --retry 3 --max-time 120 -o "$work/$name" "https://nodejs.org/dist/v24.21.0/$name"
-          printf '%s  %s\n' fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6 "$work/$name" | sha256sum -c -
+            # nodejs/node#63735 documents the WSL1 ELF loader failure of Node 24.
+            node_version=v22.23.4
+            sha=1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce
+          fi
+          work=$(mktemp -d)
+          name=node-${node_version}-linux-x64.tar.xz
+          curl -fSsL --retry 3 --max-time 120 -o "$work/$name" "https://nodejs.org/dist/$node_version/$name"
+          printf "%s  %s\n" "$sha" "$work/$name" | sha256sum -c -
           mkdir -p /opt/dsh-release-node
           tar -xJf "$work/$name" -C /opt/dsh-release-node --strip-components=1
-            for binary in node npm npx; do ln -s "/opt/dsh-release-node/bin/$binary" "/usr/local/bin/$binary"; done
-          fi
+          for binary in node npm npx; do ln -s "/opt/dsh-release-node/bin/$binary" "/usr/local/bin/$binary"; done
           nohup sleep 2400 >/dev/null 2>&1 &
           WSL_SETUP
           wsl.exe -d "$DSH_WSL_DISTRO" -u "$DSH_WSL_USER" -- bash -lc 'id; uname -a; node --version; npm --version' | tee "$DSH_RELEASE_EVIDENCE_DIR/linux.txt"

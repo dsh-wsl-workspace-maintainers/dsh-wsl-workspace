@@ -46,13 +46,13 @@ writeFileSync(join(evidence, 'matrix-environment.json'), JSON.stringify({
 }, null, 2))
 
 let nativeSequence = 0
-const native = async (command, { interactive = false, nativeLimit = 20_000, pty = false, keepStdinOpen = false } = {}) => {
+const native = async (command, { interactive = false, nativeLimit = 20_000, pty = false, noControllingTty = false, keepStdinOpen = false } = {}) => {
   const script = `${linuxCwd}/.matrix-native-${++nativeSequence}.sh`
   wsl(`cat > ${sh(script)} <<'DSH_NATIVE_${runId}'\n${command}\nDSH_NATIVE_${runId}`)
   const started = Date.now()
   const timeout = String(Math.max(1, nativeLimit) / 1000)
   const bash = `bash ${interactive ? '-i ' : ''}${sh(script)}`
-  const invocation = pty ? `script -q -e -c ${sh(bash)} /dev/null` : bash
+  const invocation = pty ? `script -q -e -c ${sh(bash)} /dev/null` : noControllingTty ? `setsid --wait ${bash}` : bash
   const launcher = `cd ${sh(linuxCwd)} && exec timeout --signal=TERM --kill-after=1s ${timeout}s ${invocation}`
   const proc = spawn('wsl.exe', [...wslPrefix, '--exec', 'bash', '-c', launcher], { windowsHide: true })
   const out = [], err = []
@@ -77,6 +77,8 @@ const native = async (command, { interactive = false, nativeLimit = 20_000, pty 
 
 const equal = (a, b) => Buffer.from(a ?? '').equals(Buffer.from(b ?? ''))
 const clean = text => (text ?? '').replace(/^(?:bash: cannot set terminal process group .*|bash: no job control in this shell)\r?\n/gm, '')
+const withoutStartupNotice = text => (text ?? '').replace(/^To run a command as administrator \(user "root"\), use "sudo <command>"\.\r?\nSee "man sudo_root" for details\.\r?\n\r?\n/, '')
+const withoutJobNotices = text => text.replace(/^\[\d+\]\s+\d+\r?\n|^\[\d+\][+-]\s+Done\s+[^\r\n]*\r?\n/gm, '')
 const rendered = call => JSON.stringify({ value: call?.value, result: call?.result, error: call?.error })
 const stdout = call => call?.value?.stdout?.text ?? ''
 const stderr = call => call?.value?.stderr?.text ?? ''
@@ -103,9 +105,10 @@ const regular = (id, command, opts = {}) => register(id, async (session, record)
 }, opts.isolate)
 
 // Priority cells whose historical evidence is incomplete.
-regular('3.6', 'cmd.exe /c ver 2>&1 | head -2', {
+regular('3.6', 'cd /mnt/c/Windows && cmd.exe /c ver 2>&1 | head -2', {
+  isolate: true,
   native: { interactive: true },
-  judge: (p, n) => !bytes(p, n)
+  judge: (p, n) => !bytes(p, { ...n, stdout: withoutStartupNotice(n.stdout) })
     ? verdict(false, 'Windows interop bytes/CRLF differ from native interactive bash')
     : /command not found/.test(n.stdout)
       ? parity('same-day native interactive PATH also lacks cmd.exe; Windows-version CRLF arm remains unmeasured')
@@ -201,7 +204,6 @@ for (const [id, command] of [
   ['2.8', 'base64 <<< hello | base64 -d'],
   ['3.1', `wslpath -u 'C:\\Program Files\\node\\node.exe'`],
   ['3.2', `ls -ld "$(wslpath -u 'C:\\Program Files')"`],
-  ['3.7', 'node.exe --version 2>&1 | head -1'],
   ['4.6', "find /usr -name '*.h' | wc -l"],
   ['5.2', 'sudo -n true 2>&1 | head -1; echo RC=$?'],
   ['5.3', 'id -u; whoami'],
@@ -213,7 +215,12 @@ for (const [id, command] of [
   ['9.5', 'yes | head -c 100000 | wc -c'],
   ['10.7', 'systemctl is-system-running 2>&1 | head -1'],
   ['12.1', "grep -E '*' /etc/hostname"],
-]) regular(id, command, { isolate: id === '1.3', native: { interactive: id === '3.7' } })
+]) regular(id, command, { isolate: id === '1.3' })
+regular('3.7', 'node.exe --version 2>&1 | head -1', {
+  native: { interactive: true },
+  judge: (p, n) => verdict(bytes(p, { ...n, stdout: withoutStartupNotice(n.stdout) }),
+    'Windows Node output matches native interactive Bash after excluding the recorded Ubuntu first-use greeting'),
+})
 
 register('12.2', async (session, record) => {
   const guard = 'if test -r /etc/shadow; then printf ACCESSIBLE; else printf INACCESSIBLE; fi'
@@ -237,8 +244,11 @@ const shellExit = (id, command, expected) => register(id, async (session, record
   record.product.push(p)
   const next = await productBash(session, 'printf "NEXT_SHELL_OK\\n"')
   record.product.push(next)
+  // Interactive Bash emits a standalone "exit" before leaving; native script
+  // execution omits that shell-generated diagnostic. Compare command stderr.
+  const commandStderr = /^exit\b|; exit\b/.test(command) ? stderr(p).replace(/(?:^|(?<=\n))exit\r?\n$/, '') : stderr(p)
   return verdict(n.status === expected && exit(p) === expected && equal(stdout(p), n.stdout)
-    && equal(stderr(p), n.stderr) && /(?:ended|exited|terminat).*shell|shell.*(?:ended|exited|terminat)/i.test(notes(p))
+    && equal(commandStderr, n.stderr) && /(?:ended|exited|terminat).*shell|shell.*(?:ended|exited|terminat)/i.test(notes(p))
     && stdout(next).includes('NEXT_SHELL_OK'), 'shell ending is disclosed and the next tool call starts a usable shell')
 }, true)
 shellExit('1.1', 'echo out; echo err >&2; exit 3', 3)
@@ -325,6 +335,7 @@ register('4.5', async (session, record) => {
 const bigFile = sh(`${linuxCwd}/f47`)
 regular('4.7', `dd if=/dev/zero of=${bigFile} bs=1M count=64 status=none && wc -c < ${bigFile} && rm ${bigFile}`)
 regular('5.1', 'sudo true; echo SUDO_CODE=$?', {
+  native: { noControllingTty: true },
   args: { timeoutMs: 15_000 },
   judge: (p, n) => verdict(equal(stdout(p).match(/SUDO_CODE=\d+/)?.[0], n.stdout.match(/SUDO_CODE=\d+/)?.[0])
     && /SUDO_CODE=\d+/.test(n.stdout) && !p.value?.timedOut
@@ -347,6 +358,7 @@ register('5.6', async (session, record) => {
 })
 
 regular('6.1', `sh -c 'read x < /dev/tty; echo GOT=$?'`, {
+  native: { noControllingTty: true },
   args: { timeoutMs: 12_000 },
   judge: (p, n) => verdict(!p.value?.timedOut && /GOT=\d+/.test(stdout(p) + stderr(p)) && /GOT=\d+/.test(n.stdout)
     && /twice|re-ran|re-run/i.test(notes(p)), 'product reports the PTY retry rather than concealing repeated side effects'),
@@ -362,8 +374,7 @@ regular('6.4', 'top -bn1 | head -3', {
   judge: (p, n) => verdict(exit(p) === n.status && /^top - /m.test(n.stdout) && /^top - /m.test(stdout(p))
     && !/twice|re-ran|re-run/i.test(notes(p)), 'both return a top snapshot without promoting a noninteractive command'),
 })
-regular('6.5', 'timeout 3 cat', {
-  native: { keepStdinOpen: true },
+regular('6.5', 'timeout 3 cat < <(sleep 4)', {
   judge: (p, n) => verdict(exit(p) === n.status && exit(p) === 124 && !p.value?.timedOut && !notes(p).includes('timed out'),
     'the timeout command owns the deadline and returns 124'),
 })
@@ -382,14 +393,24 @@ register('6.9', async (session, record) => {
 }, true)
 
 const sleepName = `sleep 40 dsh-matrix-${runId}`
-const targetedSleep = () => wsl(`(exec -a ${sh(sleepName)} sleep 40) </dev/null >/dev/null 2>&1 &`)
-regular('7.1', `pkill -f ${sh(sleepName)}; echo RC=$?`, {
-  setup: targetedSleep,
-  restore: targetedSleep,
-  judge: (p, n) => verdict(bytes(p, n) && n.stdout === 'RC=0\n', 'pkill reaches only the uniquely named fixture process, leaving the active shell alive'),
-})
+register('7.1', async (session, record) => {
+  const spawnFixture = `(exec -a ${sh(sleepName)} sleep 40) </dev/null >/dev/null 2>&1 &`
+  const verify = `for i in {1..30}; do if pgrep -f ${sh(sleepName)} >/dev/null; then break; fi; sleep 0.05; done`
+  const command = `pkill -f ${sh(sleepName)}; echo RC=$?`
+  // Start each fixture under the same WSL invocation/session that will kill it.
+  // The short standalone WSL setup process on hosted runners killed its own
+  // background sleep before either arm could observe it.
+  const n = await native(`${spawnFixture}\n${verify}\n${command}`)
+  record.native.push(n)
+  const seeded = await productBash(session, `${spawnFixture}\n${verify}\nprintf "PKILL_FIXTURE_READY\\n"`)
+  const p = await productBash(session, command)
+  const alive = await productBash(session, 'printf "PKILL_SESSION_OK\\n"')
+  record.product.push(seeded, p, alive)
+  return verdict(bytes(p, n) && n.stdout === 'RC=0\n' && stdout(alive) === 'PKILL_SESSION_OK\n',
+    'pkill reaches the dedicated uniquely named fixture process and the active shell remains usable')
+}, true)
 register('7.2', async (session, record) => {
-  const command = `setsid --wait bash -c 'kill -INT -- -$$'`
+  const command = `setsid --fork --wait bash -c 'trap "exit 130" INT; kill -INT -- -$$'`
   const n = await native(command)
   const p = await productBash(session, command)
   const alive = await productBash(session, 'printf "SIGINT_SESSION_OK\\n"')
@@ -413,8 +434,10 @@ register('7.4', async (session, record) => {
   return verdict(equal(stdout(first) + stdout(next), n.stdout) && stdout(next).trim() === '0', 'detached job does not remain in the parent shell job table')
 }, true)
 regular('7.6', `nohup sleep 5 > ${sh(`${linuxCwd}/n76.log`)} 2>&1 & sleep 6; cat ${sh(`${linuxCwd}/n76.log`)}`, {
-  judge: (p, n) => verdict(bytes(p, n) && n.stdout === '' && wsl(`test -f ${sh(`${linuxCwd}/n76.log`)} && printf yes`) === 'yes',
-    'nohup creates the fixture and neither side invents output'),
+  judge: (p, n) => verdict(exit(p) === n.status && n.stdout === '' && stdout(p) === ''
+    && equal(withoutJobNotices(stderr(p)), withoutJobNotices(n.stderr))
+    && wsl(`test -f ${sh(`${linuxCwd}/n76.log`)} && printf yes`) === 'yes',
+    'nohup creates the fixture; any shell job notices are retained separately from command streams'),
 })
 
 const statePair = (id, commands, judge, nativeOptions) => register(id, async (session, record) => {
@@ -429,7 +452,8 @@ statePair('8.2', ["alias zzz='echo ALIAS_OK'; zzz"], (p, n) => bytes(p[0], n)
   ? parity('native interactive bash also does not expand a newly defined alias on the same line')
   : verdict(exit(p[0]) === 127 && n.status === 127 && /not found/.test(stderr(p[0])) && /not found/.test(n.stderr), 'same-line alias fails with the same bash status'), { interactive: true })
 statePair('8.3', ["alias yyy='echo YYY_OK'", 'yyy'], (p, n) => verdict(
-  equal(p.map(stdout).join(''), n.stdout) && n.stdout === 'YYY_OK\n', 'alias is effective in a later call'), { interactive: true })
+  equal(p.map(stdout).join(''), withoutStartupNotice(n.stdout)) && withoutStartupNotice(n.stdout) === 'YYY_OK\n',
+  'alias is effective in a later call after excluding the recorded Ubuntu first-use greeting'), { interactive: true })
 regular('8.7', "echo '!历史' ; echo 1!2", {
   judge: (p, n) => verdict(bytes(p, n) && !/event not found/.test(rendered(p)), 'literal exclamation marks survive the tool shell'),
 })
@@ -448,9 +472,16 @@ register('8.8', async (session, record) => {
 })
 
 regular('9.4', `python3 -c "print('x'*300000)"`, {
-  judge: (p, n) => /command not found/.test(n.stderr) ? skip('python3 is absent') : verdict(
-    exit(p) === n.status && n.stdout.length === 300001 && /^x+$/.test(stdout(p).trim()) && p.value?.stdout?.truncated === true,
-    'large one-line output is marked truncated and contains only the expected bytes'),
+  judge: (p, n) => {
+    if (/command not found/.test(n.stderr)) return skip('python3 is absent')
+    const text = (p.result?.data?.message?.content ?? []).map(part => part.text ?? '').join('')
+    const omitted = Number(text.match(/Omitted (\d+) bytes\./)?.[1])
+    const visible = (text.split(/\(Omitted \d+ bytes\./)[0].match(/x/g) ?? []).length
+    return verdict(exit(p) === n.status && n.stdout.length === 300001 && equal(stdout(p), n.stdout)
+      && p.value?.stdout?.truncated === false && /Full formatted result stored at:/.test(text)
+      && visible + omitted === n.stdout.trimEnd().length,
+    'plugin preserves all bytes and the durable host rendering accounts for the omitted bytes')
+  },
 })
 regular('9.6', 'echo BEFORE; sleep 6; echo AFTER', {
   native: { nativeLimit: 10_000 },
@@ -487,13 +518,17 @@ const runSpill = (id, command, stream, expectedLines, checkPointer = false) => r
 runSpill('9.3', 'seq 1 200000', 'stdout', 200000)
 runSpill('9.7', 'seq 1 200000 >&2', 'stderr', 200000)
 runSpill('9.8', 'seq 1 250000', 'stdout', 250000, true)
-regular('10.2', `npm install --no-audit --prefix ${sh(`${linuxCwd}/r102`)} js-yaml 2>&1 | tail -3`, {
+regular('10.2', `npm_config_update_notifier=false npm install --no-audit --prefix ${sh(`${linuxCwd}/r102`)} js-yaml 2>&1 | tail -3`, {
   restore: () => wsl(`mv -- ${sh(`${linuxCwd}/r102`)} ${sh(`${linuxCwd}/r102-native`)}`),
   native: { nativeLimit: 150_000 },
   args: { timeoutMs: 150_000 },
   callOptions: { timeoutMs: 160_000 },
-  judge: (p, n) => verdict(exit(p) === n.status && !p.value?.timedOut && !stdout(p).includes('\x1b')
-    && /packages?/i.test(n.stdout) && /packages?/i.test(stdout(p)), 'same package installation finishes and the result is free of ANSI progress noise'),
+  judge: (p, n) => {
+    const manifests = wsl(`sha256sum ${sh(`${linuxCwd}/r102-native/node_modules/js-yaml/package.json`)} ${sh(`${linuxCwd}/r102/node_modules/js-yaml/package.json`)}`)
+    const hashes = manifests.split('\n').map(line => line.split(' ')[0])
+    return verdict(exit(p) === n.status && n.status === 0 && !p.value?.timedOut && !stdout(p).includes('\x1b')
+      && hashes.length === 2 && hashes[0] === hashes[1], 'both fresh installs contain the same package and the product result is free of ANSI progress noise')
+  },
 })
 const venv = sh(`${linuxCwd}/r104`)
 regular('10.4', `python3 -m venv ${venv} && source ${venv}/bin/activate && which python`, {
@@ -504,7 +539,6 @@ regular('10.4', `python3 -m venv ${venv} && source ${venv}/bin/activate && which
 register('10.5', async (session, record) => {
   if (!wsl('command -v python3 || :') || !wsl('command -v curl || :')) return skip('requires python3 and curl')
   const portFile = sh(`${linuxCwd}/http-port`)
-  const serverFile = sh(`${linuxCwd}/http-server.py`)
   const program = [
     'import sys,time',
     'from http.server import BaseHTTPRequestHandler,HTTPServer',
@@ -521,7 +555,8 @@ register('10.5', async (session, record) => {
     '  server.serve_forever()',
   ].join('\n')
   fixture('http-server.py', program)
-  const pid = wsl(`python3 ${serverFile} ${portFile} </dev/null >/dev/null 2>&1 &\nprintf '%s' "$!"`)
+  const server = spawn('wsl.exe', [...wslPrefix, '--exec', 'timeout', '25s', 'python3',
+    `${linuxCwd}/http-server.py`, `${linuxCwd}/http-port`], { windowsHide: true, stdio: 'ignore' })
   try {
     const port = wsl(`for i in {1..30}; do if test -s ${portFile}; then cat ${portFile}; exit; fi; sleep 0.1; done; exit 1`)
     if (!/^\d+$/.test(port)) throw new Error('loopback streaming fixture did not publish a port')
@@ -533,7 +568,7 @@ register('10.5', async (session, record) => {
     return verdict(bytes(p, n) && n.stdout === '80\n' && !/re-run|twice/i.test(notes(p)),
       'local loopback stream transfers every byte and is never mistaken for a keyboard wait')
   } finally {
-    if (/^\d+$/.test(pid)) wsl(`if grep -Fq -- ${serverFile} /proc/${pid}/cmdline 2>/dev/null; then kill ${pid}; fi`)
+    server.kill()
   }
 })
 regular('10.6', 'docker run --rm alpine echo DOCKER_OK 2>&1 | head -2', {
@@ -544,8 +579,9 @@ regular('10.8', 'make -C /tmp 2>&1 | head -2', {
   judge: (p, n) => /command not found/.test(n.stdout) ? skip('make is absent') : verdict(bytes(p, n), 'make reports the same directory result'),
 })
 regular('11.1', 'sleep 2 & p=$!; cat "/proc/$p/wchan"; wait "$p"', {
-  judge: (p, n) => verdict(bytes(p, n) && (kernelMajor !== 1 || n.stdout.trim() === 'not-reported'),
-    'kernel-specific wait position is recorded and raw WSL1 absence is preserved'),
+  judge: (p, n) => verdict(equal(stdout(p), n.stdout) && exit(p) === n.status
+    && equal(withoutJobNotices(stderr(p)), withoutJobNotices(n.stderr)) && (kernelMajor !== 1 || n.stdout.trim() === 'not-reported'),
+    'kernel-specific wait position agrees, independently of the recorded interactive shell job notices'),
 })
 runSpill('11.2', 'seq 1 200000', 'stdout', 200000)
 regular('11.3', 'uname -r', {
@@ -573,7 +609,9 @@ register('12.5', async (session, record) => {
     'all three calls execute and the third reports the failure streak')
 })
 register('12.7', async (session, record) => {
-  const fixturePng = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lO0AAAAASUVORK5CYII='
+  // The same PNG already accepted by the real host's attachment route in
+  // tests/support/g5-session-probe.mjs and tests/support/realm-probe.mjs.
+  const fixturePng = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
   const linuxPath = `${linuxCwd}/matrix.png`
   const windowsCwd = join(evidence, 'windows-control')
   mkdirSync(windowsCwd, { recursive: true })

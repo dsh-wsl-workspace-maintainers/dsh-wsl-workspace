@@ -6,7 +6,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { withReleaseSession } from './release-session.mjs'
 
-const distro = process.env.WSL_COMPAT_DISTRO ?? 'Ubuntu-24.04'
+const distro = process.env.DSH_WSL_DISTRO ?? process.env.WSL_COMPAT_DISTRO ?? 'Ubuntu-24.04'
 const command = 'npm exec --yes --package typescript@5.9.3 -- tsc --version'
 const evidenceDir = resolve(process.env.DSH_RELEASE_EVIDENCE_DIR ?? '.test-runs/release-10.3')
 const runWsl = (args, options = {}) => spawnSync('wsl.exe', ['-d', distro, ...args], {
