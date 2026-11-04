@@ -6,10 +6,12 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { createRequire } from 'node:module'
 import { hostLacksSubagentGate, isWslVariantId, transformPresetForWsl, variantIdFor } from '../src/host/variants.ts'
 
 const SHELL = 'D:/plugin/lib/shell.js'
 const FS = 'D:/plugin/lib/fs.js'
+const { load: loadYaml } = createRequire(import.meta.url)('js-yaml') as { load: (text: string) => unknown }
 
 /** A standard-like composition (the shape standard/code/cordis share). */
 const STANDARD_LIKE = `# identity
@@ -716,14 +718,215 @@ test('a top-level group carrying the delegation row is dropped whole (issue #132
 })
 
 test('the delegation group is recognized at the depth the shipped presets carry it', () => {
-  // @deepseek-ai/dsh-web-app (0.2.0-rc.2 through 0.2.1-rc.5 checked) mounts the rows at
-  // fourteen spaces inside the group; the resolved composition's own depth is the host's
-  // choice. The detector must not assume any particular one.
-  const deep = DELEGATION_GROUP_SHAPE.replace(/^      name: '@deepseek-ai\/dsh-tool-subagent'$/m, "              name: '@deepseek-ai/dsh-tool-subagent'")
-  assert.notEqual(deep, DELEGATION_GROUP_SHAPE, 'the fixture edit did not land — the depth lock is checking nothing')
+  // Nest the complete group twice, keeping valid YAML and moving BOTH package rows
+  // to fourteen spaces. Leaving the fork row at six would let a six-space-only
+  // detector pass this test without recognizing the deeper mount at all.
+  const groupStart = DELEGATION_GROUP_SHAPE.indexOf('- id: delegation')
+  assert.ok(groupStart >= 0)
+  const nested = DELEGATION_GROUP_SHAPE.slice(groupStart).split('\n').map(line => line === '' ? '' : `        ${line}`).join('\n')
+  const deep = `${DELEGATION_GROUP_SHAPE.slice(0, groupStart)}- id: outer
+  name: cordis:group
+  group: true
+  config:
+    - id: middle
+      name: cordis:group
+      group: true
+      config:
+${nested}`
+  assert.doesNotThrow(() => loadYaml(deep), 'the depth fixture must be valid YAML')
+  const packageLines = deep.split('\n').filter(line => line.trim() === "name: '@deepseek-ai/dsh-tool-subagent'")
+  assert.equal(packageLines.length, 2, 'both delegation providers must be present in the input')
+  assert.ok(packageLines.every(line => line.startsWith(' '.repeat(14) + 'name:')), 'a shallower package row would mask a missed deep mount')
   const out = transformPresetForWsl(deep, SHELL, FS, undefined, undefined, undefined, undefined, { dropSubagentDelegation: true })
   assert.ok(!out.includes('dsh-tool-subagent'), 'a package line indented deeper than the test shape survived the drop')
+  assert.ok(!out.includes('- id: outer'), 'the carrying group must be removed whole')
+  assert.ok(out.includes("name: '@deepseek-ai/dsh-persona'"), 'an unrelated neighbouring row was removed')
 })
+
+for (const header of ['|-', '>+', '|2-', '>-2 # example']) {
+  test(`delegation names inside a ${header} prompt are text, not mounts`, () => {
+    const source = `- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: ${header}
+      Explain this YAML example:
+      name: '@deepseek-ai/dsh-tool-subagent'
+      - id: example
+        name: '@deepseek-ai/dsh-tool-subagent'
+`
+    assert.doesNotThrow(() => loadYaml(source))
+    const out = transformPresetForWsl(source, SHELL, FS, undefined, undefined, undefined, undefined, { dropSubagentDelegation: true })
+    assert.ok(out.includes('- id: persona'), 'a package name in prompt text deleted the persona')
+    assert.ok(out.includes("        name: '@deepseek-ai/dsh-tool-subagent'"), 'the YAML example was changed')
+  })
+}
+
+test('ordinary config names and entry-shaped data are not delegation mounts', () => {
+  const source = `- id: custom
+  name: example-plugin
+  config:
+    name: '@deepseek-ai/dsh-tool-subagent'
+    examples:
+      - id: example
+        name: '@deepseek-ai/dsh-tool-subagent'
+`
+  assert.doesNotThrow(() => loadYaml(source))
+  const out = transformPresetForWsl(source, SHELL, FS, undefined, undefined, undefined, undefined, { dropSubagentDelegation: true })
+  assert.ok(out.includes(source.trimEnd()), 'ordinary plugin data must remain verbatim')
+})
+
+test('a group member with delegation examples is kept unless another member really mounts it', () => {
+  const examples = `- id: examples
+  name: cordis:group
+  group: true
+  config:
+    - id: custom
+      name: example-plugin
+      config:
+        text: |-
+          - id: example
+            name: '@deepseek-ai/dsh-tool-subagent'
+        name: '@deepseek-ai/dsh-tool-subagent'
+`
+  assert.doesNotThrow(() => loadYaml(examples))
+  const kept = transformPresetForWsl(examples, SHELL, FS, undefined, undefined, undefined, undefined, { dropSubagentDelegation: true })
+  assert.ok(kept.includes(examples.trimEnd()), 'a nested member\'s config was mistaken for a mount')
+  const withMount = `${examples}    - id: actual
+      name: '@deepseek-ai/dsh-tool-subagent'
+`
+  assert.doesNotThrow(() => loadYaml(withMount))
+  const dropped = transformPresetForWsl(withMount, SHELL, FS, undefined, undefined, undefined, undefined, { dropSubagentDelegation: true })
+  assert.ok(!dropped.includes('- id: examples'), 'a real mount after the scalar must still remove the carrying group')
+})
+
+for (const name of ["'cordis:group'", '"cordis:group" # group', 'cordis:group # group']) {
+  test(`delegation detection recognizes the group name ${name}`, () => {
+    const source = DELEGATION_GROUP_SHAPE.replace('name: cordis:group', `name: ${name}`)
+    assert.doesNotThrow(() => loadYaml(source))
+    const out = transformPresetForWsl(source, SHELL, FS, undefined, undefined, undefined, undefined, { dropSubagentDelegation: true })
+    assert.ok(!out.includes('- id: delegation'), 'a quoted or commented group name hid a real mount')
+  })
+}
+
+for (const quote of ['"', "'"]) {
+  test(`a multiline ${quote}-quoted value cannot supply an entry name`, () => {
+    const source = `- id: custom
+  description: ${quote}An example:
+  name: @deepseek-ai/dsh-tool-subagent
+  ${quote}
+  name: example-plugin
+  config: {}
+`
+    assert.doesNotThrow(() => loadYaml(source))
+    const out = transformPresetForWsl(source, SHELL, FS, undefined, undefined, undefined, undefined, { dropSubagentDelegation: true })
+    assert.ok(out.includes(source.trimEnd()), 'a continuation line in a quoted value deleted its entry')
+  })
+}
+
+test('cross-entry aliases are resolved without treating their config definition as a mount', () => {
+  const definition = `- id: definitions
+  name: example-plugin
+  config:
+    members: &delegates
+      - id: actual
+        name: '@deepseek-ai/dsh-tool-subagent'
+`
+  const source = `${definition}- id: delegation
+  name: cordis:group
+  group: true
+  config: *delegates
+`
+  assert.doesNotThrow(() => loadYaml(source))
+  const out = transformPresetForWsl(source, SHELL, FS, undefined, undefined, undefined, undefined, { dropSubagentDelegation: true })
+  assert.ok(out.includes(definition.trimEnd()), 'a plain config definition was treated as mounted entries')
+  assert.ok(!out.includes('- id: delegation'), 'an actual group reached through an alias was missed')
+})
+
+test('a cyclic group alias terminates and does not hide a later delegation member', () => {
+  const cycle = `- id: cycle
+  name: cordis:group
+  group: true
+  config: &members
+    - id: recurse
+      name: cordis:group
+      group: true
+      config: *members
+`
+  const kept = transformPresetForWsl(cycle, SHELL, FS, undefined, undefined, undefined, undefined, { dropSubagentDelegation: true })
+  assert.ok(kept.includes(cycle.trimEnd()), 'a group without delegation must remain')
+  const source = `${cycle}    - id: actual
+      name: '@deepseek-ai/dsh-tool-subagent'
+`
+  const dropped = transformPresetForWsl(source, SHELL, FS, undefined, undefined, undefined, undefined, { dropSubagentDelegation: true })
+  assert.ok(!dropped.includes('- id: cycle'), 'a cycle hid the real delegation member')
+})
+
+test('delegation classification respects the first occurrence of a duplicate row id', () => {
+  const first = `- id: repeated
+  name: example-plugin
+  config: {}
+`
+  const source = `${first}- id: repeated
+  name: '@deepseek-ai/dsh-tool-subagent'
+`
+  const out = transformPresetForWsl(source, SHELL, FS, undefined, undefined, undefined, undefined, { dropSubagentDelegation: true })
+  assert.ok(out.includes(first.trimEnd()), 'a later duplicate changed the first entry\'s classification')
+  assert.ok(!out.includes('dsh-tool-subagent'), 'the duplicate row survived')
+})
+
+test('entry-list !!js expressions remain data during delegation detection', () => {
+  const source = `- id: custom
+  name: example-plugin
+  disabled: !!js |
+    (() => { throw new Error('must not execute during transformation') })()
+  config: {}
+`
+  const out = transformPresetForWsl(source, SHELL, FS, undefined, undefined, undefined, undefined, { dropSubagentDelegation: true })
+  assert.ok(out.includes(source.trimEnd()), 'the source expression must remain verbatim')
+})
+
+/** The rows of a generated variant, parsed the way a strict reader would. */
+function variantRows(out: string): { id?: unknown; name?: unknown; config?: unknown }[] {
+  return loadYaml(out) as { id?: unknown; name?: unknown; config?: unknown }[]
+}
+
+test('dropping a group that defines an anchor a kept row aliases still yields a loadable variant', () => {
+  const source = `- id: delegation
+  name: cordis:group
+  group: true
+  config:
+    - id: tool-subagent
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config: &shared
+        maxDepth: 2
+        label: shared
+
+# kept row, aliasing the anchor defined inside the dropped group
+- id: keeper
+  name: example-plugin
+  config: *shared
+`
+  const out = transformPresetForWsl(source, SHELL, FS, undefined, undefined, undefined, undefined, { dropSubagentDelegation: true })
+  const rows = variantRows(out)
+  assert.ok(!out.includes('dsh-tool-subagent'), 'the delegation group survived')
+  const keeper = rows.find(row => row.id === 'keeper')
+  assert.deepEqual(keeper?.config, { maxDepth: 2, label: 'shared' }, 'the kept row lost the value its alias pointed at')
+})
+
+for (const [label, row] of [
+  ['a double-quoted id', `- id: "tool-subagent"\n  name: '@deepseek-ai/dsh-tool-subagent'\n`],
+  ['a single-quoted id', `- id: 'tool-subagent'\n  name: '@deepseek-ai/dsh-tool-subagent'\n`],
+  ['an id after the name', `- name: '@deepseek-ai/dsh-tool-subagent'\n  id: tool-subagent\n`],
+  ['an id with a trailing comment', `- id: tool-subagent # delegation\n  name: '@deepseek-ai/dsh-tool-subagent'\n`],
+] as const) {
+  test(`a delegation row written with ${label} is still dropped`, () => {
+    const keeper = `- id: keeper\n  name: example-plugin\n  config: {}\n`
+    const out = transformPresetForWsl(`${keeper}\n${row}`, SHELL, FS, undefined, undefined, undefined, undefined, { dropSubagentDelegation: true })
+    assert.ok(!out.includes('dsh-tool-subagent'), 'the delegation row was copied through')
+    assert.ok(out.includes(keeper.trimEnd()), 'the neighbouring row must stay verbatim')
+    assert.ok(variantRows(out).some(entry => entry.id === 'keeper'))
+  })
+}
 
 test('hostLacksSubagentGate covers the current compat window and fails closed', () => {
   assert.equal(hostLacksSubagentGate('0.2.0-rc.1'), true)

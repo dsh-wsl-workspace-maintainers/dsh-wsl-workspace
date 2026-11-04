@@ -12,6 +12,8 @@
  * @module dsh-wsl-workspace/host/variants
  */
 
+import { createRequire } from 'node:module'
+
 /** Top-level rows that name the execution world and are replaced by the variant's own. */
 const WORLD_ROWS = new Set(['tool-bash', 'tool-pwsh', 'tool-fs', 'tool-fs-search', 'str-replace-editor', 'tool-str-replace-editor', 'wsl-world', 'filesystem', 'persistent-shell', 'persistent-bash', 'bash-wsl', 'persistent-pwsh', 'terminal-bash', 'terminal-pwsh', 'custom-bash', 'bootstrap-filesystem'])
 
@@ -21,8 +23,8 @@ const EDITOR_ROWS = new Set(['str-replace-editor', 'tool-str-replace-editor'])
 /**
  * The package the copied delegation row mounts.
  *
- * A shipped preset carries one top-level row naming `@deepseek-ai/dsh-tool-subagent` (with
- * `modelSelectionSettings: true`), and this generator used to keep it verbatim like every other
+ * A shipped preset carries rows naming `@deepseek-ai/dsh-tool-subagent` (inside a delegation
+ * group on 0.2.x), and this generator used to keep them verbatim like every other
  * non-world row — which is how a Desktop host came to hold one live `tool-subagent` composition
  * per preset. Upstream's own registration gate is missing (deepseek-ai/deepseek-harness
  * discussion #6751): without `belongsToComposition` on the `agent/created` install path, six
@@ -373,12 +375,19 @@ function disableSkillWatch(block: readonly string[]): string[] {
   return lines
 }
 
-/** The top-level rows of one composition, as (startLine, endLineExclusive) spans. */
+/**
+ * The top-level rows of one composition, as (startLine, endLineExclusive) spans.
+ *
+ * A row starts at any column-0 sequence item, not only `- id: `: a row written
+ * `- name: …` with its `id:` further down is still its own row, and must not be
+ * folded into the row before it. Column 0 is unambiguous — any block scalar or
+ * continuation line inside a row is indented deeper than the row's own keys.
+ */
 function topLevelSpans(lines: readonly string[]): { start: number; end: number }[] {
   const spans: { start: number; end: number }[] = []
   let start = -1
   for (let index = 0; index < lines.length; index++) {
-    if (lines[index]?.startsWith('- id: ') === true) {
+    if (/^-(?: |$)/.test(lines[index] ?? '')) {
       if (start >= 0) spans.push({ start, end: index })
       start = index
     }
@@ -387,9 +396,23 @@ function topLevelSpans(lines: readonly string[]): { start: number; end: number }
   return spans
 }
 
-/** The row id of a top-level span, or undefined when the first line is malformed. */
+/** One `id:` scalar: plain (up to a comment), single- or double-quoted. */
+const ID_SCALAR = String.raw`('(?:[^']|'')*'|"(?:[^"\\]|\\.)*"|[^\s#'"][^#]*?)\s*(?:#.*)?$`
+
+/**
+ * The row id of a top-level span, or undefined when the row names none.
+ * The id is read from the item line (`- id: x`) or, failing that, from the row's
+ * own key level (`  id: x`, exactly two spaces), quoted or not.
+ */
 function spanId(lines: readonly string[], span: { start: number; end: number }): string | undefined {
-  return /^- id: ([A-Za-z0-9_.-]+)/.exec(lines[span.start] ?? '')?.[1]
+  const head = new RegExp(`^- id: ${ID_SCALAR}`).exec(lines[span.start] ?? '')
+  if (head !== null) return unquoteScalar(head[1] ?? '')
+  const own = new RegExp(`^  id: ${ID_SCALAR}`)
+  for (let index = span.start + 1; index < span.end; index++) {
+    const match = own.exec(lines[index] ?? '')
+    if (match !== null) return unquoteScalar(match[1] ?? '')
+  }
+  return undefined
 }
 
 /** Persona config scalars that carry model-facing text, in append preference order. */
@@ -513,32 +536,153 @@ function appendPersona(lines: readonly string[], span: { start: number; end: num
   return block
 }
 
+interface CompositionEntry {
+  id?: unknown
+  name?: unknown
+  config?: unknown
+}
+
+/** The load/dump API of the package's own js-yaml 4.x dependency that this module uses. */
+interface EntryYamlEngine {
+  load(source: string, options: { schema: unknown }): unknown
+  dump(value: unknown, options: { schema: unknown; noRefs: boolean; lineWidth: number }): string
+  JSON_SCHEMA: { extend(type: unknown): unknown }
+  Type: new (tag: string, options: {
+    kind: 'scalar'
+    resolve(data: unknown): boolean
+    construct(data: unknown): unknown
+    instanceOf: abstract new (...args: never[]) => unknown
+    represent(data: unknown): string
+  }) => unknown
+}
+
+/** A host `!!js` scalar, carried as data: never evaluated here, written back as the same tag. */
+class JsExpression {
+  readonly __jsExpr: string
+  constructor(source: string) { this.__jsExpr = source }
+}
+
+/** A parse/dump pair speaking the host entry-list dialect (JSON schema plus `!!js`). */
+interface EntryYaml {
+  load(source: string): unknown
+  dump(rows: unknown): string
+}
+
+let entryYaml: EntryYaml | undefined
+
 /**
- * Whether a top-level block mounts the delegation package anywhere inside itself.
- *
- * The match is at any indent, because the shipped presets (every 0.2.x release checked:
- * @deepseek-ai/dsh-web-app 0.2.0-rc.2 through 0.2.1-rc.5) do not carry a top-level
- * delegation row — they mount the rows inside a `cordis:group` named `delegation`, and
- * the resolved composition the host serves hands that group over as one top-level row
- * with the package line nested deep inside it (issue #132). A `name:` line naming the
- * package is a mount declaration wherever it sits, so there is no shape where the line
- * appears and the block keeps the package; and a partial drop is not an option — the
- * group's siblings (`dsh-workflow-ptc`, `dsh-tool-subagent-control`) inject the
- * `subagents` service the dropped rows provide, and with the rows filtered out they fail
- * to mount and session creation dies with `cannot create effect on inactive context`.
- * The carrying block goes whole.
- *
- * What stays beyond this text-level transform is a delegation group nested inside
- * *another* group: only top-level rows are spans here, and the host's served shape puts
- * the delegation group at the top level (verified from a live 0.2.1-rc.5 install).
- * @param block - the top-level row's lines, group members included.
- * @returns true when the block mounts {@link SUBAGENT_DELEGATION_PACKAGE}.
+ * The entry-list dialect, built once. Loading stays lazy: importing the plugin alone must not
+ * require a materialized dependency tree. Resolve relative to this plugin, not a sibling's YAML major.
  */
-function mountsSubagentDelegation(block: readonly string[]): boolean {
-  return block.some((line) => {
-    const match = /^\s+name: (.+)$/.exec(line)
-    return match !== null && unquoteScalar((match[1] ?? '').trim()) === SUBAGENT_DELEGATION_PACKAGE
+function entryYamlEngine(): EntryYaml {
+  if (entryYaml !== undefined) return entryYaml
+  const require = createRequire(import.meta.url)
+  const enginePath = require.resolve('js-yaml')
+  const { version } = require('js-yaml/package.json') as { version: string }
+  const where = (error: unknown): Error =>
+    new Error(`js-yaml ${version} at ${enginePath}: ${error instanceof Error ? error.message : String(error)}`, { cause: error })
+  let yaml: EntryYamlEngine
+  let schema: unknown
+  try {
+    yaml = require('js-yaml') as EntryYamlEngine
+    if (typeof yaml.load !== 'function' || typeof yaml.dump !== 'function' || typeof yaml.Type !== 'function' || typeof yaml.JSON_SCHEMA?.extend !== 'function') {
+      throw new Error('this copy cannot express the entry-list dialect (requires the 4.x Type/JSON_SCHEMA.extend API)')
+    }
+    // Match the host's !!js dialect as data. No expression is evaluated here.
+    schema = yaml.JSON_SCHEMA.extend(new yaml.Type('tag:yaml.org,2002:js', {
+      kind: 'scalar',
+      resolve: data => typeof data === 'string',
+      construct: data => new JsExpression(String(data)),
+      instanceOf: JsExpression,
+      represent: data => (data as JsExpression).__jsExpr,
+    }))
+  } catch (error) {
+    throw where(error)
+  }
+  entryYaml = {
+    load(source) {
+      try { return yaml.load(source, { schema }) } catch (error) { throw where(error) }
+    },
+    dump(rows) {
+      try { return yaml.dump(rows, { schema, noRefs: true, lineWidth: -1 }) } catch (error) { throw where(error) }
+    },
+  }
+  return entryYaml
+}
+
+/** The parsed entry list of a composition (an empty document is an empty list). */
+function entryRows(source: string): unknown[] {
+  const rows = entryYamlEngine().load(source)
+  if (rows === undefined || rows === null) return []
+  if (!Array.isArray(rows)) throw new Error('source composition did not parse as an entry list')
+  return rows
+}
+
+/** Whether actual entry nodes mount delegation, never arbitrary config/text data. */
+function mountsSubagentDelegation(value: unknown, seen = new Set<object>()): boolean {
+  if (value === null || typeof value !== 'object' || Array.isArray(value) || seen.has(value)) return false
+  seen.add(value)
+  const entry = value as CompositionEntry
+  if (entry.name === SUBAGENT_DELEGATION_PACKAGE) return true
+  return entry.name === 'cordis:group' && Array.isArray(entry.config)
+    && entry.config.some(member => mountsSubagentDelegation(member, seen))
+}
+
+/**
+ * Parse once to decide which top-level text spans must go, without reserializing.
+ * Block scalars, multiline quotes and ordinary config.name values are data, not
+ * mounts. Parsing the whole document also preserves cross-entry anchors/aliases.
+ * The caller drops a carrying group whole: its workflow/control siblings require
+ * the delegation provider's `subagents` service (issue #132).
+ */
+function delegationRowIds(rows: readonly unknown[]): Set<string> {
+  const dropped = new Set<string>()
+  const seenIds = new Set<string>()
+  for (const value of rows) {
+    if (value === null || typeof value !== 'object') continue
+    const entry = value as CompositionEntry
+    if (typeof entry.id !== 'string' || seenIds.has(entry.id)) continue
+    seenIds.add(entry.id)
+    if (mountsSubagentDelegation(entry)) dropped.add(entry.id)
+  }
+  return dropped
+}
+
+/**
+ * Why a generated variant is not safe to mount, or undefined when it is: it must parse (a dropped
+ * span can take an anchor a kept row still aliases), and no row may still mount delegation (a row
+ * the text-level spans could not attribute to its parsed id is otherwise copied through, which is
+ * the #60/#132 double registration this drop exists to prevent).
+ */
+function unsafeVariant(text: string): string | undefined {
+  let rows: unknown[]
+  try {
+    rows = entryRows(text)
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error)
+  }
+  return rows.some(row => mountsSubagentDelegation(row)) ? `a row still mounts ${SUBAGENT_DELEGATION_PACKAGE}` : undefined
+}
+
+/**
+ * The source re-emitted from its parsed rows without the delegation rows: the fallback when the
+ * text-level drop is unsafe. Aliases are expanded in place (`noRefs`), so nothing can dangle, and
+ * every row comes out in the plain `- key: value` shape the span reader handles. Comments and
+ * formatting are lost, which is why this is only the fallback.
+ */
+function sourceWithoutDelegation(rows: readonly unknown[], dropped: ReadonlySet<string>): string {
+  const seenIds = new Set<string>()
+  const kept = rows.filter((value) => {
+    if (value === null || typeof value !== 'object') return true
+    const id = (value as CompositionEntry).id
+    // A row with no usable id cannot be loaded by id, but a mount is still a mount.
+    if (typeof id !== 'string') return !mountsSubagentDelegation(value)
+    // Same first-occurrence rule as the text path: a later duplicate is dropped.
+    if (seenIds.has(id)) return false
+    seenIds.add(id)
+    return !dropped.has(id)
   })
+  return kept.length === 0 ? '' : entryYamlEngine().dump(kept)
 }
 
 /**
@@ -582,6 +726,32 @@ export function transformPresetForWsl(
   imagePath?: string,
   options?: { dropSubagentDelegation?: boolean },
 ): string {
+  const build = (text: string, drop: ReadonlySet<string>): string =>
+    transformText(text, drop, shellPath, fsPath, persistent, searchPath, jobsPath, imagePath)
+  if (options?.dropSubagentDelegation !== true) return build(source, new Set())
+  const rows = entryRows(source)
+  const delegationIds = delegationRowIds(rows)
+  const verbatim = build(source, delegationIds)
+  if (unsafeVariant(verbatim) === undefined) return verbatim
+  // The text-level drop left an alias without its anchor, or a delegation row it could not
+  // place: rebuild from the parsed rows instead, and refuse outright if even that is unsafe.
+  const rebuilt = build(sourceWithoutDelegation(rows, delegationIds), new Set())
+  const problem = unsafeVariant(rebuilt)
+  if (problem !== undefined) throw new Error(`cannot drop the delegation rows safely: ${problem}`)
+  return rebuilt
+}
+
+/** The text-level transform behind {@link transformPresetForWsl}, dropping the given row ids. */
+function transformText(
+  source: string,
+  delegationIds: ReadonlySet<string>,
+  shellPath: string,
+  fsPath: string,
+  persistent?: { relayPath: string; nodePath: string; sandboxPath: string; bashPath: string; terminalTool: string; mode: 'session' | 'pty' },
+  searchPath?: string,
+  jobsPath?: string,
+  imagePath?: string,
+): string {
   const lines = source.split('\n')
   const spans = topLevelSpans(lines)
   const kept: string[] = []
@@ -607,7 +777,7 @@ export function transformPresetForWsl(
       if (id === 'tool-fs-search') sawSearch = true
       continue
     }
-    if (options?.dropSubagentDelegation === true && mountsSubagentDelegation(block)) continue
+    if (delegationIds.has(id)) continue
     if (id === SKILL_FILESYSTEM_ROW) {
       kept.push(...disableSkillWatch(block))
       continue
