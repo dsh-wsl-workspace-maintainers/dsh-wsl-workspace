@@ -344,6 +344,7 @@ export class WslBashSession {
       // `curl -X POST`, `rm`. So rebuild either way, which kills whatever is wedged and stops the
       // *next* call queueing behind it, and re-execute only when the child was already gone.
       const childGone = this.exited
+      if (!childGone && first.run.aborted && signal?.aborted === true) await this.stopCancelledShell()
       const recovery = await this.rebuild()
       const recovered = { restarted: true, ...recovery }
       if (!childGone || signal?.aborted === true || first.run.starved !== undefined) return { ...first.run, ...recovered }
@@ -980,6 +981,38 @@ export class WslBashSession {
       return 0
     }
     return Number(/REAPED=(\d+)/.exec(text)?.[1] ?? '0')
+  }
+
+  /**
+   * Stop the Linux shell before the Windows launcher. On WSL1 the launcher
+   * can interrupt the foreground child before the shell, letting a following
+   * command run while cancellation is already under way.
+   */
+  private async stopCancelledShell(): Promise<void> {
+    const { sessionToken, reaperArgv, bootTimeoutMs, graceMs } = this.spec
+    const pid = this.shellPid
+    if (reaperArgv.length === 0 || !Number.isSafeInteger(pid) || pid <= 1 || !/^[\w-]+$/.test(sessionToken)) return
+    // environ is NUL-delimited. Require the entire entry so a different token,
+    // a token prefix, or a value belonging to another variable cannot match.
+    const script = `if grep -Fzxq -- 'DSH_WSL_SESSION=${sessionToken}' /proc/${pid}/environ 2>/dev/null; then kill -KILL -- ${pid}; fi`
+    const env: Record<string, string> = { ...this.spec.env }
+    delete env.DSH_WSL_SESSION
+    const watchdog = deadline(undefined, bootTimeoutMs, 'WSL_BASH_CANCEL_SHELL')
+    try {
+      const handle = this.ctx.subprocess.spawn({
+        argv: [...reaperArgv, script],
+        cwd: this.spec.cwd,
+        env,
+        stdio: { stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' },
+        graceMs,
+        signal: watchdog.signal,
+      })
+      await handle.done
+    } catch {
+      // The normal launcher teardown and detached-process reaper still run.
+    } finally {
+      watchdog[Symbol.dispose]()
+    }
   }
 
   /** Terminate the current child, if any, and wait for the seam to report it gone. */

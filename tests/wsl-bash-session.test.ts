@@ -194,7 +194,30 @@ test('a shell that dies mid-call is rebuilt and the command re-runs there', asyn
 test('a caller abort is the caller\'s action, never a timeout, and the command is not re-run', async () => {
   const { host, shells } = fakeHost(command =>
     command === BOOTSTRAP_COMMAND ? BOOT : command === 'sleep 99' ? { silent: true } : { status: 0 })
-  const session = new WslBashSession(host, spec())
+  const events: string[] = []
+  const spawnShell = host.subprocess.spawn
+  host.subprocess.spawn = request => {
+    const { argv, env } = request as { argv: readonly string[]; env: Record<string, string> }
+    if (argv[0] === 'reaper') {
+      const script = argv.at(-1) ?? ''
+      if (script.includes('/proc/4242/environ')) {
+        assert.equal(env.DSH_WSL_SESSION, undefined, 'the helper does not inherit the token it checks')
+        assert.ok(script.includes("grep -Fzxq -- 'DSH_WSL_SESSION=offline-test' /proc/4242/environ"))
+        assert.match(script, /kill -KILL -- 4242;/)
+        assert.doesNotMatch(script, /[*?]/, 'the cancellation helper names only the owned shell PID')
+        events.push('linux-shell')
+      } else {
+        events.push('reap')
+      }
+      return { done: Promise.resolve({ exitCode: 0 }) } as unknown as SubprocessHandle
+    }
+    const handle = spawnShell(request)
+    const shell = shells.at(-1)!
+    const terminate = shell.terminate.bind(shell)
+    shell.terminate = () => { events.push('windows-launcher'); terminate() }
+    return handle
+  }
+  const session = new WslBashSession(host, { ...spec(), reaperArgv: ['reaper'], env: { DSH_WSL_SESSION: 'offline-test' } })
   await session.start()
   const controller = new AbortController()
   setTimeout(() => controller.abort(), 60)
@@ -205,6 +228,11 @@ test('a caller abort is the caller\'s action, never a timeout, and the command i
   assert.equal(shells[0]!.frames.filter(frame => commandOf(frame) === 'sleep 99').length, 1)
   assert.equal(shells[1]!.frames.filter(frame => commandOf(frame) === 'sleep 99').length, 0,
     'a cancelled command is not executed a second time')
+  assert.deepEqual(events, ['linux-shell', 'windows-launcher', 'reap'], 'stop Linux before the launcher can interrupt its child')
+  events.length = 0
+  const timedOut = await session.run('sleep 99', 120)
+  assert.equal(timedOut.timedOut, true)
+  assert.deepEqual(events, ['windows-launcher', 'reap'], 'only explicit caller cancellation changes teardown order')
   await session.dispose()
 })
 
