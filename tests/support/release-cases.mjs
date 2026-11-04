@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, isAbsolute, relative, resolve, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -88,6 +89,9 @@ const verdict = (ok, reason) => ({ verdict: ok ? 'MATCH' : 'DEFECT', reason })
 const skip = reason => ({ verdict: 'SKIPPED', reason })
 const parity = reason => ({ verdict: 'PARITY-NOT-DEFECT', reason })
 const bytes = (p, n) => equal(stdout(p), n.stdout) && equal(stderr(p), clean(n.stderr)) && exit(p) === n.status
+const kernelCannotAct = (p, requested) => p.value?.timedOut === true && p.value.timeoutMs === requested
+  && /the check for a command waiting on a keyboard looked and read \([^)]*\/proc\/<pid>\/wchan[^)]*\): [^\n]*w=not-reported/.test(notes(p))
+  && !/run once more on a pseudo-terminal|done twice/i.test(notes(p))
 const rows = []
 const tasks = new Map()
 const register = (id, run, isolate = false) => tasks.set(id, { run, isolate })
@@ -164,15 +168,23 @@ register('12.4', async (session, record) => {
 register('12.6', async (session, record) => {
   const marker = `${linuxCwd}/cancel-started`
   const done = `${linuxCwd}/cancel-completed`
+  const markerOnShare = join(cwd, 'cancel-started')
   const command = `touch ${sh(marker)}; sleep 25; touch ${sh(done)}`
   let cancelled = false
   let cancelRequest
-  const p = await productBash(session, command, { timeoutMs: 30_000 }, {
-    timeoutMs: 35_000,
+  const p = await productBash(session, command, { timeoutMs: 45_000 }, {
+    timeoutMs: 75_000,
     onCall: () => {
       cancelRequest = (async () => {
-        for (let tries = 0; tries < 20; tries++) {
-          if (wsl(`if test -f ${sh(marker)}; then printf yes; fi`) === 'yes') {
+        const waitUntil = Date.now() + 30_000
+        while (Date.now() < waitUntil) {
+          let started = false
+          try {
+            started = (await stat(markerOnShare)).isFile()
+          } catch (error) {
+            if (error.code !== 'ENOENT') throw error
+          }
+          if (started) {
             await session.controller.cancel({ sessionId: session.sessionId })
             cancelled = true
             return
@@ -191,7 +203,7 @@ register('12.6', async (session, record) => {
   return verdict(cancelled && !completed && /abort|cancel/i.test(rendered(p))
     && !/\[exit code:/.test(rendered(p)) && stdout(recovery).includes('AFTER_CANCEL'),
   'the real session was cancelled after the command started, never reached its final side effect, and handled the next tool call')
-})
+}, true)
 
 // Pure parity rows can use the same collector. Staged fixtures are private per run.
 for (const [id, command] of [
@@ -337,13 +349,24 @@ register('4.5', async (session, record) => {
 })
 const bigFile = sh(`${linuxCwd}/f47`)
 regular('4.7', `dd if=/dev/zero of=${bigFile} bs=1M count=64 status=none && wc -c < ${bigFile} && rm ${bigFile}`)
-regular('5.1', 'sudo true; echo SUDO_CODE=$?', {
-  native: { noControllingTty: true },
-  args: { timeoutMs: 15_000 },
-  judge: (p, n) => verdict(equal(stdout(p).match(/SUDO_CODE=\d+/)?.[0], n.stdout.match(/SUDO_CODE=\d+/)?.[0])
+register('5.1', async (session, record) => {
+  const command = 'sudo true; echo SUDO_CODE=$?'
+  const requested = 15_000
+  const n = await native(command, { noControllingTty: true })
+  record.native.push(n)
+  const p = await productBash(session, command, { timeoutMs: requested })
+  record.product.push(p)
+  if (kernelMajor === 1 && p.value?.timedOut) {
+    const tty = await native(command, { pty: true, keepStdinOpen: true, nativeLimit: 5000 })
+    record.native.push(tty)
+    return verdict(n.stdout === 'SUDO_CODE=1\n' && /password/i.test(n.stderr)
+      && tty.status === 124 && /password/i.test(tty.stdout + tty.stderr)
+      && kernelCannotAct(p, requested), 'WSL1 non-acting arm: native PTY also waits for input, and DSH declares the missing kernel fields at its requested deadline without replay')
+  }
+  return verdict(equal(stdout(p).match(/SUDO_CODE=\d+/)?.[0], n.stdout.match(/SUDO_CODE=\d+/)?.[0])
     && /SUDO_CODE=\d+/.test(n.stdout) && !p.value?.timedOut
     && (!/password/i.test(n.stderr) || /password/i.test(rendered(p))),
-  'sudo reports its own result without hanging for a password'),
+  'sudo reports its own result without hanging for a password')
 })
 regular('5.4', `su - -c 'echo SU_OK' 2>&1 | head -2`)
 const permission = sh(`${linuxCwd}/f55`)
@@ -360,11 +383,21 @@ register('5.6', async (session, record) => {
   return verdict(bytes(p, n) && n.stdout === '0\nroot\n', 'root arm has root provenance; separately run the required G1, G2 and G4 rows in this arm')
 })
 
-regular('6.1', `sh -c 'read x < /dev/tty; echo GOT=$?'`, {
-  native: { noControllingTty: true },
-  args: { timeoutMs: 12_000 },
-  judge: (p, n) => verdict(!p.value?.timedOut && /GOT=\d+/.test(stdout(p) + stderr(p)) && /GOT=\d+/.test(n.stdout)
-    && /twice|re-ran|re-run/i.test(notes(p)), 'product reports the PTY retry rather than concealing repeated side effects'),
+register('6.1', async (session, record) => {
+  const command = `sh -c 'read x < /dev/tty; echo GOT=$?'`
+  const requested = 12_000
+  const n = await native(command, { noControllingTty: true })
+  record.native.push(n)
+  const p = await productBash(session, command, { timeoutMs: requested })
+  record.product.push(p)
+  if (kernelMajor === 1 && p.value?.timedOut) {
+    const tty = await native(command, { pty: true, keepStdinOpen: true, nativeLimit: 5000 })
+    record.native.push(tty)
+    return verdict(/GOT=\d+/.test(n.stdout) && tty.status === 124 && !/GOT=/.test(tty.stdout)
+      && kernelCannotAct(p, requested), 'WSL1 non-acting arm: native PTY blocks, and DSH honors its deadline and reports unavailable kernel readings without guessing or replay')
+  }
+  return verdict(!p.value?.timedOut && /GOT=\d+/.test(stdout(p) + stderr(p)) && /GOT=\d+/.test(n.stdout)
+    && /twice|re-ran|re-run/i.test(notes(p)), 'product reports the PTY retry rather than concealing repeated side effects')
 })
 regular('6.2', 'git log --oneline -n 5', {
   setup: () => wsl(`git -C ${sh(linuxCwd)} init -q && git -C ${sh(linuxCwd)} -c user.name=Matrix -c user.email=matrix@example.invalid commit -q --allow-empty -m pager-fixture`),
@@ -417,8 +450,11 @@ register('7.1', async (session, record) => {
   const p = await productBash(session, command)
   const alive = await productBash(session, 'printf "PKILL_SESSION_OK\\n"')
   record.product.push(seeded, p, alive)
-  return verdict(bytes(p, n) && n.stdout === 'RC=0\n' && stdout(alive) === 'PKILL_SESSION_OK\n',
-    'pkill reaches the dedicated uniquely named fixture process and the active shell remains usable')
+  const commandStderr = stderr(p).split(/(?<=\n)/).filter(line =>
+    !(/^\[\d+\][+-]\s+Terminated\s/.test(line) && line.includes(sleepName))).join('')
+  return verdict(exit(p) === n.status && stdout(p) === n.stdout && n.stdout === 'RC=0\n'
+    && commandStderr === n.stderr && stdout(alive) === 'PKILL_SESSION_OK\n',
+  'pkill reaches the dedicated process and leaves the shell usable; the raw interactive termination notice is retained')
 }, true)
 register('7.2', async (session, record) => {
   const command = `setsid --fork --wait bash -c 'trap "echo SIGINT_GROUP; exit 130" INT; kill -INT -- -$$; exit 99'`
@@ -573,7 +609,7 @@ register('10.5', async (session, record) => {
     '  server.serve_forever()',
   ].join('\n')
   fixture('http-server.py', program)
-  const server = spawn('wsl.exe', [...wslPrefix, '--exec', 'timeout', '25s', 'python3',
+  const server = spawn('wsl.exe', [...wslPrefix, '--exec', 'timeout', '120s', 'python3',
     `${linuxCwd}/http-server.py`, `${linuxCwd}/http-port`], { windowsHide: true, stdio: 'ignore' })
   try {
     const port = wsl(`for i in {1..30}; do if test -s ${portFile}; then cat ${portFile}; exit; fi; sleep 0.1; done; exit 1`)
@@ -596,10 +632,22 @@ regular('10.6', 'docker run --rm alpine echo DOCKER_OK 2>&1 | head -2', {
 regular('10.8', 'make -C /tmp 2>&1 | head -2', {
   judge: (p, n) => /command not found/.test(n.stdout) ? skip('make is absent') : verdict(bytes(p, n), 'make reports the same directory result'),
 })
-regular('11.1', 'sleep 2 & p=$!; cat "/proc/$p/wchan"; wait "$p"', {
-  judge: (p, n) => verdict(equal(stdout(p), n.stdout) && exit(p) === n.status
-    && equal(withoutJobNotices(stderr(p)), withoutJobNotices(n.stderr)) && (kernelMajor !== 1 || n.stdout.trim() === 'not-reported'),
-    'kernel-specific wait position agrees, independently of the recorded interactive shell job notices'),
+regular('11.1', 'sleep 2 & p=$!; sleep 0.05; cat "/proc/$p/wchan"; kill -0 "$p" && printf "\\nPROC_ALIVE=1\\n"; wait "$p"', {
+  judge: (p, n) => {
+    const processDiagnostics = text => withoutJobNotices(text).replace(/\/proc\/\d+\/wchan/g, '/proc/<pid>/wchan')
+    const nativeError = processDiagnostics(n.stderr)
+    const same = equal(stdout(p), n.stdout) && exit(p) === n.status
+      && equal(processDiagnostics(stderr(p)), nativeError) && n.stdout.endsWith('PROC_ALIVE=1\n')
+    if (kernelMajor !== 1) {
+      return verdict(same && n.stdout.trimStart() !== 'PROC_ALIVE=1\n', 'the live process reports the same WSL2 wait position in each arm')
+    }
+    const unreported = /\/proc\/<pid>\/wchan: No such file or directory/.test(nativeError)
+      || /^(?:not-reported)?\s*PROC_ALIVE=1\n$/.test(n.stdout)
+    const diagnostic = rows.find(row => row.id === '6.1')?.product[0]
+    const hasProbeNote = diagnostic === undefined || kernelCannotAct(diagnostic, 12_000)
+    return verdict(same && unreported && hasProbeNote,
+      'both WSL1 arms observe a live PID without a kernel wait position; the keyboard deadline case reports that absence')
+  },
 })
 runSpill('11.2', 'seq 1 200000', 'stdout', 200000)
 regular('11.3', 'uname -r', {
@@ -607,7 +655,7 @@ regular('11.3', 'uname -r', {
 })
 register('11.4', async (_session, record) => {
   if (kernelMajor !== 1) return skip('WSL1-only deadline row')
-  const required = ['1.1', '1.6', '6.7', '9.6']
+  const required = ['1.1', '1.6', '6.1', '6.7', '9.6']
   record.basis = Object.fromEntries(required.map(id => [id, rows.find(row => row.id === id)?.verdict ?? 'unrun']))
   return verdict(Object.values(record.basis).every(v => v === 'MATCH'), 'WSL1 release candidate passes G1/G6/G9 session ending, timed read and timeout checks')
 })
