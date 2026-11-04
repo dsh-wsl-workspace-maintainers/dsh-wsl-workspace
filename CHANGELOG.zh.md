@@ -4,6 +4,12 @@
 
 > **这是一份只追加的历史，不是一组链接。** 较早条目点到的仓库内文件（`src/…`、`tests/…`、`docs/…`）与维护者本机上的读数文件，都是"当时量到了什么"的记录；它们以及本包之外的任何路径都**不随包发布**。本包发布的是 `lib/`、两份 README、`TESTING.md`、两份 CHANGELOG 与 `docs/driving.*`。
 
+## 0.7.13 — 2026-11-04
+
+- 受影响的 DSH 宿主在生成 WSL 变体时，会移除实际挂载 subagent 包的整个委派组，避免重复注册，也避免组内工具在失去依赖服务后仍被挂载。仅在提示词或普通配置中提到包名的无关条目会保留。感谢 @stallenlu 提供复现、@Ruler4396 验证宿主行为并提交初版修复，以及 @raylei50653 提供误删反例（[#132](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/132)、[#133](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/133)、[#134](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/pull/134)）。
+- 将 js-yaml 最低版本提升至锁文件已使用的 4.3.2，继续使用 4.x API。
+- 两份 README 补充了 WSL 文件轮询唤醒 WSLg 的原因，以及无需 Linux GUI 应用时如何规避焦点切换。感谢 @friedwm 的排查（[#130](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/issues/130)）。
+
 ## 0.7.12 — 2026-10-31
 
 **别的 agent 现在能只凭包里发布的东西把这枚插件用起来**，不需要仓库，也不需要维护者的记忆。
