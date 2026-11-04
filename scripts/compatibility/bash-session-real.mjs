@@ -325,6 +325,14 @@ try {
   check('the re-run is announced as a second execution',
     hasCtty && canAct ? announcedTwice : !/run once more on a pseudo-terminal/.test(starved.rendered),
   JSON.stringify({ hasCtty, canAct, announcedTwice, head: starved.rendered.slice(0, 90) }))
+  // Bash 5.1 can use an alarm around a blocking terminal read, so its
+  // kernel wait resembles an indefinite read until the builtin returns.
+  const timedBuiltin = await call('read -t 2 x < /dev/tty; echo TIMED_READ_RC=$?', { timeoutMs: 8_000 })
+  const timedBuiltinStatus = Number(/TIMED_READ_RC=(\d+)/.exec(timedBuiltin.text)?.[1])
+  check('a builtin terminal read can reach its own timeout without a shell restart',
+    timedBuiltin.value?.timedOut === false && !/first attempt was|shell was restarted/.test(timedBuiltin.rendered)
+    && (hasCtty ? timedBuiltinStatus > 128 && timedBuiltin.ms >= 1_750 : timedBuiltinStatus === 1),
+  JSON.stringify({ hasCtty, ms: timedBuiltin.ms, status: timedBuiltinStatus, body: timedBuiltin.rendered.slice(-160) }))
   // The ask the remaining keyboard cells use. `starved` above cannot share it: it is the call that
   // *decides* `canAct`, so its 20 s is paid once per run and buys the branch every later cell takes.
   // Where the kernel gives the tool nothing to act on, each of those cells asserts that the call ended

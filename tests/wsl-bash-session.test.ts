@@ -229,6 +229,46 @@ test('two concurrent calls serialise on the one-frame-in-flight protocol', async
   await session.dispose()
 })
 
+test('a foreground read on the shell survives the early watchdog observations', async () => {
+  let finish: () => void = () => {}
+  const gate = new Promise<void>(resolve => { finish = resolve })
+  const { host } = fakeHost(command => command === BOOTSTRAP_COMMAND ? BOOT : { gate, stdout: 'RC=142\n' })
+  const spawnShell = host.subprocess.spawn
+  let probes = 0
+  let stops = 0
+  host.subprocess.spawn = request => {
+    const { argv } = request as { argv: readonly string[] }
+    if (argv[0] !== 'watchdog') return spawnShell(request)
+    const stdout = new EventEmitter()
+    const done = new Promise<{ exitCode: number }>(resolve => {
+      queueMicrotask(() => {
+        if (argv.at(-1)?.startsWith('root=')) {
+          probes += 1
+          stdout.emit('data', Buffer.from('P 4242 4242 4242 Ss+ w=wait_woken c=1,2 tty=1 comm=bash role=shell\nDSH_PROBE_DONE\n'))
+          if (probes === 2) finish()
+        } else {
+          stops += 1
+          finish()
+        }
+        resolve({ exitCode: 0 })
+      })
+    })
+    return { stdout, done } as unknown as SubprocessHandle
+  }
+  const session = new WslBashSession(host, { ...spec(), reaperArgv: ['watchdog'] })
+  await session.start()
+  try {
+    const run = await session.run('read -t 2 x < /dev/tty; echo RC=$?', 8_000)
+    assert.ok(probes >= 2, 'the watchdog really saw the terminal wait more than once')
+    assert.equal(stops, 0, 'an early foreground wait must not restart the shell')
+    assert.equal(run.stdout, 'RC=142\n')
+    assert.equal(run.restarted, false)
+    assert.equal(run.starved, undefined)
+  } finally {
+    await session.dispose()
+  }
+})
+
 test('a disposed session refuses further work and takes its shell down', async () => {
   const { host, shells } = fakeHost(() => BOOT)
   const session = new WslBashSession(host, spec())
