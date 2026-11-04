@@ -670,59 +670,21 @@ test('on a gate-less host the delegation row is dropped instead of duplicated', 
   assert.ok(out.includes('- id: wsl-world'), 'the world group is gone')
 })
 
-// The shape a real 0.2.x host serves (issue #132, dumped from a live 0.2.1-rc.5 install):
-// the shipped presets mount the delegation rows inside a `cordis:group` named `delegation`,
-// and the resolved composition hands that group over as one top-level row with the package
-// line nested inside it. A partial drop is not a valid alternative here — the group's
-// siblings (`dsh-workflow-ptc`, `dsh-tool-subagent-control`) inject the `subagents` service
-// the dropped rows provide, so row-filtering leaves a group that fails to mount and session
-// creation dies with `cannot create effect on inactive context`. The whole block goes.
-const DELEGATION_GROUP_SHAPE = `- id: persona
+test('a group that merely nests the package name is not mistaken for the delegation row', () => {
+  const source = `- id: some-group
+  name: cordis:group
+  group: true
+  config:
+      - id: nested
+        name: '@deepseek-ai/dsh-tool-subagent'
+
+- id: persona
   name: '@deepseek-ai/dsh-persona'
   config:
     text: You are a coding agent.
-
-- id: delegation
-  name: cordis:group
-  group: true
-  isolate:
-    workflowEngine: true
-  config:
-    - id: tool-subagent-control
-      name: '@deepseek-ai/dsh-tool-subagent-control'
-    - id: tool-subagent
-      name: '@deepseek-ai/dsh-tool-subagent'
-      config:
-        provider: spawn
-        toolName: subagent
-        modelSelectionSettings: true
-    - id: tool-subagent-fork
-      name: '@deepseek-ai/dsh-tool-subagent'
-      config:
-        provider: fork
-        toolName: subagent_fork
-    - id: workflow-ptc
-      name: '@deepseek-ai/dsh-workflow-ptc'
-      config:
-        provider: spawn
 `
-
-test('a top-level group carrying the delegation row is dropped whole (issue #132)', () => {
-  const out = transformPresetForWsl(DELEGATION_GROUP_SHAPE, SHELL, FS, undefined, undefined, undefined, undefined, { dropSubagentDelegation: true })
-  assert.ok(!out.includes('dsh-tool-subagent'), 'a delegation row nested inside a group survived the drop and would double-register')
-  assert.ok(!out.includes('- id: delegation'), 'the group shell survived without the rows it carries')
-  assert.ok(!out.includes('dsh-workflow-ptc'), 'the group was row-filtered instead of dropped whole — its siblings cannot mount without the subagents service')
-  assert.ok(out.includes("name: '@deepseek-ai/dsh-persona'"), 'the drop took a neighbouring row with it')
-})
-
-test('the delegation group is recognized at the depth the shipped presets carry it', () => {
-  // @deepseek-ai/dsh-web-app (0.2.0-rc.2 through 0.2.1-rc.5 checked) mounts the rows at
-  // fourteen spaces inside the group; the resolved composition's own depth is the host's
-  // choice. The detector must not assume any particular one.
-  const deep = DELEGATION_GROUP_SHAPE.replace(/^      name: '@deepseek-ai\/dsh-tool-subagent'$/m, "              name: '@deepseek-ai/dsh-tool-subagent'")
-  assert.notEqual(deep, DELEGATION_GROUP_SHAPE, 'the fixture edit did not land — the depth lock is checking nothing')
-  const out = transformPresetForWsl(deep, SHELL, FS, undefined, undefined, undefined, undefined, { dropSubagentDelegation: true })
-  assert.ok(!out.includes('dsh-tool-subagent'), 'a package line indented deeper than the test shape survived the drop')
+  const out = transformPresetForWsl(source, SHELL, FS, undefined, undefined, undefined, undefined, { dropSubagentDelegation: true })
+  assert.ok(out.includes('- id: some-group'), 'a top-level group was dropped for a name nested deeper than a row key sits')
 })
 
 test('hostLacksSubagentGate covers the current compat window and fails closed', () => {

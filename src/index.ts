@@ -41,7 +41,7 @@ import { probePersistentShellReadiness } from './host/pty-readiness.ts'
 import { applyRunCodeGuard } from './host/wsl-run-code-guard.ts'
 import { PROBE_CONFIG, buildSessionSpec } from './host/wsl-bash-tool.ts'
 import { probeWslBashSession, type WslBashSpawnHost } from './host/wsl-bash-session.ts'
-import { hostLacksSubagentGate, isWslVariantId, transformPresetForWsl, unquoteScalar, variantIdFor } from './host/variants.ts'
+import { hostLacksSubagentGate, isWslVariantId, transformPresetForWsl, unquoteScalar, variantIdFor, withoutSubagentDelegation } from './host/variants.ts'
 import { WslSkillsProvider, type WslSkillsRegistryFace } from './host/wsl-skills.ts'
 
 /** The HTTP route this plugin serves (a relative, same-origin path). */
@@ -793,9 +793,10 @@ function entryListSchemaFrom(ns: YamlNamespace): unknown | undefined {
  * What it no longer borrows is the dialect, so the only thing to be reachable is one
  * package this plugin now declares for itself.
  * @param content - the variant composition text.
+ * @param dropSubagentDelegation - whether the host duplicates delegation mounts.
  * @returns the declaration's plugin rows.
  */
-async function parseVariantComposition(content: string): Promise<unknown[]> {
+async function parseVariantComposition(content: string, dropSubagentDelegation: boolean): Promise<unknown[]> {
   const specifier = 'js-yaml'
   const ns = await import(specifier) as YamlNamespace
   const load = ns.load ?? ns.default?.load
@@ -817,7 +818,7 @@ async function parseVariantComposition(content: string): Promise<unknown[]> {
   }
   const rows = load(content, { schema })
   if (!Array.isArray(rows)) throw new Error('the transformed composition did not parse as an entry list')
-  return toImportableSpecifiers(rows)
+  return toImportableSpecifiers(dropSubagentDelegation ? withoutSubagentDelegation(rows) : rows)
 }
 
 /**
@@ -1106,6 +1107,7 @@ async function materializeOne(
 ): Promise<void> {
   const variantId = variantIdFor(preset.id)
   const composition = await readPresetComposition(agentPresets, preset)
+  const usesDeclarations = typeof agentPresets.register === 'function'
   const transformed = transformPresetForWsl(composition.content, paths.shell, paths.fs, persistentShell ? {
     relayPath: paths.relay,
     nodePath: paths.node,
@@ -1113,13 +1115,13 @@ async function materializeOne(
     bashPath: paths.bashTool,
     terminalTool: paths.terminalTool,
     mode: paths.shellMode,
-  } : undefined, paths.search, paths.jobs, paths.image, { dropSubagentDelegation })
+  } : undefined, paths.search, paths.jobs, paths.image, { dropSubagentDelegation: dropSubagentDelegation && !usesDeclarations })
   // 0.1.7-alpha.1+ publishes a variant as a declaration row (the composition is
   // already the exact entry-list dialect the declaration wants, so the only
   // conversion is YAML back to rows); earlier releases still discover one as
   // a directory under the roster's scanned user root.
   if (typeof agentPresets.register === 'function') {
-    const plugins = await parseVariantComposition(transformed)
+    const plugins = await parseVariantComposition(transformed, dropSubagentDelegation)
     // A shipped mode keeps its bilingual label; a custom preset keeps the
     // display name it published, falling back to its id.
     const declaration: PresetDeclaration = {
