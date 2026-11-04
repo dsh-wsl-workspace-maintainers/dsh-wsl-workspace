@@ -32,6 +32,9 @@ import { FIRST_PROBE_MS, LOOKS_BEFORE_SLOWING, MIN_WAIT_MS, PROBE_DONE_SENTINEL,
 /** How often the reader looks for a frame's records, in milliseconds. */
 const POLL_MS = 20
 
+/** Minimum observation window before a terminal wait can restart the shell itself. */
+const SHELL_TERMINAL_WAIT_MS = 2_500
+
 /**
  * A command that defines a function or an alias, by text.
  *
@@ -758,9 +761,15 @@ export class WslBashSession {
       }
       else if (verdict === false) return
     }
-    if (elapsed < MIN_WAIT_MS[kind]) return
-    watch.stop = { kind, atMs: elapsed, pids: culpritPids(culprits, kind, watch.ownTerminal) }
-    await this.stopJob(watch.stop.pids)
+    if (watch.settled || watch.stop) return
+    const pids = culpritPids(culprits, kind, watch.ownTerminal)
+    // On Bash 5.1 a builtin with its own read timeout can be in the same
+    // terminal wait as an indefinite read. Give the session shell longer
+    // to finish before killing it and replaying the entire command.
+    const minimumWait = pids.includes(this.shellPid) ? SHELL_TERMINAL_WAIT_MS : MIN_WAIT_MS[kind]
+    if (elapsed < minimumWait || pids.length === 0) return
+    watch.stop = { kind, atMs: elapsed, pids }
+    await this.stopJob(pids)
   }
 
   /** The run fields that carry a watchdog stop, or nothing when there was none. */
