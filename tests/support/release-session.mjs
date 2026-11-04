@@ -15,12 +15,12 @@ const version = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8
 const overrides = process.env.DSH_RELEASE_HOST_DIR ? [join(resolve(process.env.DSH_RELEASE_HOST_DIR), 'node_modules')] : []
 const bundle = 'dsh-wsl-workspace'
 
-function recordsUnder(root) {
+function recordsUnder(root, sessionId) {
   if (!existsSync(root)) return []
   return readdirSync(root, { withFileTypes: true }).flatMap(entry => {
     const path = join(root, entry.name)
-    if (entry.isDirectory()) return recordsUnder(path)
-    if (!entry.isFile() || !/^session\.v\d+\.jsonl$/.test(entry.name)) return []
+    if (entry.isDirectory()) return recordsUnder(path, sessionId)
+    if (!entry.isFile() || !root.endsWith(sessionId) || !/^session\.v\d+\.jsonl$/.test(entry.name)) return []
     const lines = readFileSync(path, 'utf8').split('\n')
     // The last segment may be an append in progress.
     return lines.slice(0, -1).filter(Boolean).map(line => JSON.parse(line))
@@ -110,6 +110,7 @@ export async function withReleaseSession({ cwd, preset = 'wsl-standard', evidenc
   process.env.DSH_TELEMETRY_DISABLED = '1'
   const { namespace: { runProfile } } = await hostModule('@deepseek-ai/dsh', { subpath: ['lib', 'profile-boot.js'], overrides })
   const { namespace: { createLaunchEnvironmentSnapshot } } = await hostModule('@deepseek-ai/dsh-launch-environment', { overrides })
+  const { namespace: { setSandboxMode: switchSandboxMode } } = await hostModule('@deepseek-ai/dsh-sandbox-policy', { overrides })
   const { namespace: { LlmAdapter } } = await hostModule('@deepseek-ai/dsh-llm', { overrides })
   const environment = createLaunchEnvironmentSnapshot([{ source: 'process', values: { ...process.env } }])
   const { ctx, shutdown } = await runProfile({ environment, profile, patchFiles: [overlay], args: ['--host', '127.0.0.1', '--port', '0', '--no-open'] })
@@ -118,7 +119,7 @@ export async function withReleaseSession({ cwd, preset = 'wsl-standard', evidenc
   const executions = new Map()
   class ScriptedAdapter extends LlmAdapter {
     providerInfo(id) { return { id, name: 'Release acceptance scripted model' } }
-    async listModels() { return [{ id: model, name: 'Release acceptance scripted model' }] }
+    async listModels(route) { return [{ provider: route, id: model, name: 'Release acceptance scripted model', inputModalities: ['text', 'image'] }] }
     async resolveModel(route, id, signal) {
       return { ...(await super.resolveModel(route, id, signal)), inputModalities: ['text', 'image'] }
     }
@@ -174,7 +175,7 @@ export async function withReleaseSession({ cwd, preset = 'wsl-standard', evidenc
           content: [{ type: 'text', text: 'Execute one scripted release acceptance tool call.' }],
         }, signal)
         const persisted = await until(() => {
-          const records = recordsUnder(sessionRoot)
+          const records = recordsUnder(sessionRoot, sessionId)
           const call = records.find(event => event.type === 'tool/call' && event.data.callId === request.block.id)
           if (!call) return
           return call
@@ -183,7 +184,7 @@ export async function withReleaseSession({ cwd, preset = 'wsl-standard', evidenc
         assert.deepEqual(JSON.parse(persisted.data.arguments), args)
         if (onCall) await onCall(persisted)
         const result = await until(() => {
-          const records = recordsUnder(sessionRoot)
+          const records = recordsUnder(sessionRoot, sessionId)
           const result = records.find(event => event.type === 'tool/result' && event.data.message.toolCallId === request.block.id)
           if (result && records.some(event => event.type === 'turn/end' &&
               event.data.turn === persisted.data.turn && event.seq > result.seq)) return result
@@ -198,7 +199,12 @@ export async function withReleaseSession({ cwd, preset = 'wsl-standard', evidenc
         executions.delete(request.block.id)
       }
     }
-    return { call, sessionId, controller }
+    function setSandboxMode(mode) {
+      const agent = ctx.get('agents').get(sessionId)
+      assert(agent, 'sandbox mode switch requires an active acceptance agent')
+      switchSandboxMode(agent.session, mode)
+    }
+    return { call, sessionId, controller, setSandboxMode }
   }
   try {
     writeFileSync(join(output, 'build.json'), JSON.stringify({

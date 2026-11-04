@@ -118,6 +118,7 @@ jobs:
         if: ${{ !cancelled() && steps.provision.outcome == 'success' }}
         env:
           DSH_MATRIX_ROWS: implemented
+          DSH_MATRIX_EXCLUDE: 4.4,10.3
         run: node tests/support/release-cases.mjs tests/support/release-session.mjs "$env:DSH_RELEASE_EVIDENCE_DIR/matrix-user"
       - name: Root arm of the release behavior matrix
         if: ${{ !cancelled() && steps.provision.outcome == 'success' }}

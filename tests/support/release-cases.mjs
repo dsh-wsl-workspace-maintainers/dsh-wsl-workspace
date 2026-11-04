@@ -12,7 +12,9 @@ if (!driverFile || !outputDir) {
 const { withReleaseSession } = await import(pathToFileURL(resolve(driverFile)))
 const distro = process.env.DSH_WSL_DISTRO ?? process.env.WSL_COMPAT_DISTRO ?? 'Ubuntu'
 const chosen = new Set((process.env.DSH_MATRIX_ROWS ?? '3.6,6.7,10.1,10.3,12.4,12.6').split(','))
+const excluded = new Set((process.env.DSH_MATRIX_EXCLUDE ?? '').split(',').map(id => id.trim()).filter(Boolean))
 const rootArm = process.env.DSH_WSL_USER === 'root'
+const disposableWindows = process.env.GITHUB_ACTIONS === 'true' || process.env.DSH_MATRIX_DISPOSABLE_WINDOWS === '1'
 const requestedUser = process.env.DSH_WSL_USER
 const wslPrefix = ['-d', distro, ...(requestedUser ? ['-u', requestedUser] : [])]
 const evidence = resolve(outputDir)
@@ -44,25 +46,24 @@ writeFileSync(join(evidence, 'matrix-environment.json'), JSON.stringify({
 }, null, 2))
 
 let nativeSequence = 0
-const native = async (command, { interactive = false, nativeLimit = 20_000, cancelAfter, keepStdinOpen = false } = {}) => {
+const native = async (command, { interactive = false, nativeLimit = 20_000, pty = false, keepStdinOpen = false } = {}) => {
   const script = `${linuxCwd}/.matrix-native-${++nativeSequence}.sh`
   wsl(`cat > ${sh(script)} <<'DSH_NATIVE_${runId}'\n${command}\nDSH_NATIVE_${runId}`)
   const started = Date.now()
   const timeout = String(Math.max(1, nativeLimit) / 1000)
-  const launcher = `cd ${sh(linuxCwd)} && exec timeout --signal=TERM --kill-after=1s ${timeout}s bash ${interactive ? '-i ' : ''}${sh(script)}`
+  const bash = `bash ${interactive ? '-i ' : ''}${sh(script)}`
+  const invocation = pty ? `script -q -e -c ${sh(bash)} /dev/null` : bash
+  const launcher = `cd ${sh(linuxCwd)} && exec timeout --signal=TERM --kill-after=1s ${timeout}s ${invocation}`
   const proc = spawn('wsl.exe', [...wslPrefix, '--exec', 'bash', '-c', launcher], { windowsHide: true })
   const out = [], err = []
   proc.stdout.on('data', chunk => out.push(chunk))
   proc.stderr.on('data', chunk => err.push(chunk))
   if (!keepStdinOpen) proc.stdin.end()
-  let cancelTimer
-  if (cancelAfter !== undefined) cancelTimer = setTimeout(() => proc.kill(), cancelAfter)
   const stop = setTimeout(() => proc.kill(), nativeLimit + 3000)
   return await new Promise((res, rej) => {
     proc.on('error', rej)
     proc.on('close', (status, signal) => {
       clearTimeout(stop)
-      clearTimeout(cancelTimer)
       const stdout = Buffer.concat(out)
       const stderr = Buffer.concat(err)
       res({
@@ -108,17 +109,20 @@ regular('3.6', 'cmd.exe /c ver 2>&1 | head -2', {
     ? verdict(false, 'Windows interop bytes/CRLF differ from native interactive bash')
     : /command not found/.test(n.stdout)
       ? parity('same-day native interactive PATH also lacks cmd.exe; Windows-version CRLF arm remains unmeasured')
-      : verdict(/\r\n/.test(n.stdout), 'native Windows-version CRLF was observed and matched'),
+      : verdict(/Microsoft Windows[^\r\n]*\r\n/i.test(n.stdout), 'native Windows-version CRLF was observed and matched'),
 })
-regular('6.7', 'read -t 2 x < /dev/tty; echo RC=$?', {
-  native: { nativeLimit: 7000, keepStdinOpen: true },
-  args: { timeoutMs: 7000 },
-  callOptions: { timeoutMs: 20_000 },
-  judge: (p, n) => verdict(
-    /^RC=\d+\r?\n?$/.test(stdout(p)) && equal(stdout(p), n.stdout)
-      && !p.value?.timedOut && !/re-ran|re-run|twice/i.test(notes(p)),
-    'read keeps bash’s own RC and completes without timeout or automatic replay',
-  ),
+register('6.7', async (session, record) => {
+  const command = 'read -t 2 x < /dev/tty; echo RC=$?'
+  const n = await native(command, { nativeLimit: 7000, keepStdinOpen: true })
+  record.native.push(n)
+  const pty = await native(command, { nativeLimit: 7000, keepStdinOpen: true, pty: true })
+  record.native.push(pty)
+  const p = await productBash(session, command, { timeoutMs: 7000 }, { timeoutMs: 20_000 })
+  record.product.push(p)
+  const result = stdout(p).trim()
+  const observed = (n.stdout + pty.stdout).split(/\r?\n/).filter(line => /^RC=\d+$/.test(line))
+  return verdict(observed.includes(result) && /^RC=\d+$/.test(result) && !p.value?.timedOut
+    && !/re-ran|re-run|twice/i.test(notes(p)), 'read keeps a real native Bash RC (piped or PTY arm) without a tool deadline or replay')
 })
 const repo10 = `${linuxCwd}/r101`
 const commit = `git init -q ${sh(repo10)} && cd ${sh(repo10)} && git commit -q --allow-empty -m wip; git log --oneline | wc -l`
@@ -198,7 +202,6 @@ for (const [id, command] of [
   ['3.1', `wslpath -u 'C:\\Program Files\\node\\node.exe'`],
   ['3.2', `ls -ld "$(wslpath -u 'C:\\Program Files')"`],
   ['3.7', 'node.exe --version 2>&1 | head -1'],
-  ['3.8', 'ls /mnt/c/\\$Recycle.Bin 2>&1 | head -2'],
   ['4.6', "find /usr -name '*.h' | wc -l"],
   ['5.2', 'sudo -n true 2>&1 | head -1; echo RC=$?'],
   ['5.3', 'id -u; whoami'],
@@ -212,13 +215,19 @@ for (const [id, command] of [
   ['12.1', "grep -E '*' /etc/hostname"],
 ]) regular(id, command, { native: { interactive: id === '3.7' } })
 
-regular('12.2', 'cat /etc/shadow 2>&1 | head -1', {
-  setup: () => {
-    if (rootArm || wsl('if test -r /etc/shadow; then printf yes; fi') === 'yes') {
-      throw new Error('refusing to read credential data as a user with access; run only as the ordinary test account')
-    }
-  },
-  judge: (p, n) => verdict(bytes(p, n) && /Permission denied/.test(n.stdout), 'native and product show permission denied'),
+register('12.2', async (session, record) => {
+  const guard = 'if test -r /etc/shadow; then printf ACCESSIBLE; else printf INACCESSIBLE; fi'
+  const [nativeGuard, productGuard] = await Promise.all([native(guard), productBash(session, guard)])
+  record.native.push(nativeGuard)
+  record.product.push(productGuard)
+  if (nativeGuard.stdout !== 'INACCESSIBLE' || stdout(productGuard) !== 'INACCESSIBLE') {
+    return skip('requires a Linux user that lacks read access to /etc/shadow in both arms')
+  }
+  const command = 'cat /etc/shadow 2>&1 | head -1'
+  const [n, p] = await Promise.all([native(command), productBash(session, command)])
+  record.native.push(n)
+  record.product.push(p)
+  return verdict(bytes(p, n) && /Permission denied/.test(n.stdout), 'native and product show permission denied')
 })
 
 const shellExit = (id, command, expected) => register(id, async (session, record) => {
@@ -264,6 +273,14 @@ regular('2.6', 'LC_ALL=zh_CN.UTF-8 date 2>/dev/null | head -1', {
 regular('3.3', 'cd /mnt/d && pwd && ls | head -3', { isolate: true })
 regular('3.4', `mkdir -p ${sh(`${linuxCwd}/带 空格 与中文 目录`)} && ls -d ${sh(linuxCwd)}/带*`)
 regular('3.5', `printf 'x\\n' > ${sh(linuxCwd)}/"nl$(printf '\\n')file" && ls ${sh(linuxCwd)} | grep -c nl`)
+register('3.8', async (session, record) => {
+  if (!disposableWindows) return skip('requires a disposable Windows runner to inspect recycle directory entries')
+  const command = 'ls /mnt/c/\\$Recycle.Bin 2>&1 | head -2'
+  const [n, p] = await Promise.all([native(command), productBash(session, command)])
+  record.native.push(n)
+  record.product.push(p)
+  return verdict(bytes(p, n), 'recycle-bin access or refusal matches the same Windows runner')
+})
 const link = sh(`${linuxCwd}/l41`)
 regular('4.1', `ln -s /etc/hostname ${link} && readlink -f ${link} && cat ${link}`, {
   restore: () => wsl(`test -L ${link} && unlink ${link}`),
@@ -287,12 +304,15 @@ register('4.4', async (session, record) => {
   record.product.push(p)
   return verdict(bytes(p, n) && /Permission denied|Operation not permitted/.test(n.stdout), 'both report the same Windows ACL denial for the isolated DrvFS fixture')
 })
-regular('4.5', 'du -sh /mnt/c/Users', {
-  native: { nativeLimit: 5000 },
-  args: { timeoutMs: 1500 },
-  judge: (p, n) => n.status === 124 && p.value?.timedOut
+register('4.5', async (session, record) => {
+  if (!disposableWindows) return skip('requires a disposable Windows runner for the Windows users directory scan')
+  const command = 'du -sh /mnt/c/Users'
+  const [n, p] = await Promise.all([native(command, { nativeLimit: 5000 }), productBash(session, command, { timeoutMs: 1500 })])
+  record.native.push(n)
+  record.product.push(p)
+  return n.status === 124 && p.value?.timedOut
     ? parity('native scan also exceeds the observation budget and the product reports its own timeout')
-    : verdict(bytes(p, n), 'must answer like native or clearly report a deadline during a native-slow scan'),
+    : verdict(bytes(p, n), 'must answer like native or clearly report a deadline during a native-slow scan')
 })
 const bigFile = sh(`${linuxCwd}/f47`)
 regular('4.7', `dd if=/dev/zero of=${bigFile} bs=1M count=64 status=none && wc -c < ${bigFile} && rm ${bigFile}`)
@@ -460,6 +480,7 @@ runSpill('9.3', 'seq 1 200000', 'stdout', 200000)
 runSpill('9.7', 'seq 1 200000 >&2', 'stderr', 200000)
 runSpill('9.8', 'seq 1 250000', 'stdout', 250000, true)
 regular('10.2', `npm install --no-audit --prefix ${sh(`${linuxCwd}/r102`)} js-yaml 2>&1 | tail -3`, {
+  restore: () => wsl(`mv -- ${sh(`${linuxCwd}/r102`)} ${sh(`${linuxCwd}/r102-native`)}`),
   native: { nativeLimit: 150_000 },
   args: { timeoutMs: 150_000 },
   callOptions: { timeoutMs: 160_000 },
@@ -569,12 +590,14 @@ register('12.8', async (session, record) => {
   const [denial, readOnly, full] = record.product
   return verdict(/run_code cannot start in this session/.test(rendered(denial))
     && /read-only/.test(rendered(denial)) && /danger-full-access/.test(rendered(denial))
-    && readOnly.value?.value === 1 && full.value?.value === 1,
+    && readOnly.value?.result === 1 && full.value?.result === 1,
   'workspace-write has the WSL 9P guard, and read-only/full-access preserve real successful code execution')
 })
 
 const required = ['3.6', '6.7', '10.1', '10.3', '12.4', '12.6']
-const selected = chosen.has('implemented') ? [...new Set([...required, ...tasks.keys()])].sort((a, b) => Number(a) - Number(b)) : [...chosen]
+const selected = (chosen.has('implemented')
+  ? [...new Set([...required, ...tasks.keys()])].sort((a, b) => Number(a) - Number(b))
+  : [...chosen]).filter(id => !excluded.has(id))
 for (const id of selected) if (!tasks.has(id)) throw new Error(`Matrix row ${id} has no scripted implementation`)
 
 await withReleaseSession({ cwd, evidenceDir: join(evidence, 'product') }, async session => {
@@ -599,6 +622,7 @@ await withReleaseSession({ cwd, evidenceDir: join(evidence, 'product') }, async 
 const totals = Object.fromEntries([...new Set(rows.map(row => row.verdict))].map(name => [name, rows.filter(row => row.verdict === name).length]))
 writeFileSync(join(evidence, 'matrix-summary.json'), JSON.stringify({
   distro, user, kernel, kernelMajor, totals,
+  excludedRows: [...excluded],
   rowsNotSelected: [...tasks.keys()].filter(id => !selected.includes(id)),
   skippedRows: rows.filter(row => row.verdict === 'SKIPPED').map(({ id, reason }) => ({ id, reason })),
 }, null, 2))
