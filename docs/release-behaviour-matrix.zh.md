@@ -74,7 +74,7 @@
 | 4.1 | `ln -s /etc/hostname /tmp/l41 && readlink -f /tmp/l41 && cat /tmp/l41` | 解析成功 | 链接不许被当"不存在"（#10/#44 修过） | 已入回归 |
 | 4.2 | 工作区里一个 Windows 侧看不见的 Linux 符号链接：`ls -l` 后经 `readlink -f` | 用发行版解析 | 同上，走我们 fs 时也要对 | 已入（skills/fs real） |
 | 4.3 | `mkdir -p /tmp/d43/a/b/c && (cd /tmp/d43/a/b && rmdir /tmp/d43/a/b && pwd)` | `getcwd` 失效时的原生句子 | 同句、同退出码 | 已入 live gate 族 |
-| 4.4 | `touch /mnt/c/Windows/system32/drivers/x 2>&1 \| head -1` | 系统的拒绝句 | 拒绝要像拒绝，不许变"不存在" | SKIPPED（产品侧未跑） |
+| 4.4 | 对仅供验收的 NTFS 目录设置拒绝创建 ACL 后，两侧运行 `LC_ALL=C touch -- <fixture>` | 系统的拒绝句，退出码 1 | 保留原始拒绝信息，文件未创建 | 已定案（0.7.13，两种内核，见 §3） |
 | 4.5 | `du -sh /mnt/c/Users` | 原生就是慢（实测 8 分 38 秒未完，状态 `D`） | **PARITY-NOT-DEFECT**；但期限到了必须报名字、留下已产出字节 | 已定案 |
 | 4.6 | `find /usr -name '*.h' \| wc -l`（冷缓存） | 与热缓存同答案，只耗时不同 | 答案稳定；耗时不设判据 | 实测（本机隔离实例，两侧同日） |
 | 4.7 | `dd if=/dev/zero of=/tmp/f47 bs=1M count=64 status=none && wc -c < /tmp/f47 && rm /tmp/f47` | 67108864 | 二进制写不许截断 | 实测（本机隔离实例，两侧同日） |
@@ -147,7 +147,7 @@
 |---|---|---|---|---|
 | 10.1 | `git init -q /tmp/r101 && cd /tmp/r101 && git commit -q --allow-empty -m wip; git log --oneline \| wc -l` | 1 | **不许因为超时重放而变 2**；若真做了两遍，必须自己说明（#68 的披露条款） | 必跑（有副作用，夹具在 /tmp） |
 | 10.2 | `npm install --no-audit --prefix /tmp/r102 js-yaml 2>&1 \| tail -3` | 装成 | 进度条/ANSI 不污染结果句；退出码对 | 已跑（用户轮） |
-| 10.3 | `npx --yes tsc --version` | 版本行 | 同 | 未定 |
+| 10.3 | `npm exec --yes --package typescript@5.9.3 -- tsc --version` | `Version 5.9.3`，空 stderr，退出码 0 | 两侧固定同一 TypeScript 包、版本及 npm registry，分别使用冷缓存 | 已定案（0.7.13，见 §3） |
 | 10.4 | `python3 -m venv /tmp/r104 && source /tmp/r104/bin/activate && which python` | venv 内 | 激活状态是否跨发延续，按原生"同一 shell 才延续"判 | 实测（本机隔离实例，两侧同日） |
 | 10.5 | `curl -sS -N --max-time 4 <流式地址> \| wc -c` | 字节数 | 流式期不许被误判成等键盘 | 已跑 |
 | 10.6 | `docker run --rm alpine echo DOCKER_OK 2>&1 \| head -2` | 装了才判 | 没装 ⇒ SKIPPED（不算过） | 实测（本机隔离实例，两侧同日） |
@@ -176,10 +176,16 @@
 | 12.7 | `read_image`（PNG，wsl 会话内） |同一宿主实例里的**非 WSL 会话**是这一格的对照：修复后的臂里它 22 ms 返回同一张图（446x568／61992 B，`D:\Temp\…\ctl\probe.png`），拿到的仍是宿主那条定义（转录里只有 `resolved by the filesystem backend`）；没装本 PR 时同一发 125 ms | wsl 世界内 `read_image` 必须由本插件的读取回答、返回真实图像字节并渲染 image 块，**且必须过宿主那道输出校验**；宿主那条跨 realm 的 `fs` 失败只在没有我这行时才落在派发上（#54，探针 arm 2） | 实测两档：realm-probe row 6（维护者本机，含宿主 `validateJsonSchemaValue` 那一关；ubuntu runner 无 `@deepseek-ai/dsh-attachment`，CI 里该臂 SKIP）＋真模型真会话两臂（同一实例先 wsl 后 standard：修复后 wsl 臂 296 ms 回 `/home/ruler/issue54-token-20261013/probe.png` 的 image/png 446x568／61992 B；修复前那一发死在 `value.image.name`，落盘 `D:\Temp\issue54-token-20261013\drive-{shipped,pr83}-both.log`） |
 | 12.8 | `run_code`（PTC 会话，工作区根是 `\\wsl.localhost\…`） | 同一程序体 `return 1;` 在三种档位下的今日实测：**完全访问** 558 ms 回 `1`；**仅可查看** 826 ms 回 `1` 并由宿主自己附一句 `File sandbox enforcement is partial on this host.`；**工作区可写** 83 ms ❌ `code run failed (worker-exit): GetNamedSecurityInfoW failed (Win32 1)`。摘掉本插件、用宿主自带 `ptc` 预设走同一个 UNC 根，报**同一句话**（83 ms），所以这不是我们切出的 realm 造成的 | 那条 Win32 裸错不许原样落在模型面前：`workspace-write` × 9P 根这一格必须由本插件用一句人话拒掉，并给三条出路（换「仅可查看」／换「完全访问」／用世界自己的 `bash`/`wsl_terminal`/`read`/`write`）；其余档位与根**一律不拦**（拦了就是抢走能用的一侧，#78） | 已入回归（`tests/wsl-run-code-guard.test.ts` 六格正反对照）＋**真机两帧**（快照＝本分支产物 `lib/index.js` digest `105323cf3766`，装进隔离实例逐文件比对无差异）：`wsl-ptc` × `workspace-write` 那一发 **2 ms** 就拿到我方那句（内含被拒的根 `\\wsl.localhost\Ubuntu\home\ruler\issue54-token-20261013`），裸 Win32 错不再落在模型面前；非干扰对照＝同一份产物 × `read-only` **829 ms 回 `1`**、宿主照旧附 `File sandbox enforcement is partial on this host.`，× `danger-full-access` **478 ms 回 `1`**，两格守卫都没伸手。同产物 × `workspace-write` × `wsl-standard` 的自有工具对照一发 **448 ms 回 `GUARD_CTL_OK` ＋内核 `6.18.40.1-microsoft-standard-WSL2`**（真打了发行版内核，不是本地回显）。落盘 `D:\Temp\issue54-token-20261013\frame-*.log`；未测：真沙箱搬进发行版那条路（#8644 的形状），以及他 Desktop 里切档按钮的实际手感 |
 
-## 3. 已定案的行（按轮次；最新一轮 2026-10-19）
+## 3. 已定案的行（按轮次；最新一轮 2026-11-04）
+
+这次验收使用宿主 DSH 0.2.1-rc.2、候选 `0a13d38` 和版本 `0.7.13`。三组运行器使用同一份 tarball，SHA-256 为 `7361dbb2194076595047cc27ddb05487f6ab7fc75bdb2645f4012f7bcb55d79e`。证据包含 Ubuntu 22.04／WSL2、Ubuntu 24.04／WSL1 和 WSL2 的原生输出、DSH 工具结果及压缩会话转录。Docker 用例按规程记作缺少原生 Docker 的 SKIPPED。 [三环境原始证据](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/actions/runs/41799921421) · [同包的 WSL1 目录扫描复测](https://github.com/dsh-wsl-workspace-maintainers/dsh-wsl-workspace/actions/runs/41801918750)
 
 | 行 | 判决 | 凭据（同日两侧） |
 |---|---|---|
+| 4.4 | **MATCH** | 在新建 NTFS 目录上为运行器用户设置仅针对夹具的拒绝创建 ACE。普通用户和 Linux root 两臂在设置前均能创建文件，设置后同机原生与 DSH 的 stderr 逐字节一致，退出码均为 1，目录仍可列出且保持为空。 |
+| 6.7 | **MATCH** | Ubuntu 22.04 的旧候选会在 Bash 5.1 的两秒限时读取返回前重启 shell。修复后的包在同机对照中保留原生 RC，转录中无提前重启或重跑。 |
+| 10.3 | **MATCH** | 两臂使用同一 Linux 用户、目录及 Node/npm，独立冷缓存从同一 npm registry 拉取 TypeScript 5.9.3，均输出 `Version 5.9.3`、空 stderr、退出码 0。 |
+| 12.6 | **MATCH** | 观察到原命令启动后才请求取消。修复后的包在三组环境的转录中记录取消，后续调用正常。超过原命令的唤醒时间后，旧 Bash 和前台子进程均已退出，完成标记仍不存在。 |
 | 3.6 / 3.7 | **PARITY-NOT-DEFECT**（撤销 10-09 的"未定"）；同一轮 34 行常用命令里 33 MATCH、1 SKIPPED、0 DEFECT | 构建＝main `5c210a4`，宿主＝**Desktop 应用自己打包的那份**（`resources/app.asar` 内 `0.2.1-rc.2` 命中 4608 处）。装置 `D:/Temp/rc2-round/drive-rc2.mjs`：独立 `DSH_HOME`＋自有端口＋脚本化 provider（¥0），先 `--check` 预检证明 35 发按序可达、再 boot。启动判决 `WSL preset variants: 4/4 registered`，`never started`／`unknown prompt variable`／`failed to import` 各 **0** 命中；一个 `wsl-standard` 会话 35 call↔35 result（含 `write`→`read` 两发 683/248 ms——这两发就是问 `fs.js` 那行起没起）。**3.6/3.7 的成因既不是产品也不是我的装置**：`\\wsl.localhost\Ubuntu\home\ruler\.bashrc:118-119` 把一整条 Windows 侧 MSYS 形 PATH 烤了进去、还带字面反斜杠（`export PATH="\/c/Users/…"`），bash 逐段报 `export: … not a valid identifier` 并把 PATH 截断在第一个空格（读数停在 `…/c/Program`，共 10 条），于是 `command -v cmd.exe` 为空。对照臂同日同机：`wsl.exe -d Ubuntu -u ruler -- bash -i` 喂 stdin 的**纯交互 bash**（`native-interactive.mjs`）给出与我们**一字不差**的 10 条 PATH、`INTEROP=none`、`cmd.exe` 与 `node.exe` 都 `command not found`；只有不 source rc 的那档（`bash <file>`）才拿到 48 条含 `System32` 的 PATH。⇒ 在"同一 PATH 形状下与原生一致"这条判据上 3.7 成立，3.6 的期望前提（cmd.exe 可跑）在他这台的交互档里两侧都不成立。**10-09 那条归因作废**：把宿主进程 PATH 换成注册表 machine+user 两档，读数一字不动；再往里塞 `D:\rc2-marker\bin` 当哨，**哨不出现在会话里**——所以那不是"继承启动环境"。SKIPPED 的那行属于 12.6 那一族（调用中途打断）：这台装置发不出中断，按 §0 记 SKIPPED、不算 MATCH，其等价面在 census 与 live gate。其余 33 行逐字节相符，差异只在 16 行那发的 commit sha、`export`/`head -1` 两侧皆空、sudo 那行同一句 `sudo: a password is required`＋`[exit code: 1]`、后台那行的作业信息走我们这层 stderr（交互 bash 本来就这么打）、带 8 s 期限那发 8 975 ms 回期限句＋重启与重放那两句。读数：`D:/Temp/rc2-round/{native-out.json,product-matrix.json,table.md,diffs.json,boot-findings-matrix.json}` |
 | 4.5 `du -sh /mnt/c/Users` | PARITY-NOT-DEFECT | 原生 `bash -lc` 跑 8 分 38 秒未完，进程状态 `D`；我们这层按模型自填的 600 s/180 s 报期限并留下已产出字节 |
 | 8.2 alias 同一行 | PARITY-NOT-DEFECT | 原生 `printf "alias zzz='echo A'; zzz\n" \| bash -i` → 同样 `not found`；换行则 `YYY_OK` |

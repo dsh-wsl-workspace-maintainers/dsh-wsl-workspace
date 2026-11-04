@@ -117,6 +117,7 @@ function ourToolSurface() {
   return {
     parameters: Object.keys(registered.parameters.properties ?? registered.parameters),
     fields: Object.keys(foreground.properties),
+    execute: registered.execute as (args: unknown, execution: unknown) => Promise<unknown>,
     render: registered.output.render as (args: unknown, value: unknown) => { text: string }[],
   }
 }
@@ -176,6 +177,17 @@ test('the foreground result carries the same fields, plus only what the ledger d
     .filter(key => !declared.has(`field-${key}`))
   assert.deepEqual(undeclared, [],
     `undocumented output field difference: ${JSON.stringify({ onlyOurs: ours.filter(k => !theirs.includes(k)), onlyTheirs: theirs.filter(k => !ours.includes(k)) })}`)
+})
+
+test('a foreground call rejects nonpositive deadlines before starting a shell', async () => {
+  const { execute } = ourToolSurface()
+  const execution = { signal: new AbortController().signal }
+  for (const timeoutMs of [0, -1]) {
+    await assert.rejects(
+      execute({ command: 'echo acceptance', description: 'invalid deadline', timeoutMs }, execution),
+      { message: 'timeoutMs must be a positive finite number' },
+    )
+  }
 })
 
 test('the markers the client parses are the ones we emit, in the host’s sentences', () => {

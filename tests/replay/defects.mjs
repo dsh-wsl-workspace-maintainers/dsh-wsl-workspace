@@ -120,7 +120,7 @@ export const UNITS = [
     plants: [
       {
         file: 'package.json',
-        find: '    "js-yaml": "^4.1.0"',
+        find: '    "js-yaml": "^4.3.2"',
         replace: '    "js-yaml": "*"  ',
         note: 'the pinned 4.x range becomes whatever the hoisted tree happens to carry',
       },
@@ -129,7 +129,7 @@ export const UNITS = [
         // #47 is the report that made the range load-bearing (a hoisted 5.x `load()` against a 4.x
         // schema is the second half of that issue).
         file: 'package.json',
-        find: '    "js-yaml": "^4.1.0"',
+        find: '    "js-yaml": "^4.3.2"',
         replace: '    "js-yaml": "^5.0.0"',
         note: 'the range drifts to the major whose API does not take the 4.x schema',
       },

@@ -549,7 +549,6 @@ export function apply(ctx: Context, config?: Config): void {
     presentCall: (args: BashArgs) => ({ card: 'terminal', title: args.command }),
     async execute(args: BashArgs, exec: ToolExecution) {
       const headerCwd = exec.agent?.session?.header?.cwd
-      const timeoutMs = Math.min(args.timeoutMs ?? resolved.timeoutMs, resolved.maxTimeoutMs)
       const ownerKey = exec.agent?.id ?? exec.agent?.session?.id ?? 'default'
       const overCap = stdinRefusal(args.stdin)
       if (overCap !== undefined) throw new Error(overCap)
@@ -566,6 +565,13 @@ export function apply(ctx: Context, config?: Config): void {
           }, exec as unknown as Parameters<typeof startBackgroundJob>[2]),
         }
       }
+      // The session's deadline helper treats nonpositive values as an internal
+      // no-timer sentinel. A foreground tool call must not expose that sentinel.
+      const requestedTimeout = args.timeoutMs
+      if (requestedTimeout !== undefined && (!Number.isFinite(requestedTimeout) || requestedTimeout <= 0)) {
+        throw new Error('timeoutMs must be a positive finite number')
+      }
+      const timeoutMs = Math.min(requestedTimeout ?? resolved.timeoutMs, resolved.maxTimeoutMs)
       // Whether this call runs on a terminal is decided by what the process *does*, not by what its
       // name looks like: it goes down the pipe, and if the session's watchdog catches it asleep in a
       // terminal read, the same call runs it once more on a pseudo-terminal. `tty` is the caller's

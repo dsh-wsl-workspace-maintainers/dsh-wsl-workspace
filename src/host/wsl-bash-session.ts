@@ -32,6 +32,9 @@ import { FIRST_PROBE_MS, LOOKS_BEFORE_SLOWING, MIN_WAIT_MS, PROBE_DONE_SENTINEL,
 /** How often the reader looks for a frame's records, in milliseconds. */
 const POLL_MS = 20
 
+/** Minimum observation window before a terminal wait can restart the shell itself. */
+const SHELL_TERMINAL_WAIT_MS = 2_500
+
 /**
  * A command that defines a function or an alias, by text.
  *
@@ -341,6 +344,7 @@ export class WslBashSession {
       // `curl -X POST`, `rm`. So rebuild either way, which kills whatever is wedged and stops the
       // *next* call queueing behind it, and re-execute only when the child was already gone.
       const childGone = this.exited
+      if (!childGone && first.run.aborted && signal?.aborted === true) await this.stopCancelledShell()
       const recovery = await this.rebuild()
       const recovered = { restarted: true, ...recovery }
       if (!childGone || signal?.aborted === true || first.run.starved !== undefined) return { ...first.run, ...recovered }
@@ -758,9 +762,15 @@ export class WslBashSession {
       }
       else if (verdict === false) return
     }
-    if (elapsed < MIN_WAIT_MS[kind]) return
-    watch.stop = { kind, atMs: elapsed, pids: culpritPids(culprits, kind, watch.ownTerminal) }
-    await this.stopJob(watch.stop.pids)
+    if (watch.settled || watch.stop) return
+    const pids = culpritPids(culprits, kind, watch.ownTerminal)
+    // On Bash 5.1 a builtin with its own read timeout can be in the same
+    // terminal wait as an indefinite read. Give the session shell longer
+    // to finish before killing it and replaying the entire command.
+    const minimumWait = pids.includes(this.shellPid) ? SHELL_TERMINAL_WAIT_MS : MIN_WAIT_MS[kind]
+    if (elapsed < minimumWait || pids.length === 0) return
+    watch.stop = { kind, atMs: elapsed, pids }
+    await this.stopJob(pids)
   }
 
   /** The run fields that carry a watchdog stop, or nothing when there was none. */
@@ -971,6 +981,38 @@ export class WslBashSession {
       return 0
     }
     return Number(/REAPED=(\d+)/.exec(text)?.[1] ?? '0')
+  }
+
+  /**
+   * Stop the Linux shell before the Windows launcher. On WSL1 the launcher
+   * can interrupt the foreground child before the shell, letting a following
+   * command run while cancellation is already under way.
+   */
+  private async stopCancelledShell(): Promise<void> {
+    const { sessionToken, reaperArgv, bootTimeoutMs, graceMs } = this.spec
+    const pid = this.shellPid
+    if (reaperArgv.length === 0 || !Number.isSafeInteger(pid) || pid <= 1 || !/^[\w-]+$/.test(sessionToken)) return
+    // environ is NUL-delimited. Require the entire entry so a different token,
+    // a token prefix, or a value belonging to another variable cannot match.
+    const script = `if grep -Fzxq -- 'DSH_WSL_SESSION=${sessionToken}' /proc/${pid}/environ 2>/dev/null; then kill -KILL -- ${pid}; fi`
+    const env: Record<string, string> = { ...this.spec.env }
+    delete env.DSH_WSL_SESSION
+    const watchdog = deadline(undefined, bootTimeoutMs, 'WSL_BASH_CANCEL_SHELL')
+    try {
+      const handle = this.ctx.subprocess.spawn({
+        argv: [...reaperArgv, script],
+        cwd: this.spec.cwd,
+        env,
+        stdio: { stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' },
+        graceMs,
+        signal: watchdog.signal,
+      })
+      await handle.done
+    } catch {
+      // The normal launcher teardown and detached-process reaper still run.
+    } finally {
+      watchdog[Symbol.dispose]()
+    }
   }
 
   /** Terminate the current child, if any, and wait for the seam to report it gone. */
