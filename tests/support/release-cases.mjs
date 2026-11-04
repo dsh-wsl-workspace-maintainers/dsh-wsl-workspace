@@ -367,7 +367,7 @@ register('4.5', async (session, record) => {
   const p = await productBash(session, command, { timeoutMs: budget })
   record.product.push(p)
   return n.status === 124 && p.value?.timedOut && p.value.timeoutMs === budget
-    && /timed out after 1500ms/.test(rendered(p))
+    && p.result?.data?.message?.content?.some(block => block.type === 'text' && /timed out after 1500ms/.test(block.text))
     ? parity('native scan also exceeds the same 1500ms observation budget and the product reports the deadline')
     : verdict(bytes(p, n), 'must answer like native or clearly report a deadline during a native-slow scan')
 })
