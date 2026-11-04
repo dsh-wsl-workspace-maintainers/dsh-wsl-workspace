@@ -46,7 +46,7 @@ jobs:
       - name: Pack exact candidate and record its identity
         shell: pwsh
         env:
-          CANDIDATE: 52c526d8ecd703427472950bb0bea5a945a7eb42
+          CANDIDATE: 789936a29ed895c741606bbf296019049600a667
         run: |
           git diff --exit-code $env:CANDIDATE -- src lib package.json package-lock.json cordis.patch.yml README.md README.zh.md CHANGELOG.md CHANGELOG.zh.md docs/driving.md docs/driving.zh.md
           if ($LASTEXITCODE) { throw 'The files shipped in the acceptance package differ from the candidate' }
