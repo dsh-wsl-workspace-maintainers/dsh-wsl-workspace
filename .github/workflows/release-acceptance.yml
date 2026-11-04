@@ -5,7 +5,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: dsh-release-acceptance-0713
+  group: dsh-release-acceptance-0713-${{ github.sha }}
   cancel-in-progress: true
 jobs:
   acceptance:
@@ -16,11 +16,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { distro: Ubuntu-22.04, wsl: 2 }
-          - { distro: Ubuntu-24.04, wsl: 1 }
-          - { distro: Ubuntu-24.04, wsl: 2 }
+          - { distro: Ubuntu-22.04, registered: Ubuntu, wsl: 2, linuxRelease: '22.04' }
+          - { distro: Ubuntu-24.04, registered: Ubuntu-24.04, wsl: 1, linuxRelease: '24.04' }
+          - { distro: Ubuntu-24.04, registered: Ubuntu-24.04, wsl: 2, linuxRelease: '24.04' }
     env:
-      DSH_WSL_DISTRO: ${{ matrix.distro }}
+      DSH_WSL_DISTRO: ${{ matrix.registered }}
       DSH_WSL_USER: dsh-release
       DSH_RELEASE_EVIDENCE_DIR: ${{ github.workspace }}/release-evidence
       MSYS_NO_PATHCONV: '1'
@@ -68,6 +68,7 @@ jobs:
             packageSha256 = $artifactHash
             indexSha256 = $libHash
             distro = $env:DSH_WSL_DISTRO
+            linuxRelease = "${{ matrix.linuxRelease }}"
             wslVersion = "${{ matrix.wsl }}"
           } | ConvertTo-Json | Set-Content (Join-Path $env:DSH_RELEASE_EVIDENCE_DIR 'artifact.json')
           "DSH_RELEASE_PACKAGE=$dest" >> $env:GITHUB_ENV
@@ -84,6 +85,7 @@ jobs:
         shell: bash
         env:
           WSL_VERSION: ${{ matrix.wsl }}
+          LINUX_RELEASE: ${{ matrix.linuxRelease }}
         run: |
           set -euo pipefail
           wsl.exe -l -v | tr -d '\000\r' | tee "$DSH_RELEASE_EVIDENCE_DIR/wsl-list.txt"
@@ -92,19 +94,26 @@ jobs:
             wsl.exe -l -v | tr -d '\000\r' | tee "$DSH_RELEASE_EVIDENCE_DIR/wsl-list.txt"
             grep -E "$DSH_WSL_DISTRO[[:space:]].*[[:space:]]${WSL_VERSION}$" "$DSH_RELEASE_EVIDENCE_DIR/wsl-list.txt"
           fi
-          wsl.exe -d "$DSH_WSL_DISTRO" -u root -- bash -seu <<'WSL_SETUP'
+          wsl.exe -d "$DSH_WSL_DISTRO" -u root -- bash -seu -s -- "$WSL_VERSION" "$LINUX_RELEASE" <<'WSL_SETUP'
+          source /etc/os-release
+          test "$VERSION_ID" = "$2"
+          printf 'Ubuntu %s, kernel %s\n' "$VERSION_ID" "$(uname -r)"
           export DEBIAN_FRONTEND=noninteractive
           apt-get -o Acquire::Retries=3 update -qq
           apt-get -o Acquire::Retries=3 install -y -qq ca-certificates curl git locales make openssh-client python3-venv sudo vim
           locale-gen zh_CN.UTF-8
           id dsh-release >/dev/null 2>&1 || useradd -m -s /bin/bash -G sudo dsh-release
-          work=$(mktemp -d)
-          name=node-v24.21.0-linux-x64.tar.xz
+          if [ "$1" = 1 ]; then
+            apt-get -o Acquire::Retries=3 install -y -qq nodejs npm
+          else
+            work=$(mktemp -d)
+            name=node-v24.21.0-linux-x64.tar.xz
           curl -fSsL --retry 3 --max-time 120 -o "$work/$name" "https://nodejs.org/dist/v24.21.0/$name"
           printf '%s  %s\n' fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6 "$work/$name" | sha256sum -c -
           mkdir -p /opt/dsh-release-node
           tar -xJf "$work/$name" -C /opt/dsh-release-node --strip-components=1
-          for binary in node npm npx; do ln -s "/opt/dsh-release-node/bin/$binary" "/usr/local/bin/$binary"; done
+            for binary in node npm npx; do ln -s "/opt/dsh-release-node/bin/$binary" "/usr/local/bin/$binary"; done
+          fi
           nohup sleep 2400 >/dev/null 2>&1 &
           WSL_SETUP
           wsl.exe -d "$DSH_WSL_DISTRO" -u "$DSH_WSL_USER" -- bash -lc 'id; uname -a; node --version; npm --version' | tee "$DSH_RELEASE_EVIDENCE_DIR/linux.txt"
@@ -114,6 +123,12 @@ jobs:
       - name: Windows ACL denial and native bash parity
         if: ${{ !cancelled() && steps.provision.outcome == 'success' }}
         run: node tests/support/release-acl.mjs
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && steps.provision.outcome == 'success' }}
+        with:
+          name: focused-acceptance-${{ matrix.distro }}-wsl${{ matrix.wsl }}
+          path: release-evidence/
+          if-no-files-found: error
       - name: Release behavior matrix
         if: ${{ !cancelled() && steps.provision.outcome == 'success' }}
         env:

@@ -49,10 +49,10 @@ await withReleaseSession({ cwd, evidenceDir }, async ({ call }) => {
 
   // Use separate cold caches so either arm can only obtain the compiler from
   // the same registry and pinned package, not from the other arm's install.
-  const env = 'npm_config_registry=https://registry.npmjs.org'
-  const native = direct(command, [env, 'npm_config_cache=' + linuxCwd + '/native-cache'])
+  const env = ['npm_config_registry=https://registry.npmjs.org', 'npm_config_update_notifier=false']
+  const native = direct(command, [...env, 'npm_config_cache=' + linuxCwd + '/native-cache'])
   const product = await call('bash', {
-    command: env + ' npm_config_cache=' + linuxCwd + '/product-cache ' + command,
+    command: env.join(' ') + ' npm_config_cache=' + linuxCwd + '/product-cache ' + command,
     description: 'Check the pinned TypeScript compiler version',
     timeoutMs: 180_000,
   }, { timeoutMs: 240_000 })

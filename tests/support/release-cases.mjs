@@ -213,7 +213,7 @@ for (const [id, command] of [
   ['9.5', 'yes | head -c 100000 | wc -c'],
   ['10.7', 'systemctl is-system-running 2>&1 | head -1'],
   ['12.1', "grep -E '*' /etc/hostname"],
-]) regular(id, command, { native: { interactive: id === '3.7' } })
+]) regular(id, command, { isolate: id === '1.3', native: { interactive: id === '3.7' } })
 
 register('12.2', async (session, record) => {
   const guard = 'if test -r /etc/shadow; then printf ACCESSIBLE; else printf INACCESSIBLE; fi'
@@ -272,7 +272,11 @@ regular('2.6', 'LC_ALL=zh_CN.UTF-8 date 2>/dev/null | head -1', {
 })
 regular('3.3', 'cd /mnt/d && pwd && ls | head -3', { isolate: true })
 regular('3.4', `mkdir -p ${sh(`${linuxCwd}/带 空格 与中文 目录`)} && ls -d ${sh(linuxCwd)}/带*`)
-regular('3.5', `printf 'x\\n' > ${sh(linuxCwd)}/"nl$(printf '\\n')file" && ls ${sh(linuxCwd)} | grep -c nl`)
+const newlinePath = `${sh(linuxCwd)}/$'nl\\nfile'`
+regular('3.5', `printf 'x\\n' > ${newlinePath} && ls ${sh(linuxCwd)} | grep -c nl`, {
+  judge: (p, n) => verdict(bytes(p, n) && n.stdout.trim() === '1' && wsl(`test -f ${newlinePath} && printf yes`) === 'yes',
+    'the actual filename contains a newline and both invocations give the same result'),
+})
 register('3.8', async (session, record) => {
   if (!disposableWindows) return skip('requires a disposable Windows runner to inspect recycle directory entries')
   const command = 'ls /mnt/c/\\$Recycle.Bin 2>&1 | head -2'
@@ -291,7 +295,11 @@ regular('4.2', `ls -l ${link} && readlink -f ${link}`, {
   judge: (p, n) => verdict(bytes(p, n) && n.stdout.endsWith('/etc/hostname\n'), 'workspace symlink survives listing and resolves in Linux'),
 })
 const vanished = sh(`${linuxCwd}/d43/a/b`)
-regular('4.3', `mkdir -p ${vanished}/c && (cd ${vanished} && rmdir ${vanished}/c ${vanished} && pwd)`)
+regular('4.3', `mkdir -p ${vanished}/c && (cd ${vanished} && rmdir ${vanished}/c ${vanished} && pwd -P)`, {
+  judge: (p, n) => verdict(equal(stdout(p), n.stdout) && exit(p) === n.status
+    && /getcwd|current directory/.test(stderr(p)) && /getcwd|current directory/.test(n.stderr),
+  'native and product report loss of the current directory with the same status'),
+})
 const denied = process.env.DSH_MATRIX_DENIED_PATH
 register('4.4', async (session, record) => {
   if (!denied?.startsWith('/mnt/c/') || !denied.includes('dsh-matrix-denied-')) {

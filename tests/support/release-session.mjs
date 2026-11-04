@@ -2,11 +2,11 @@
 // preset, Agent, tool dispatch and on-disk session log are DSH's real paths.
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
-import { hostModule, releaseUnderTest, repoRoot } from './host-closure.mjs'
+import { hostModule, repoRoot } from './host-closure.mjs'
 
 const provider = 'release-acceptance'
 const model = 'scripted'
@@ -15,22 +15,23 @@ const version = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8
 const overrides = process.env.DSH_RELEASE_HOST_DIR ? [join(resolve(process.env.DSH_RELEASE_HOST_DIR), 'node_modules')] : []
 const bundle = 'dsh-wsl-workspace'
 
-function recordsUnder(root, sessionId) {
-  if (!existsSync(root)) return []
-  return readdirSync(root, { withFileTypes: true }).flatMap(entry => {
+function transcriptFile(root, sessionId) {
+  if (!existsSync(root)) return undefined
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
     const path = join(root, entry.name)
-    if (entry.isDirectory()) return recordsUnder(path, sessionId)
-    if (!entry.isFile() || !root.endsWith(sessionId) || !/^session\.v\d+\.jsonl$/.test(entry.name)) return []
-    const lines = readFileSync(path, 'utf8').split('\n')
-    // The last segment may be an append in progress.
-    return lines.slice(0, -1).filter(Boolean).map(line => JSON.parse(line))
-  })
+    if (entry.isDirectory()) {
+      const found = transcriptFile(path, sessionId)
+      if (found) return found
+    } else if (entry.isFile() && basename(root) === sessionId && /^session\.v\d+\.jsonl\.zstd$/.test(entry.name)) {
+      return path
+    }
+  }
 }
 
 async function until(read, timeoutMs, message) {
   const deadline = Date.now() + timeoutMs
   for (;;) {
-    const answer = read()
+    const answer = await read()
     if (answer !== undefined) return answer
     if (Date.now() >= deadline) throw new Error(message)
     await delay(50)
@@ -99,7 +100,6 @@ export async function withReleaseSession({ cwd, preset = 'wsl-standard', evidenc
     '- id: session-persistence-jsonl',
     '  config:',
     '    root: ' + JSON.stringify(sessionRoot),
-    '    compression: none',
     '- id: agent-default-model',
     '  config:',
     '    provider: ' + provider,
@@ -108,7 +108,7 @@ export async function withReleaseSession({ cwd, preset = 'wsl-standard', evidenc
   ].join('\n'))
   process.env.DSH_HOME = home
   process.env.DSH_TELEMETRY_DISABLED = '1'
-  const { namespace: { runProfile } } = await hostModule('@deepseek-ai/dsh', { subpath: ['lib', 'profile-boot.js'], overrides })
+  const { namespace: { runProfile }, version: hostVersion } = await hostModule('@deepseek-ai/dsh', { subpath: ['lib', 'profile-boot.js'], overrides })
   const { namespace: { createLaunchEnvironmentSnapshot } } = await hostModule('@deepseek-ai/dsh-launch-environment', { overrides })
   const { namespace: { setSandboxMode: switchSandboxMode } } = await hostModule('@deepseek-ai/dsh-sandbox-policy', { overrides })
   const { namespace: { LlmAdapter } } = await hostModule('@deepseek-ai/dsh-llm', { overrides })
@@ -153,6 +153,8 @@ export async function withReleaseSession({ cwd, preset = 'wsl-standard', evidenc
   })
   const controller = ctx.get('sessionController')
   assert(controller, 'DSH web session controller did not start')
+  const persistence = ctx.get('sessionPersistence')
+  assert(persistence, 'DSH durable session storage did not start')
   async function newSession(workspace = cwd, agentPreset = preset) {
     if (agentPreset.startsWith('wsl-')) {
       const presets = ctx.get('agentPresets')
@@ -168,14 +170,16 @@ export async function withReleaseSession({ cwd, preset = 'wsl-standard', evidenc
       const block = { type: 'tool-call', id, name, arguments: JSON.stringify(args) }
       const request = { block, sent: false }
       pending.set(sessionId, request)
+      let transcript
       try {
         const signal = AbortSignal.timeout(timeoutMs)
+        transcript = await persistence.open(sessionId, 'read', { signal })
         await controller.prompt({
           requestId: randomUUID(), sessionId, mode: 'queue',
           content: [{ type: 'text', text: 'Execute one scripted release acceptance tool call.' }],
         }, signal)
-        const persisted = await until(() => {
-          const records = recordsUnder(sessionRoot, sessionId)
+        const persisted = await until(async () => {
+          const { events: records } = await transcript.read(undefined, undefined, { signal })
           const call = records.find(event => event.type === 'tool/call' && event.data.callId === request.block.id)
           if (!call) return
           return call
@@ -183,18 +187,24 @@ export async function withReleaseSession({ cwd, preset = 'wsl-standard', evidenc
         assert.equal(persisted.data.name, name)
         assert.deepEqual(JSON.parse(persisted.data.arguments), args)
         if (onCall) await onCall(persisted)
-        const result = await until(() => {
-          const records = recordsUnder(sessionRoot, sessionId)
+        const result = await until(async () => {
+          const { events: records } = await transcript.read(undefined, undefined, { signal })
           const result = records.find(event => event.type === 'tool/result' && event.data.message.toolCallId === request.block.id)
           if (result && records.some(event => event.type === 'turn/end' &&
               event.data.turn === persisted.data.turn && event.seq > result.seq)) return result
         }, timeoutMs, name + ' did not settle in the persisted transcript ' + id + '; scratch ' + scratch)
+        await persistence.flush()
+        const source = transcriptFile(sessionRoot, sessionId)
+        assert(source, 'default compressed DSH transcript not found for ' + sessionId)
+        const transcriptName = sessionId + '.' + basename(source)
+        copyFileSync(source, join(output, transcriptName))
         const structured = executions.get(request.block.id)
         assert(structured || result.data.message.isError, 'tool observer did not record execution ' + id)
-        const evidence = { sessionId, call: persisted, result, value: structured?.value, error: structured?.error ?? result.data.error }
+        const evidence = { sessionId, transcript: transcriptName, call: persisted, result, value: structured?.value, error: structured?.error ?? result.data.error }
         writeFileSync(join(output, id + '.json'), JSON.stringify(evidence, null, 2) + '\n')
         return evidence
       } finally {
+        await transcript?.close()
         pending.delete(sessionId)
         executions.delete(request.block.id)
       }
@@ -208,7 +218,7 @@ export async function withReleaseSession({ cwd, preset = 'wsl-standard', evidenc
   }
   try {
     writeFileSync(join(output, 'build.json'), JSON.stringify({
-      version, host: releaseUnderTest(),
+      version, host: hostVersion,
       git: process.env.GITHUB_SHA,
       bundleSha256: createHash('sha256').update(readFileSync(join(packageRoot, 'lib', 'index.js'))).digest('hex'),
       preset,
