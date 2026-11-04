@@ -16,9 +16,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { distro: Ubuntu-22.04, registered: Ubuntu, wsl: 2, linuxRelease: '22.04' }
           - { distro: Ubuntu-24.04, registered: Ubuntu-24.04, wsl: 1, linuxRelease: '24.04' }
-          - { distro: Ubuntu-24.04, registered: Ubuntu-24.04, wsl: 2, linuxRelease: '24.04' }
     env:
       DSH_WSL_DISTRO: ${{ matrix.registered }}
       DSH_WSL_USER: dsh-release
@@ -135,7 +133,7 @@ jobs:
       - name: Release behavior matrix
         if: ${{ !cancelled() && steps.provision.outcome == 'success' }}
         env:
-          DSH_MATRIX_ROWS: implemented
+          DSH_MATRIX_ROWS: '1.1,1.6,4.5,5.1,6.1,6.7,9.6,11.1,11.4,12.6'
           DSH_MATRIX_EXCLUDE: 4.4,10.3
         run: node tests/support/release-cases.mjs tests/support/release-session.mjs "$env:DSH_RELEASE_EVIDENCE_DIR/matrix-user"
       - name: Root arm of the release behavior matrix

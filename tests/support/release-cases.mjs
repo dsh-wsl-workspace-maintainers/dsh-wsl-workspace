@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { stat } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, isAbsolute, relative, resolve, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -92,6 +92,11 @@ const bytes = (p, n) => equal(stdout(p), n.stdout) && equal(stderr(p), clean(n.s
 const kernelCannotAct = (p, requested) => p.value?.timedOut === true && p.value.timeoutMs === requested
   && /the check for a command waiting on a keyboard looked and read \([^)]*\/proc\/<pid>\/wchan[^)]*\): [^\n]*w=not-reported/.test(notes(p))
   && !/run once more on a pseudo-terminal|done twice/i.test(notes(p))
+const nativePtyExpired = (run, budget) => run.elapsedMs >= budget && (run.status === 124
+  // GNU timeout's kill-after on WSL1 can expose raw SIGKILL (9) through
+  // wsl.exe rather than shell status 128 + SIGKILL. Require script's own
+  // termination diagnostic to distinguish this from an unrelated failure.
+  || ([9, 137].includes(run.status) && /Session terminated, killing shell/.test(run.stderr)))
 const rows = []
 const tasks = new Map()
 const register = (id, run, isolate = false) => tasks.set(id, { run, isolate })
@@ -169,40 +174,54 @@ register('12.6', async (session, record) => {
   const marker = `${linuxCwd}/cancel-started`
   const done = `${linuxCwd}/cancel-completed`
   const markerOnShare = join(cwd, 'cancel-started')
-  const command = `touch ${sh(marker)}; sleep 25; touch ${sh(done)}`
-  let cancelled = false
-  let cancelRequest
-  const p = await productBash(session, command, { timeoutMs: 45_000 }, {
-    timeoutMs: 75_000,
-    onCall: () => {
-      cancelRequest = (async () => {
-        const waitUntil = Date.now() + 30_000
-        while (Date.now() < waitUntil) {
-          let started = false
-          try {
-            started = (await stat(markerOnShare)).isFile()
-          } catch (error) {
-            if (error.code !== 'ENOENT') throw error
-          }
-          if (started) {
+  const child = `${linuxCwd}/cancel-child`
+  const childOnShare = join(cwd, 'cancel-child')
+  const childCommand = `printf '%s\\n' "$BASHPID" > ${sh(child)}; exec sleep 60`
+  const command = `printf '%s\\n' "$BASHPID" > ${sh(marker)}; bash -c ${sh(childCommand)}; rc=$?; printf '%s %s\\n' "$rc" "$(date +%s%N)" > ${sh(done)}`
+  const observations = record.cancellation = {}
+  const [result, cancellation] = await Promise.allSettled([
+    productBash(session, command, { timeoutMs: 90_000 }, { timeoutMs: 120_000 }),
+    (async () => {
+      const waitUntil = Date.now() + 30_000
+      while (Date.now() < waitUntil) {
+        try {
+          const pid = (await readFile(markerOnShare, 'utf8')).trim()
+          const childPid = (await readFile(childOnShare, 'utf8')).trim()
+          if (/^\d+$/.test(pid) && /^\d+$/.test(childPid)) {
+            observations.startedPid = pid
+            observations.childPid = childPid
+            observations.markerObservedAt = Date.now()
+            observations.cancelRequestedAt = Date.now()
             await session.controller.cancel({ sessionId: session.sessionId })
-            cancelled = true
+            observations.cancelReturnedAt = Date.now()
             return
           }
-          await new Promise(r => setTimeout(r, 100))
+        } catch (error) {
+          if (error.code !== 'ENOENT') throw error
         }
-      })()
-      return cancelRequest
-    },
-  })
-  await cancelRequest
-  record.product.push(p)
-  const recovery = await productBash(session, 'printf "AFTER_CANCEL\\n"')
+        await new Promise(resolve => setTimeout(resolve, 100))
+      }
+      throw new Error('the running command did not publish its start marker')
+    })(),
+  ])
+  if (result.status === 'fulfilled') record.product.push(result.value)
+  if (cancellation.status === 'rejected') throw cancellation.reason
+  if (result.status === 'rejected') throw result.reason
+  const recovery = await productBash(session, 'printf "AFTER_CANCEL\\nPID=%s\\n" "$BASHPID"')
   record.product.push(recovery)
-  const completed = wsl(`if test -f ${sh(done)}; then printf yes; fi`) === 'yes'
-  return verdict(cancelled && !completed && /abort|cancel/i.test(rendered(p))
-    && !/\[exit code:/.test(rendered(p)) && stdout(recovery).includes('AFTER_CANCEL'),
-  'the real session was cancelled after the command started, never reached its final side effect, and handled the next tool call')
+  observations.recoveryPid = /PID=(\d+)/.exec(stdout(recovery))?.[1]
+  const checkAfter = observations.markerObservedAt + 61_000
+  await new Promise(resolve => setTimeout(resolve, Math.max(0, checkAfter - Date.now())))
+  observations.checkedAt = Date.now()
+  observations.completionFile = wsl(`if test -f ${sh(done)}; then cat ${sh(done)}; fi`)
+  observations.completed = observations.completionFile !== ''
+  observations.startedProcessStillPresent = wsl(`if test -d /proc/${observations.startedPid}; then printf yes; fi`) === 'yes'
+  observations.childProcessStillPresent = wsl(`if test -d /proc/${observations.childPid}; then printf yes; fi`) === 'yes'
+  const product = result.value
+  return verdict(observations.cancelReturnedAt !== undefined && !observations.completed
+    && /abort|cancel/i.test(rendered(product)) && !/\[exit code:/.test(rendered(product))
+    && /^AFTER_CANCEL\nPID=\d+\n$/.test(stdout(recovery)) && exit(recovery) === 0,
+  'the command started before cancellation, its final side effect stayed absent beyond its original wake time, and the session recovered')
 }, true)
 
 // Pure parity rows can use the same collector. Staged fixtures are private per run.
@@ -340,11 +359,16 @@ register('4.4', async (session, record) => {
 register('4.5', async (session, record) => {
   if (!disposableWindows) return skip('requires a disposable Windows runner for the Windows users directory scan')
   const command = 'du -sh /mnt/c/Users'
-  const [n, p] = await Promise.all([native(command, { nativeLimit: 5000 }), productBash(session, command, { timeoutMs: 1500 })])
+  // The matched budget is part of this deliberately deadline-bounded
+  // comparison. Sequential arms also avoid racing two scans of one volume.
+  const budget = 1500
+  const n = await native(command, { nativeLimit: budget })
   record.native.push(n)
+  const p = await productBash(session, command, { timeoutMs: budget })
   record.product.push(p)
-  return n.status === 124 && p.value?.timedOut
-    ? parity('native scan also exceeds the observation budget and the product reports its own timeout')
+  return n.status === 124 && p.value?.timedOut && p.value.timeoutMs === budget
+    && /timed out after 1500ms/.test(rendered(p))
+    ? parity('native scan also exceeds the same 1500ms observation budget and the product reports the deadline')
     : verdict(bytes(p, n), 'must answer like native or clearly report a deadline during a native-slow scan')
 })
 const bigFile = sh(`${linuxCwd}/f47`)
@@ -360,7 +384,7 @@ register('5.1', async (session, record) => {
     const tty = await native(command, { pty: true, keepStdinOpen: true, nativeLimit: 5000 })
     record.native.push(tty)
     return verdict(n.stdout === 'SUDO_CODE=1\n' && /password/i.test(n.stderr)
-      && tty.status === 124 && /password/i.test(tty.stdout + tty.stderr)
+      && nativePtyExpired(tty, 5000) && /password/i.test(tty.stdout + tty.stderr)
       && kernelCannotAct(p, requested), 'WSL1 non-acting arm: native PTY also waits for input, and DSH declares the missing kernel fields at its requested deadline without replay')
   }
   return verdict(equal(stdout(p).match(/SUDO_CODE=\d+/)?.[0], n.stdout.match(/SUDO_CODE=\d+/)?.[0])
@@ -393,7 +417,7 @@ register('6.1', async (session, record) => {
   if (kernelMajor === 1 && p.value?.timedOut) {
     const tty = await native(command, { pty: true, keepStdinOpen: true, nativeLimit: 5000 })
     record.native.push(tty)
-    return verdict(/GOT=\d+/.test(n.stdout) && tty.status === 124 && !/GOT=/.test(tty.stdout)
+    return verdict(/GOT=\d+/.test(n.stdout) && nativePtyExpired(tty, 5000) && !/GOT=/.test(tty.stdout)
       && kernelCannotAct(p, requested), 'WSL1 non-acting arm: native PTY blocks, and DSH honors its deadline and reports unavailable kernel readings without guessing or replay')
   }
   return verdict(!p.value?.timedOut && /GOT=\d+/.test(stdout(p) + stderr(p)) && /GOT=\d+/.test(n.stdout)
