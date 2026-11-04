@@ -66,6 +66,28 @@ const STANDARD_SRC = `# standard
 - id: data-export
   name: '@me/dsh-data-export'
   disabled: !!js process.platform === 'win32'
+
+- id: delegation
+  name: cordis:group
+  group: true
+  config:
+    - id: tool-subagent-control
+      name: '@deepseek-ai/dsh-tool-subagent-control'
+    - id: tool-subagent-fork
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config: &settings
+        provider: fork
+    - id: workflow-ptc
+      name: '@deepseek-ai/dsh-workflow-ptc'
+
+- id: keep-delegation-example
+  name: '@me/dsh-data-export'
+  config:
+    name: '@deepseek-ai/dsh-tool-subagent'
+    text: |-
+      name: '@deepseek-ai/dsh-tool-subagent'
+    savedSettings: *settings
+    loop: &loop { self: *loop }
 `
 // A minimal-like source whose world arrives as a nested group, so the
 // transform has to keep a group's children addressable too.
@@ -301,6 +323,12 @@ const jsRow = standard.plugins.find(row => row.id === 'data-export')
 assert(jsRow !== undefined, 'a kept row survives the transform')
 assert(typeof jsRow.disabled === 'object' && jsRow.disabled.__jsExpr === "process.platform === 'win32'",
   'a !!js disabled expression round-trips as an expression node')
+assert(!standard.plugins.some(row => row.id === 'delegation'), '#132 drops the whole group, including its dependent tools')
+const keptExample = standard.plugins.find(row => row.id === 'keep-delegation-example')
+assert(keptExample?.config.name === '@deepseek-ai/dsh-tool-subagent', '#132 keeps ordinary config and prompt data')
+assert(keptExample?.config.text === "name: '@deepseek-ai/dsh-tool-subagent'", '#132 keeps the literal example')
+assert(keptExample?.config.savedSettings.provider === 'fork', '#132 keeps data referenced through the removed group')
+assert(keptExample?.config.loop.self === keptExample?.config.loop, '#132 preserves references without expanding them')
 assert(world.config.some(row => row.id === 'jobs-wsl'), 'a source with job tools gets the world\'s background-job producer')
 
 const minimal = byId.get('wsl-minimal')

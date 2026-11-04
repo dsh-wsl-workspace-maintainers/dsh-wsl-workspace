@@ -514,31 +514,36 @@ function appendPersona(lines: readonly string[], span: { start: number; end: num
 }
 
 /**
- * Whether a top-level block mounts the delegation package anywhere inside itself.
- *
- * The match is at any indent, because the shipped presets (every 0.2.x release checked:
- * @deepseek-ai/dsh-web-app 0.2.0-rc.2 through 0.2.1-rc.5) do not carry a top-level
- * delegation row — they mount the rows inside a `cordis:group` named `delegation`, and
- * the resolved composition the host serves hands that group over as one top-level row
- * with the package line nested deep inside it (issue #132). A `name:` line naming the
- * package is a mount declaration wherever it sits, so there is no shape where the line
- * appears and the block keeps the package; and a partial drop is not an option — the
- * group's siblings (`dsh-workflow-ptc`, `dsh-tool-subagent-control`) inject the
- * `subagents` service the dropped rows provide, and with the rows filtered out they fail
- * to mount and session creation dies with `cannot create effect on inactive context`.
- * The carrying block goes whole.
- *
- * What stays beyond this text-level transform is a delegation group nested inside
- * *another* group: only top-level rows are spans here, and the host's served shape puts
- * the delegation group at the top level (verified from a live 0.2.1-rc.5 install).
- * @param block - the top-level row's lines, group members included.
- * @returns true when the block mounts {@link SUBAGENT_DELEGATION_PACKAGE}.
+ * The filesystem channel on older hosts keeps the original top-level match.
+ * Declaration hosts prune parsed entries before registering them.
  */
 function mountsSubagentDelegation(block: readonly string[]): boolean {
   return block.some((line) => {
-    const match = /^\s+name: (.+)$/.exec(line)
+    const match = /^  name: (.+)$/.exec(line)
     return match !== null && unquoteScalar((match[1] ?? '').trim()) === SUBAGENT_DELEGATION_PACKAGE
   })
+}
+
+/**
+ * Drop the complete top-level entry carrying a delegation mount. In shipped 0.2.x
+ * presets the group also mounts tools that require the subagents service, so
+ * removing only the subagent rows leaves an inactive group (#132).
+ *
+ * Walk only loader groups. Prompts and ordinary plugin config can mention the
+ * package name without mounting it. Filtering the parsed list also preserves
+ * references from kept entries to data originally anchored inside a removed group.
+ */
+export function withoutSubagentDelegation(rows: unknown[]): unknown[] {
+  function mounts(row: unknown, seen: Set<object>): boolean {
+    if (row === null || typeof row !== 'object' || seen.has(row)) return false
+    seen.add(row)
+    const entry = row as { name?: unknown; group?: unknown; config?: unknown }
+    if (entry.name === SUBAGENT_DELEGATION_PACKAGE) return true
+    const group = entry.group === true || entry.name === 'cordis:group'
+    return group && Array.isArray(entry.config) && entry.config.some(child => mounts(child, seen))
+  }
+
+  return rows.filter(row => !mounts(row, new Set()))
 }
 
 /**
