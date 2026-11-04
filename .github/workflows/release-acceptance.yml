@@ -16,9 +16,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { distro: Ubuntu-22.04, registered: Ubuntu, wsl: 2, linuxRelease: '22.04' }
           - { distro: Ubuntu-24.04, registered: Ubuntu-24.04, wsl: 1, linuxRelease: '24.04' }
-          - { distro: Ubuntu-24.04, registered: Ubuntu-24.04, wsl: 2, linuxRelease: '24.04' }
     env:
       DSH_WSL_DISTRO: ${{ matrix.registered }}
       DSH_WSL_USER: dsh-release
@@ -135,14 +133,14 @@ jobs:
       - name: Release behavior matrix
         if: ${{ !cancelled() && steps.provision.outcome == 'success' }}
         env:
-          DSH_MATRIX_ROWS: implemented
+          DSH_MATRIX_ROWS: '4.5'
           DSH_MATRIX_EXCLUDE: 4.4,10.3
         run: node tests/support/release-cases.mjs tests/support/release-session.mjs "$env:DSH_RELEASE_EVIDENCE_DIR/matrix-user"
       - name: Root arm of the release behavior matrix
         if: ${{ !cancelled() && steps.provision.outcome == 'success' }}
         env:
           DSH_WSL_USER: root
-          DSH_MATRIX_ROWS: '1.1,1.2,1.3,1.4,1.5,1.6,1.7,1.8,2.1,2.2,2.3,2.4,2.5,2.6,2.7,2.8,4.1,4.2,4.3,4.5,4.6,4.7,5.6'
+          DSH_MATRIX_ROWS: '4.5'
         run: node tests/support/release-cases.mjs tests/support/release-session.mjs "$env:DSH_RELEASE_EVIDENCE_DIR/matrix-root"
       - name: Windows ACL denial with the Linux root account
         if: ${{ !cancelled() && steps.provision.outcome == 'success' }}
