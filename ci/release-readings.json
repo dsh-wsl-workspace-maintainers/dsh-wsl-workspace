@@ -86,8 +86,8 @@
       }
     },
     "0.7.13": {
-      "takenAt": "2026-11-04 0752",
-      "head": "789936a",
+      "takenAt": "2026-11-04 0833",
+      "head": "0a13d38",
       "tableSha": "61e2efb071dd",
       "replay": {
         "caught": 20,
