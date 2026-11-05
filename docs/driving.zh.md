@@ -113,10 +113,19 @@ curl -s -X POST http://127.0.0.1:3981/wsl-workspace/api \
 
 `describe` 回 `{ version, releases, route, loopbackOnly, methods, installProof, driving }`。
 `methods` 是权威表（`name`／`mutates`／`params`／`returns`），它与派发器读同一个常量；两者不一致时构建红。
-十枚方法是：
+十一枚方法是：
 
 `listDistros`、`listDir`、`check`、`registerWindows`、`listWorkspaces`、`removeWorkspace`、
-`listWorkspaceRecords`、`setUser`、`variantStatus`、`describe`。
+`listWorkspaceRecords`、`setUser`、`variantStatus`、`describe`、`wslConnectionCheck`。
+「添加 WSL 工作区」标题旁显示 **WSL 连接** 状态。选定发行版后，插件在该发行版中，
+以所选 Linux 用户执行一条固定的只读命令（用户名留空则用发行版默认用户）。命令成功才变绿。
+更换发行版或用户会清除旧结果并重新检查；「检查」可手动重试。不调用 DeepSeek 账号服务、
+不运行模型，WSL 内也不需要安装 DSH。绿灯不代表 headless/subagent 的工具路由或文件写入已通过。
+
+`wslConnectionCheck` 参数为 `{ distro, username? }`，除仅环回限制外，还要求
+`Content-Type: application/json`。返回 `{ status, distro, username?, reason? }`；
+状态为 `connected` 或 `failed`，失败原因为 `timeout`、`unavailable`（找不到 WSL 可执行文件）
+或 `connection-failed`。命令限时十二秒，不接受调用者提供 shell 命令。
 
 先只读地打一发：
 
