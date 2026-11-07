@@ -1,8 +1,8 @@
 {
   "note": "derived by `node scripts/check-host-contract.mjs --update`; the contract this plugin stands on, as the pinned host carried it. Do not hand-edit.",
-  "host": "dsh@0.2.1-rc.2",
+  "host": "dsh@0.2.2-rc.1",
   "contract": {
-    "host": "dsh@0.2.1-rc.2",
+    "host": "dsh@0.2.2-rc.1",
     "services": [
       "agentPresets",
       "attachments",
@@ -67,6 +67,7 @@
             "id": "tool-fs",
             "name": "@deepseek-ai/dsh-tool-fs",
             "claims": [
+              "apply_patch",
               "edit",
               "read",
               "write"
@@ -150,6 +151,7 @@
             "id": "tool-fs",
             "name": "@deepseek-ai/dsh-tool-fs",
             "claims": [
+              "apply_patch",
               "edit",
               "read",
               "write"
@@ -226,6 +228,7 @@
             "id": "tool-fs",
             "name": "@deepseek-ai/dsh-tool-fs",
             "claims": [
+              "apply_patch",
               "edit",
               "read",
               "write"
@@ -294,6 +297,7 @@
             "id": "tool-fs",
             "name": "@deepseek-ai/dsh-tool-fs",
             "claims": [
+              "apply_patch",
               "edit",
               "read",
               "write"
@@ -355,6 +359,7 @@
             "id": "tool-fs",
             "name": "@deepseek-ai/dsh-tool-fs",
             "claims": [
+              "apply_patch",
               "edit",
               "read",
               "write"
@@ -438,6 +443,7 @@
             "id": "tool-fs",
             "name": "@deepseek-ai/dsh-tool-fs",
             "claims": [
+              "apply_patch",
               "edit",
               "read",
               "write"
@@ -514,6 +520,7 @@
             "id": "tool-fs",
             "name": "@deepseek-ai/dsh-tool-fs",
             "claims": [
+              "apply_patch",
               "edit",
               "read",
               "write"
@@ -597,6 +604,7 @@
             "id": "tool-fs",
             "name": "@deepseek-ai/dsh-tool-fs",
             "claims": [
+              "apply_patch",
               "edit",
               "read",
               "write"

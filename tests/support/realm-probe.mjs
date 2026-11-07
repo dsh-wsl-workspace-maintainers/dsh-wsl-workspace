@@ -185,9 +185,20 @@ function ensureScratchClosure () {
     missing.code = 'E_CLOSURE_INCOMPLETE'
     throw missing
   }
-  const linkNames = ['dsh-attachment', 'cordis', 'schemastery', 'dsh-fs', 'dsh-fs-local', 'dsh-sandbox', 'dsh-tools',
+  const linkNames = new Set(['dsh-attachment', 'cordis', 'schemastery', 'dsh-fs', 'dsh-fs-local', 'dsh-sandbox', 'dsh-tools',
     'dsh-llm', 'dsh-system-prompt', 'dsh-scope', 'dsh-timeout', 'dsh-subprocess', 'dsh-home-paths',
-    'dsh-lazy-require', 'dsh-util-code-language', 'dsh-session', 'dsh-user-approval', 'dsh-sandbox-policy']
+    'dsh-lazy-require', 'dsh-util-code-language', 'dsh-session', 'dsh-user-approval', 'dsh-sandbox-policy'])
+  // The fs tool suite gains imports as the host moves (0.2.2-rc.1 added `dsh-fs-patch`, which reddened
+  // four arms until it was linked). Derive the copied consumers' own @deepseek-ai dependencies so a new
+  // import links itself on the next bump instead of rotting this hand-kept list; absent names skip below.
+  for (const consumer of ['dsh-tool-fs', 'dsh-attachment-local']) {
+    const source = inTree(consumer)
+    if (source === null) continue
+    const manifest = JSON.parse(readFileSync(join(source, 'package.json'), 'utf8'))
+    for (const name of Object.keys({ ...manifest.dependencies, ...manifest.peerDependencies })) {
+      if (name.startsWith('@deepseek-ai/')) linkNames.add(name.slice('@deepseek-ai/'.length))
+    }
+  }
   for (const name of linkNames) {
     const target = name === 'dsh-attachment' ? staging : inTree(name)
     const link = join(scope, name)
@@ -699,7 +710,9 @@ try {
       ]
       const registered = new Set()
       for (const table of layerTables) {
-        for (const [name, definition] of table?.tools?.entries?.() ?? []) if (name === 'read_image') registered.add(definition)
+        // 0.2.2-rc.1 stores a `{ definition, when }` record per name (dsh-tools register()); older
+        // releases stored the tool itself. Unwrap both so isOurs/execute read the actual definition.
+        for (const [name, record] of table?.tools?.entries?.() ?? []) if (name === 'read_image') registered.add(record?.definition ?? record)
       }
       const hostTool = [...registered].find((tool) => !isOurs(tool))
       const ownAnswer = visible === undefined ? null : await callReadImage(visible, png)
