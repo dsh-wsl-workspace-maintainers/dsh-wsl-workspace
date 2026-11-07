@@ -47,12 +47,15 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const LEDGER = join(repoRoot, 'docs', 'CONSUMER-COVERAGE.md')
 
 /**
- * Rows that are not `已调用` as of 2026-10-20: 41 of 48. The seven covered pairs are `shell` x
+ * Rows that are not `已调用` as of 2026-11-07: 43 of 53. The ten covered pairs are `shell` x
  * `dsh-tool-bash` (`scripts/compatibility/bash-parity-real.mjs`), `fs` x `dsh-tool-fs`
- * (`tests/support/realm-probe.mjs`, the #54 arms), and all five pairs the 0.2.1-rc.2 bump
+ * (`tests/support/realm-probe.mjs`, the #54 arms), the five pairs the 0.2.1-rc.2 bump
  * derived (`fs` x `dsh-experimental-worktree`, `fs` x `dsh-working-directory`, `fs` x
  * `dsh-workspace-changes`, `sandbox` x `dsh-experimental-worktree`, `terminals` x
- * `dsh-tool-terminal`), each answered by a call in `tests/support/rc2-consumers.mjs`. The last one
+ * `dsh-tool-terminal`), each answered by a call in `tests/support/rc2-consumers.mjs`, and the three
+ * the 0.2.2-rc.1 bump derived (`fs` x `dsh-experimental-client-ui-forge`, `sandbox` x
+ * `dsh-experimental-client-ui-forge`, `shell` x `dsh-experimental-forge-session`), answered in
+ * `tests/support/optional-bundle-consumers.mjs`. The last one
  * needs its emitter (`dsh-tool-fs`) to load, which needs the peer `@deepseek-ai/dsh-attachment` that npm
  * skips under `legacy-peer-deps`; pinning that peer unmasked a real type mismatch in
  * `src/host/wsl-image-tool.ts` (the gate read 209 -> 210), so the mismatch was fixed first and the pin
@@ -67,8 +70,16 @@ const LEDGER = join(repoRoot, 'docs', 'CONSUMER-COVERAGE.md')
  * the condition that the five exits stay in the table; this frame is the condition being paid, and the
  * rows carry what each call answered rather than a bare "done" — including the two answers that say the
  * pair never reaches our provider at all in the shape the product mounts it.
+ *
+ * THE NUMBER WENT UP AGAIN AND THE REASON WAS NAMED (#138, 2026-11-07): pinning the host to 0.2.2-rc.1
+ * derived five pairs from three opt-in experimental bundles the umbrella newly pulls, 41 + 5 = 46, and
+ * `tests/support/optional-bundle-consumers.mjs` covered three of them the same day (46 - 3 = 43). The
+ * maintainer authorised the 41 -> 43 raise on the condition that the two uncovered exits stay in the
+ * table: `fs` x `dsh-experimental-liveshare` (its consumer only runs after a share publishes to a live
+ * Relay) and `shell` x `dsh-experimental-liveshare` (a derivation false positive — the only match is a
+ * JSDoc comment; the package injects `connection`, never `shell`). Covering either lowers the number.
  */
-const NOT_COVERED_CEILING = 41
+const NOT_COVERED_CEILING = 43
 
 /** Parse the ledger's table body: rows whose first cell is a backticked service name. */
 function ledgerRows () {
