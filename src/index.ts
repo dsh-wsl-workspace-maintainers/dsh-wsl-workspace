@@ -38,6 +38,7 @@ import { canonicalWslUnc, getWindowsWorkspace, getWorkspaceUsername, listWorkspa
 import { defaultDistro, listDistros } from './shared/wsl.ts'
 import { isElectronHost, persistentShellAllowed, resolveRelayNode } from './shared/relay-node.ts'
 import { probePersistentShellReadiness } from './host/pty-readiness.ts'
+import { checkWslConnection } from './host/wsl-connection.ts'
 import { applyRunCodeGuard } from './host/wsl-run-code-guard.ts'
 import { PROBE_CONFIG, buildSessionSpec } from './host/wsl-bash-tool.ts'
 import { probeWslBashSession, type WslBashSpawnHost } from './host/wsl-bash-session.ts'
@@ -381,6 +382,7 @@ const METHOD_TABLE: readonly MethodRow[] = [
   { name: 'listDistros', mutates: false, params: {}, returns: 'string[] — installed distributions, default first' },
   { name: 'listDir', mutates: false, params: { distro: 'string', path: 'linux path' }, returns: 'directory listing entries' },
   { name: 'check', mutates: false, params: { distro: 'string', path: 'linux path' }, returns: '{ exists: boolean, isDirectory: boolean }' },
+  { name: 'wslConnectionCheck', mutates: false, params: { distro: 'string', username: 'optional linux user' }, returns: 'fresh WSL command-channel status for the selected distribution and user' },
   { name: 'registerWindows', mutates: true, params: { distro: 'string', linuxPath: '/mnt/<drive>/…', username: 'optional linux user' }, returns: 'null' },
   { name: 'listWorkspaces', mutates: false, params: {}, returns: 'string[] — registered workspace paths' },
   { name: 'removeWorkspace', mutates: true, params: { path: 'registered WSL UNC or Windows drive path' }, returns: '{ removed: string }' },
@@ -508,6 +510,11 @@ async function dispatch(method: string, params: Record<string, unknown>): Promis
       const distro = requireDistro(params.distro)
       const path = requireLinuxPath(params.path, 'path')
       return listWslDir(distro, path)
+    }
+    case 'wslConnectionCheck': {
+      const distro = requireDistro(params.distro)
+      if (params.username !== undefined && typeof params.username !== 'string') throw new Error('username must be a string')
+      return checkWslConnection(distro, params.username ?? '')
     }
     case 'check': {
       const distro = requireDistro(params.distro)
@@ -1447,6 +1454,10 @@ export function apply(ctx: Context, config: Config): void {
         return
       }
       const method = typeof body.method === 'string' ? body.method : ''
+      if (method === 'wslConnectionCheck' && req.headers['content-type']?.split(';')[0]?.trim().toLowerCase() !== 'application/json') {
+        json(res, 403, { ok: false, error: 'application/json required' })
+        return
+      }
       const params = body.params === undefined ? {} : body.params
       if (params === null || typeof params !== 'object' || Array.isArray(params)) {
         json(res, 400, { ok: false, error: 'params must be an object' })

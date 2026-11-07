@@ -254,6 +254,27 @@ export async function describe(): Promise<WslSelfDescription> {
   return call<WslSelfDescription>('describe', {})
 }
 
+/** A fresh command-channel check in one selected WSL distribution and Linux user. */
+export interface WslConnectionCheck {
+  status: 'connected' | 'failed'
+  reason?: 'timeout' | 'unavailable' | 'connection-failed'
+  distro: string
+  username?: string
+}
+
+/** Run the connection probe for this selection; no DeepSeek account or model is consulted. */
+export async function wslConnectionCheck(distro: string, username = ''): Promise<WslConnectionCheck> {
+  const user = username.trim()
+  const value = await call<unknown>('wslConnectionCheck', { distro, ...(user === '' ? {} : { username: user }) })
+  const result = value as Partial<WslConnectionCheck> | null
+  if (result === null || typeof result !== 'object' || !['connected', 'failed'].includes(String(result.status))
+    || result.distro !== distro || (result.username ?? '') !== user
+    || (result.reason !== undefined && !['timeout', 'unavailable', 'connection-failed'].includes(result.reason))) {
+    throw new Error('invalid WSL connection response')
+  }
+  return result as WslConnectionCheck
+}
+
 /** One variant this boot could not publish, with the cause the host recorded. */
 export interface WslVariantFailure {
   /** The variant id that was not published (`wsl-code`, …). */
