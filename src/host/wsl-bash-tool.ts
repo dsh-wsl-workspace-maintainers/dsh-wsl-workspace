@@ -25,6 +25,7 @@ import { randomUUID } from 'node:crypto'
 import { isValidWslUsername, joinUnc, parseWslUnc, windowsToMntPath } from '../shared/paths.ts'
 import { getWindowsWorkspace, getWorkspaceUsername } from '../shared/wsl-credentials.ts'
 import { defaultDistroSync } from '../shared/wsl.ts'
+import { observeReferenceDistro, ownsReferenceWorld } from '../shared/reference-world.ts'
 import { bridgeEnv } from '../shared/wsl-env.ts'
 import { STDIN_CAP_BYTES, stdinRefusal } from '../shared/wsl-stdin.ts'
 import { SESSION_ARGV } from './wsl-bash-protocol.ts'
@@ -460,6 +461,17 @@ export function apply(ctx: Context, config?: Config): void {
   const resolved: ResolvedConfig = { ...DEFAULTS, ...config === undefined ? {} : config }
   const tools = ctx.get('tools') as unknown as { register?: (tool: unknown) => (() => void) | void } | undefined
   if (tools?.register === undefined) return
+  const initialize = (agent: { session: { id: string; header: { cwd?: string } } }): undefined => {
+    if (!ownsReferenceWorld(ctx, agent)) return undefined
+    const distro = resolveDistro(resolved, agent.session.header.cwd)
+    if (distro !== '') observeReferenceDistro(distro, agent.session.id, 'bash-world-ready')
+    return undefined
+  }
+  ctx.on?.('agent/created', ({ agent }) => initialize(agent))
+  ctx.on?.('agent-preset/selected', sessionId => {
+    const agent = ctx.get('agents')?.get(sessionId)
+    if (agent !== undefined) initialize(agent)
+  })
   // The host's own log is the other half of attribution: a line here is what someone reading the
   // backend's output (or a crash log) finds without reopening a session. Optional by design — an
   // older host without the service must not lose the call over a log line.
@@ -591,6 +603,7 @@ export function apply(ctx: Context, config?: Config): void {
         if (spec === undefined) {
           throw new Error('wsl-bash: no WSL distribution could be resolved for this session')
         }
+        observeReferenceDistro(spec.env.DSH_WSL_DISTRO ?? '', exec.agent?.session?.id)
         session = new WslBashSession(spawnHost(), spec)
         sessions.set(ownerKey, session)
         // The shell belongs to the agent that made it, not to the plugin. Without a registration on

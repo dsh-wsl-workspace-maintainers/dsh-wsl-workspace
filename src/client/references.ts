@@ -25,6 +25,7 @@
  * @module dsh-wsl-workspace/client/references
  */
 
+import { traceReference } from '../shared/reference-trace.ts'
 import { canonicalWindowsPath, hostPathForLinuxReference, isWslUnc, parseWslUnc, toPosixSpelling } from '../shared/paths.ts'
 
 /** What the translation needs to know about one session. */
@@ -154,12 +155,84 @@ export function rewriteReferenceAddress(address: string, sessionOf: SessionLooku
   // Rebuild-check: an address whose own encoding this module cannot reproduce
   // byte-for-byte is a grammar it does not understand, so it is left alone
   // instead of being rewritten into something the host would read differently.
-  if (!address.startsWith(sessionFileAddress(parsed.sessionId, parsed.path))) return address
+  const original = sessionFileAddress(parsed.sessionId, parsed.path)
+  const suffix = address.slice(original.length)
+  if (!address.startsWith(original) || (suffix !== '' && !/^[?#]/.test(suffix))) return address
   const session = sessionOf(parsed.sessionId)
   if (session === undefined) return address
   const translated = hostPathForLinuxReference(parsed.path, session.distro)
   if (translated === null) return address
-  return fileAddressFor(parsed.sessionId, session.cwd, translated)
+  return fileAddressFor(parsed.sessionId, session.cwd, translated) + suffix
+}
+
+/** Navigation boundary shared by file references and tab actions. */
+export interface ReferenceNavigation {
+  openResource(address: string, options?: unknown): void
+  openResourceIn(sessionId: string, address: string, options?: unknown): void
+}
+
+// Re-applying over the same service retires our previous layer first. A later
+// component may still hold that layer in its closure, so disposal also makes it
+// inert instead of assuming that restoring an object property removes a chain.
+const navigationHooks = new WeakMap<ReferenceNavigation, () => void>()
+
+/** Install one reversible translation layer, without clobbering later hooks. */
+export function mountReferenceNavigation(
+  controller: ReferenceNavigation,
+  sessionOf: SessionLookup,
+  loadSession?: (sessionId: string, signal: AbortSignal) => Promise<ReferenceSession | undefined>,
+  onUnavailable?: () => void,
+): () => void {
+  navigationHooks.get(controller)?.()
+  const { openResource, openResourceIn } = controller
+  let active = true
+  const lifetime = new AbortController()
+  const navigate = (address: string, send: (translated: string) => void): void => {
+    if (!active) { send(address); return }
+    const parsed = parseSessionFileAddress(address)
+    // drvfs, relative and already-native paths need no asynchronous world lookup.
+    if (loadSession !== undefined && parsed !== null
+      && parsed.path.startsWith('/') && !parsed.path.startsWith('//')
+      && hostPathForLinuxReference(parsed.path, undefined) === null) {
+      traceReference({ sourceSessionId: parsed.sessionId, stage: 'open-internal', path: parsed.path })
+      void loadSession(parsed.sessionId, lifetime.signal).then(session => {
+        if (active) send(rewriteReferenceAddress(address, () => session))
+      }, () => {
+        if (!active) return
+        traceReference({ sourceSessionId: parsed.sessionId, stage: 'unavailable', path: parsed.path })
+        // Do not let Windows read a known-unresolved Linux path and cache a
+        // misleading not-found tab. A bounded wait can be retried explicitly.
+        onUnavailable?.()
+      })
+      return
+    }
+    send(rewriteReferenceAddress(address, sessionOf))
+  }
+  const handoff = (address: string, method: string): void => {
+    const parsed = parseSessionFileAddress(address)
+    if (parsed !== null) traceReference({ sourceSessionId: parsed.sessionId, stage: 'handoff', method, path: parsed.path })
+  }
+  const open = (address: string, options?: unknown): void => {
+    navigate(address, translated => {
+      handoff(translated, 'openResource'); openResource.call(controller, translated, options)
+    })
+  }
+  const openIn = (sessionId: string, address: string, options?: unknown): void => {
+    navigate(address, translated => {
+      handoff(translated, 'openResourceIn'); openResourceIn.call(controller, sessionId, translated, options)
+    })
+  }
+  controller.openResource = open
+  controller.openResourceIn = openIn
+  const dispose = (): void => {
+    active = false
+    lifetime.abort()
+    if (controller.openResource === open) controller.openResource = openResource
+    if (controller.openResourceIn === openIn) controller.openResourceIn = openResourceIn
+    if (navigationHooks.get(controller) === dispose) navigationHooks.delete(controller)
+  }
+  navigationHooks.set(controller, dispose)
+  return dispose
 }
 
 /**
@@ -181,12 +254,13 @@ export function distroOfWorkspace(cwd: string, driveDistros: ReadonlyMap<string,
 }
 
 /**
- * Whether a workspace root makes its sessions WSL-bound: a WSL UNC path, or a
+ * Whether a workspace is registered for WSL auto-binding: a WSL UNC path, or a
  * Windows drive path registered as a `/mnt/<drive>` workspace (9P cannot serve
- * drvfs, so those workspaces carry drive cwds).
+ * drvfs, so those workspaces carry drive cwds). This is not an execution-world
+ * test: an ordinary Windows workspace may independently select a WSL preset.
  * @param cwd - the session's workspace root.
  * @param wslWindowsPaths - canonical drive keys of the registered `/mnt/<drive>` workspaces.
- * @returns whether the session runs in the WSL world.
+ * @returns whether the workspace is registered for WSL auto-binding.
  */
 export function isWslWorkspace(cwd: string, wslWindowsPaths: ReadonlySet<string>): boolean {
   if (isWslUnc(cwd)) return true

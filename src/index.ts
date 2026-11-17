@@ -36,6 +36,7 @@ import { homedir } from 'node:os'
 import { joinUnc, mntToWindowsPath, normalizeLinuxPath, isAbsoluteLinuxPath, isValidWslUsername, parseWslUnc } from './shared/paths.ts'
 import { canonicalWslUnc, getWindowsWorkspace, getWorkspaceUsername, listWorkspaceKeys, listWorkspaceRecords, registerWindowsWorkspace, setWorkspaceUsername, unregisterWorkspace } from './shared/wsl-credentials.ts'
 import { defaultDistro, listDistros } from './shared/wsl.ts'
+import { referenceBinding, waitForReferenceBinding } from './shared/reference-world.ts'
 import { isElectronHost, persistentShellAllowed, resolveRelayNode } from './shared/relay-node.ts'
 import { probePersistentShellReadiness } from './host/pty-readiness.ts'
 import { applyRunCodeGuard } from './host/wsl-run-code-guard.ts'
@@ -387,6 +388,7 @@ const METHOD_TABLE: readonly MethodRow[] = [
   { name: 'listWorkspaceRecords', mutates: false, params: {}, returns: 'workspace records (path, distro, username)' },
   { name: 'setUser', mutates: true, params: { path: 'WSL UNC workspace', username: 'linux user, or "" to clear' }, returns: 'null' },
   { name: 'variantStatus', mutates: false, params: {}, returns: 'preset-variant registration outcome for this process' },
+  { name: 'referenceSession', mutates: false, params: { sessionId: 'source session id', wait: 'optional boolean: await world readiness' }, returns: 'source execution world: bound, unknown, or ambiguous' },
   { name: 'describe', mutates: false, params: {}, returns: 'this object' },
 ]
 
@@ -496,6 +498,14 @@ function describeSelf(route: string = servedRoute): {
 /** Route one method dispatch. */
 async function dispatch(method: string, params: Record<string, unknown>): Promise<unknown> {
   switch (method) {
+    case 'referenceSession': {
+      const id = params.sessionId
+      if (typeof id !== 'string' || id.length === 0 || id.length > 512) throw new Error('sessionId is required (at most 512 characters)')
+      if (params.wait !== undefined && typeof params.wait !== 'boolean') throw new Error('wait must be boolean')
+      return params.wait === true
+        ? waitForReferenceBinding(id, AbortSignal.timeout(8_000))
+        : referenceBinding(id)
+    }
     case 'listDistros': {
       const distros = await listDistros()
       const fallback = await defaultDistro()

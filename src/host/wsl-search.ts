@@ -71,6 +71,7 @@ import type { RetainedItems } from '@deepseek-ai/dsh-output-retention'
 import type { SpillRef } from '@deepseek-ai/dsh-spill'
 import { isAbsoluteLinuxPath, parseWslUnc, windowsToMntPath } from '../shared/paths.ts'
 import { decodeWslOutput, defaultDistroSync } from '../shared/wsl.ts'
+import { observeReferenceDistro } from '../shared/reference-world.ts'
 import { getWindowsWorkspace, getWorkspaceUsername } from '../shared/wsl-credentials.ts'
 
 /**
@@ -1054,6 +1055,7 @@ function registerGrep(ctx: Context, tools: ToolsRegistryFace, config: ResolvedCo
       if (target === undefined) {
         throw new SearchError('grep is only available in a WSL workspace session', 'SEARCH_FAILED')
       }
+      observeReferenceDistro(target.distro)
       // GNU grep's `--include` matches file NAMES; a path-shaped filter (`src/*.ts`,
       // ripgrep semantics) is therefore applied here, over the relative path, and
       // no in-distro filter is passed at all — repeated includes are OR-ed, so
@@ -1155,6 +1157,7 @@ function registerGlob(ctx: Context, tools: ToolsRegistryFace, config: ResolvedCo
       if (target === undefined) {
         throw new SearchError('glob is only available in a WSL workspace session', 'SEARCH_FAILED')
       }
+      observeReferenceDistro(target.distro)
       const argv = buildWslArgv(
         target,
         GLOB_SCRIPT,

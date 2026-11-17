@@ -25,15 +25,17 @@
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
-import { check as checkApi, describe as describeApi, listDir as listDirApi, listDistros as listDistrosApi, listWorkspaceRecords as listWorkspaceRecordsApi, registerWindows as registerWindowsApi, removeWorkspace as removeWorkspaceApi, setWorkspaceUser as setWorkspaceUserApi, variantStatus as variantStatusApi, type WslVariantOutcome, type WslWorkspaceRecord } from './api.ts'
+import { referenceSession as referenceSessionApi, check as checkApi, describe as describeApi, listDir as listDirApi, listDistros as listDistrosApi, listWorkspaceRecords as listWorkspaceRecordsApi, registerWindows as registerWindowsApi, removeWorkspace as removeWorkspaceApi, setWorkspaceUser as setWorkspaceUserApi, variantStatus as variantStatusApi, type WslVariantOutcome, type WslWorkspaceRecord } from './api.ts'
 import { hasOptedOut, optOutSession } from './session-optout.ts'
+import { waitForReferenceReady } from './reference-ready.ts'
+import { traceReference } from '../shared/reference-trace.ts'
 import { AddWslWorkspace, type AddWslWorkspaceInjected } from './AddWslWorkspace.tsx'
 import { mountWorkspaceMenuExit } from './workspaceMenuExit.ts'
 import { raiseWslNotice, WslNoticeOverlay } from './notice.tsx'
 import { ensureStyles } from './styles.ts'
 import { zh, en } from './locales.ts'
 import { canonicalWindowsPath, isWslUnc, joinUnc, mntToWindowsPath } from '../shared/paths.ts'
-import { distroOfWorkspace, isWslWorkspace, rewriteReferenceAddress, type ReferenceSession } from './references.ts'
+import { distroOfWorkspace, isWslWorkspace, mountReferenceNavigation, type ReferenceSession } from './references.ts'
 
 /** Required services (cordis fiber inject). */
 export const inject = ['slots', 'locale', 'sessions', 'workspaces']
@@ -256,6 +258,12 @@ export function apply(ctx: ClientContext): void {
   // `broken` string is evidence, and discarding it is what left issue #52 with
   // one flat sentence to show.
   let brokenVariants = new Map<string, string>()
+
+  // Exact healthy variants from the host roster, shared with reference lookup.
+  // A path or an arbitrary `wsl-*` string alone is not execution-world evidence.
+  let referenceVariants = new Set<string>()
+  let referenceRosterReady = false
+  const referenceInputs = new Set<() => void>()
 
   // The highest `generation` this page has already read from the host. The
   // counter rises once per host effect apply and once per dispose, so a SMALLER
@@ -523,6 +531,9 @@ export function apply(ctx: ClientContext): void {
           .filter((entry: { id: string; broken?: string }) =>
             entry.broken === undefined && entry.id.startsWith('wsl-'))
           .map((entry: { id: string }) => entry.id))
+        referenceVariants = variants
+        referenceRosterReady = true
+        for (const notify of referenceInputs) notify()
         // The broken ones are kept beside the healthy ones rather than dropped
         // with them: binding has no use for a broken id, but the dialog does —
         // this string is the only roster-side record of why a variant is
@@ -757,25 +768,76 @@ export function apply(ctx: ClientContext): void {
         if (summary === undefined) return undefined
         const cwd = summary.cwd
         if (cwd === undefined || cwd === '') return undefined
-        if (!isWslWorkspace(cwd, wslWindowsPaths)) return undefined
-        // A session the user took out of the WSL world writes Windows paths, and
-        // rewriting them by the WSL rule is how a reference lands on the wrong
-        // share. An unreported preset stays translated: that is the host not
-        // having written it yet, not a choice.
+        // This is a Linux-reference -> Windows-host boundary, not a rule for
+        // native POSIX workspaces that happen to carry a similarly named mode.
+        if (!isWslUnc(cwd) && canonicalWindowsPath(cwd) === null) return undefined
+        // Workspace registration controls auto-binding, not execution semantics.
+        // Read the SOURCE session's selected world from the host projection (or
+        // legacy field), and require a healthy roster variant rather than just
+        // a name prefix. Keep the existing unknown-preset fallback ONLY for a
+        // registered/UNC workspace; a plain Windows cwd supplies no WSL evidence.
         const preset = getAgentPreset(summary)
-        if (preset !== undefined && !preset.startsWith('wsl-') && preset !== LEGACY_WSL_PRESET_ID) return undefined
+        if (preset === undefined) {
+          if (!isWslWorkspace(cwd, wslWindowsPaths)) return undefined
+        } else if (!referenceVariants.has(preset) && preset !== LEGACY_WSL_PRESET_ID) {
+          return undefined
+        }
         return { cwd, distro: distroOfWorkspace(cwd, driveDistros) }
       }
-      controller.openResource = (address: string, options?: unknown): void => {
-        openResource.call(controller, rewriteReferenceAddress(address, sessionOf), options)
-      }
-      controller.openResourceIn = (sessionId: string, address: string, options?: unknown): void => {
-        openResourceIn.call(controller, sessionId, rewriteReferenceAddress(address, sessionOf), options)
-      }
-      return () => {
-        controller.openResource = openResource
-        controller.openResourceIn = openResourceIn
-      }
+      return mountReferenceNavigation(controller, sessionOf, async (sessionId, lifetime) => {
+        let pendingStage = ''
+        const before = await waitForReferenceReady<{ cwd: string; preset: string } | null>(() => {
+          const summary = sessions.list.getSnapshot().byId[sessionId]
+          const cwd = summary?.cwd
+          const preset = summary === undefined ? undefined : getAgentPreset(summary)
+          const stage = !cwd ? 'summary-pending' : preset === undefined ? 'mode-pending'
+            : !referenceRosterReady ? 'roster-pending' : 'summary-ready'
+          if (stage !== pendingStage) {
+            pendingStage = stage
+            traceReference({ sourceSessionId: sessionId, stage,
+              ...(cwd === undefined ? {} : { cwd }), ...(preset === undefined ? {} : { preset }) })
+          }
+          if (!cwd || preset === undefined || !referenceRosterReady) return undefined
+          if ((!isWslUnc(cwd) && canonicalWindowsPath(cwd) === null)
+            || (!referenceVariants.has(preset) && preset !== LEGACY_WSL_PRESET_ID)) return null
+          return { cwd, preset }
+        }, listener => {
+          const unsubscribe = sessions.list.subscribe(listener)
+          referenceInputs.add(listener)
+          return () => { unsubscribe(); referenceInputs.delete(listener) }
+        }, AbortSignal.any([lifetime, AbortSignal.timeout(30_000)]))
+        if (before === null) {
+          traceReference({ sourceSessionId: sessionId, stage: 'native-session' })
+          return undefined
+        }
+        const { cwd, preset } = before
+        traceReference({ sourceSessionId: sessionId, stage: 'binding-request' })
+        let binding
+        try { binding = await referenceSessionApi(sessionId, lifetime) } catch (error) {
+          if (!(error instanceof Error) || !error.message.includes('unknown method')) throw error
+          // The old Host has no readiness contract. Its known workspace rule is
+          // retained, but an unknown internal path must never reach Windows raw.
+          traceReference({ sourceSessionId: sessionId, stage: 'legacy-host' })
+        }
+        const after = sessions.list.getSnapshot().byId[sessionId]
+        if (after?.cwd !== cwd || getAgentPreset(after) !== preset) throw new Error('source-session-changed')
+        const session = sessionOf(sessionId)
+        if (session === undefined) throw new Error('source-session-changed')
+        if (binding === undefined && session.distro !== undefined) return session
+        if (binding?.status !== 'bound') {
+          traceReference({ sourceSessionId: sessionId, stage: `binding-${binding?.status ?? 'unavailable'}` })
+          throw new Error('source-distribution-not-ready')
+        }
+        const distro = binding.distro
+        if (typeof distro !== 'string' || !distro || distro === '.' || distro === '..' || /[\\/\x00-\x1f]/.test(distro)) {
+          traceReference({ sourceSessionId: sessionId, stage: 'binding-invalid' })
+          throw new Error('source-distribution-invalid')
+        }
+        traceReference({ sourceSessionId: sessionId, stage: 'binding-ready', distro })
+        return { ...session, distro }
+      }, () => {
+        raiseWslNotice('error', t('reference.failed'), t('reference.retry'))
+      })
     }, 'dsh-wsl-workspace: file-reference path translation')
   })
 }

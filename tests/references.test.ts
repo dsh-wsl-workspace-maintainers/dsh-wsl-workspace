@@ -17,6 +17,7 @@ import {
   distroOfWorkspace,
   fileAddressFor,
   isWslWorkspace,
+  mountReferenceNavigation,
   parseSessionFileAddress,
   rewriteReferenceAddress,
   sessionFileAddress,
@@ -256,4 +257,85 @@ test('the mirrored address grammar agrees with the package that owns it', async 
       `decode ${path}`,
     )
   }
+})
+
+
+test('rewriting retains navigation suffixes and encoded special filename characters', () => {
+  const name = '目录/a b#%?.md'
+  const suffix = '?line=12&column=3#L12'
+  const address = sessionFileAddress('source #1', `/mnt/d/projects/demo/${name}`) + suffix
+  assert.equal(rewriteReferenceAddress(address, () => ({ cwd: 'D:/projects/demo', distro: undefined })),
+    sessionFileAddress('source #1', name) + suffix)
+})
+
+
+test('nonstandard mounts are never mistaken for drives and native spellings are untouched', () => {
+  const known = () => ({ cwd: 'D:/projects/demo', distro: 'Debian' })
+  const unknown = () => ({ cwd: 'D:/projects/demo', distro: undefined })
+  for (const path of ['/media/d/report.md', '/mnt/data/report.md', '/mnt/dd/report.md', '/home/user/report.md', '/root/report.md']) {
+    const address = sessionFileAddress('source', path)
+    assert.equal(rewriteReferenceAddress(address, unknown), address)
+    assert.equal(rewriteReferenceAddress(address, known), sessionFileAddress('source', `//wsl.localhost/Debian${path}`))
+  }
+  for (const path of ['relative/a b#%?.md', 'D:/projects/demo/report.md', '//server/share/report.md', '//wsl$/Ubuntu/home/a.md']) {
+    const address = sessionFileAddress('source', path)
+    assert.equal(rewriteReferenceAddress(address, known), address)
+  }
+})
+
+test('repeated mounting retires previous hooks, including later chains, without duplicate lookup', () => {
+  const calls: unknown[][] = []
+  let lookups = 0
+  const sessionOf = () => { lookups++; return { cwd: 'D:/projects/demo', distro: undefined } }
+  const originalOpen = (address: string, options?: unknown) => { calls.push([address, options]) }
+  const originalIn = (id: string, address: string, options?: unknown) => { calls.push([id, address, options]) }
+  const controller = { openResource: originalOpen, openResourceIn: originalIn }
+  const first = mountReferenceNavigation(controller, sessionOf)
+  const previousIn = controller.openResourceIn
+  const laterIn = (id: string, address: string, options?: unknown) => previousIn(id, address, options)
+  controller.openResourceIn = laterIn
+  const second = mountReferenceNavigation(controller, sessionOf)
+  first() // a stale disposer must not remove the newer installation
+  const address = sessionFileAddress('source', '/mnt/d/projects/demo/report.md')
+  const options = { params: { line: 2 }, revealIfOpened: true }
+  controller.openResource(address, options)
+  controller.openResourceIn('target', address, options)
+  assert.equal(lookups, 2)
+  assert.deepEqual(calls, [[sessionFileAddress('source', 'report.md'), options], ['target', sessionFileAddress('source', 'report.md'), options]])
+  second()
+  second() // disposal is idempotent
+  assert.equal(controller.openResource, originalOpen)
+  assert.equal(controller.openResourceIn, laterIn)
+  controller.openResourceIn('target', address)
+  assert.equal(lookups, 2, 'a wrapper retained by another component is inert')
+  assert.equal(calls.at(-1)?.[1], address)
+})
+
+
+test('async internal translation keeps encoded identity, navigation, and metadata/content coordinate', async () => {
+  const calls: string[] = []
+  const source = { cwd: 'D:/projects/demo', distro: undefined }
+  const controller = {
+    openResource(address: string) { calls.push(address) },
+    openResourceIn(_id: string, address: string) { calls.push(address) },
+  }
+  const id = 'source #1'
+  const path = '/root/目录/a b#%?.md'
+  const suffix = '?line=12&column=2#L12'
+  const address = sessionFileAddress(id, path) + suffix
+  const dispose = mountReferenceNavigation(controller, () => source, async sessionId => {
+    assert.equal(sessionId, id)
+    return { ...source, distro: 'Ubuntu-20.04' }
+  })
+  controller.openResource(address)
+  controller.openResourceIn('visible-other-session', address)
+  await new Promise(resolve => setImmediate(resolve))
+  const expected = sessionFileAddress(id, `//wsl.localhost/Ubuntu-20.04${path}`) + suffix
+  assert.deepEqual(calls, [expected, expected])
+  // The metadata provider and document reader both decode this exact pair.
+  assert.deepEqual(calls.map(parseSessionFileAddress), [
+    { sessionId: id, path: `//wsl.localhost/Ubuntu-20.04${path}` },
+    { sessionId: id, path: `//wsl.localhost/Ubuntu-20.04${path}` },
+  ])
+  dispose()
 })
