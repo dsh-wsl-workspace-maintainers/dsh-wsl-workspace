@@ -7,6 +7,13 @@
 /** Relative route the Host half registers (same-origin with the web server). */
 const ENDPOINT = '/wsl-workspace/api'
 
+/** Observed coordinate from WSL execution, not a newly selected default. */
+export type WslReferenceBinding = { status: 'unknown' | 'ambiguous' } | { status: 'bound'; distro: string }
+
+export async function referenceSession(sessionId: string, signal?: AbortSignal): Promise<WslReferenceBinding> {
+  return call<WslReferenceBinding>('referenceSession', { sessionId, wait: true }, signal)
+}
+
 /** One directory entry as the Host lists it. */
 export interface WslDirEntry {
   name: string
@@ -84,12 +91,13 @@ function refusalText(error: unknown, method: string): string {
  * @param params - the method payload.
  * @returns the unwrapped value, or throws an Error on transport, timeout, non-2xx, or `ok:false`.
  */
-async function call<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+async function call<T>(method: string, params: Record<string, unknown> = {}, lifetime?: AbortSignal): Promise<T> {
   let response: Response
   // `AbortSignal.timeout` is the one whose timer the platform owns, so there is no timer to leak when
   // the call finishes first — a `setTimeout` + `clearTimeout` pair is where a `return` between them
   // leaves a handle up until the deadline.
-  const signal = AbortSignal.timeout(CALL_TIMEOUT_MS)
+  const timeout = AbortSignal.timeout(CALL_TIMEOUT_MS)
+  const signal = lifetime === undefined ? timeout : AbortSignal.any([timeout, lifetime])
   try {
     response = await fetch(ENDPOINT, {
       method: 'POST',

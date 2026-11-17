@@ -38,13 +38,14 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
  */
 const TEST_DEADLINE_MS = 60
 
-function fixture({ legacy = false, late = false, startService = legacy ? 'legacy' : 'ui', sidebarRight = false, records = [], roster, variantStatus = 'absent', apiHttpStatus = null, apiHangs = false } = {}) {
-  let plugin, dialog, subscriber, tick;
+function fixture({ legacy = false, late = false, startService = legacy ? 'legacy' : 'ui', sidebarRight = false, records = [], roster, variantStatus = 'absent', apiHttpStatus = null, apiHangs = false, referenceBindings } = {}) {
+  let plugin, dialog, tick;
+  const subscribers = new Set();
   // The host's `variantStatus` answer, mutable so a test can move it between two reads: a generation
   // counter that goes BACKWARDS is the stale read the client has to ignore.
   let outcome = variantStatus;
   const effects = [], calls = [], opened = [], pending = [];
-  const apiSignals = [];
+  const apiSignals = [], diagnostics = [];
   // `retainedBy.mainView` is the host's own marker for the session on screen
   // (`mainSessionId` reads it), and the plugin needs it: a plain preset arriving
   // on that session is somebody choosing it, while on any other blank session it
@@ -65,7 +66,7 @@ function fixture({ legacy = false, late = false, startService = legacy ? 'legacy
     .flatMap(id => [{ id, isDefault: id === 'standard' }, { id: `wsl-${id}` }]);
   const services = {
     sessions: {
-      list: { getSnapshot: () => state, subscribe: fn => (subscriber = fn, () => { subscriber = undefined; }) },
+      list: { getSnapshot: () => state, subscribe: fn => { subscribers.add(fn); return () => subscribers.delete(fn); } },
     },
     workspaces: {
       create: async () => { calls.push(['create']); return { workspaceId: 'w1' }; },
@@ -141,7 +142,9 @@ function fixture({ legacy = false, late = false, startService = legacy ? 'legacy
       setInterval: fn => (tick = fn, 1),
       clearInterval: () => { tick = undefined; },
     },
-    console,
+    __DSH_WSL_REFERENCE_DEBUG__: true,
+    console: { ...console, debug: (...args) => diagnostics.push(args) },
+    AbortController,
     document: { getElementById: () => ({}), querySelector: () => ({}) },
     // `api.ts` gives every host call a deadline, so the client needs this global. Two things about
     // how it is supplied:
@@ -216,7 +219,13 @@ function fixture({ legacy = false, late = false, startService = legacy ? 'legacy
           json: async () => { throw new Error('the body is an error page, not JSON'); },
         };
       }
-      const method = JSON.parse(init.body).method;
+      const { method, params } = JSON.parse(init.body);
+      if (method === 'referenceSession') {
+        calls.push(['referenceSession', params.sessionId]);
+        return { ok: true, status: 200, json: async () => referenceBindings === undefined
+          ? { ok: false, error: 'unknown method referenceSession' }
+          : { ok: true, value: await (referenceBindings[params.sessionId] ?? { status: 'unknown' }) } };
+      }
       if (method === 'variantStatus') {
         // An old host has no such case in its switch, so the route answers
         // `{ok:false, error:'unknown method "variantStatus"'}` — which the client has to read as
@@ -238,8 +247,9 @@ function fixture({ legacy = false, late = false, startService = legacy ? 'legacy
   });
   plugin.apply(ctx);
   return {
-    calls, services, dialog, mount, summary, setPreset, onScreen, opened, pending,
-    emit: () => subscriber?.(),
+    calls, services, dialog, mount, summary, setPreset, onScreen, opened, pending, state, diagnostics,
+    reapply: () => plugin.apply(ctx),
+    emit: () => { for (const fn of [...subscribers]) fn(); },
     tick: () => tick?.(),
     dispose: () => effects.reverse().forEach(fn => typeof fn === 'function' && fn()),
     selected: () => calls.filter(c => c[0] === 'select').map(c => c[1]),
@@ -409,7 +419,7 @@ test('a non-2xx answer names its status instead of reporting a parse failure', a
 const addressFor = (sessionId, cwd, path) => {
   const normalized = path.replace(/\\/g, '/');
   const root = cwd.replace(/\\/g, '/').replace(/\/+$/, '');
-  const relative = normalized.startsWith(`${root}/`) ? normalized.slice(root.length + 1) : normalized;
+  const relative = root !== '' && normalized.startsWith(`${root}/`) ? normalized.slice(root.length + 1) : normalized;
   return `dsh-resource://file/session/${sessionId}/${relative}`;
 };
 
@@ -427,6 +437,7 @@ test('current: a WSL reference is translated to the file the model named', async
   // workspace registered inside the distribution.
   const inside = addressFor('s1', cwd, '/tmp/fixture/VERSION');
   f.services.sidebarRight.openResource(inside);
+  await flush();
   assert.deepEqual(f.opened, [['openResource', 'dsh-resource://file/session/s1/VERSION', undefined]]);
   f.dispose();
 });
@@ -476,6 +487,7 @@ test('current: a drive workspace is translated from the registered distribution'
   // `/etc/hosts` is on no drive mount: only the distribution's share can serve
   // it, and the record above is where that distribution comes from.
   f.services.sidebarRight.openResource(addressFor('s1', cwd, '/etc/hosts'));
+  await flush();
   assert.deepEqual(f.opened, [['openResource', 'dsh-resource://file/session/s1///wsl.localhost/Ubuntu/etc/hosts', undefined]]);
   f.dispose();
 });
@@ -655,5 +667,321 @@ test('an outcome older than one already read is not shown', async () => {
   f.setVariantStatus(partialOutcome(8));
   assert.equal(await f.dialog.checkPreset(), undefined,
     'a stale generation must not reach the dialog');
+  f.dispose();
+});
+
+// Windows workspaces can select a WSL execution world without registering anew.
+for (const legacy of [false, true]) {
+  test(`${legacy ? 'legacy' : 'current'}: unregistered Windows cwd + WSL preset translates a file reference`, async () => {
+    const f = fixture({ legacy, sidebarRight: true });
+    f.summary.cwd = 'D:\\projects\\demo';
+    f.summary.blank = false;
+    f.setPreset('wsl-standard');
+    await flush();
+    const options = { line: 7, column: 2, reveal: true };
+    f.services.sidebarRight.openResource(addressFor('s1', f.summary.cwd, '/mnt/d/projects/demo/report.md'), options);
+    assert.deepEqual(f.opened, [['openResource', 'dsh-resource://file/session/s1/report.md', options]]);
+    assert.deepEqual(f.selected(), [], 'reference handling must not recompose the session');
+    f.dispose();
+  });
+}
+
+test('references keep the source session, not the visible or target session', async () => {
+  const f = fixture({ sidebarRight: true });
+  await flush();
+  f.state.byId.source = { blank: false, cwd: 'D:\\projects\\demo', projectionValues: { agentPreset: 'wsl-standard' } };
+  const address = addressFor('source', '', '/mnt/d/projects/demo/report.md');
+  f.services.sidebarRight.openResourceIn('s1', address, { line: 12 });
+  assert.deepEqual(f.opened, [['openResourceIn', 's1', 'dsh-resource://file/session/source/report.md', { line: 12 }]]);
+  f.opened.length = 0;
+  // The visible UNC session's Ubuntu must never supply the source's distro.
+  const internal = addressFor('source', '', '/home/user/report.md');
+  f.services.sidebarRight.openResource(internal);
+  await flush();
+  assert.equal(f.opened.length, 0, 'unknown distro is refused instead of being sent to Windows');
+  f.state.byId.source.cwd = '\\\\wsl.localhost\\Debian\\projects\\demo';
+  f.services.sidebarRight.openResource(internal);
+  await flush();
+  assert.equal(f.opened.at(-1)[1], 'dsh-resource://file/session/source///wsl.localhost/Debian/home/user/report.md');
+  f.dispose();
+});
+
+test('a later navigation handler survives disposal and old wrappers become inert on remount', async () => {
+  const f = fixture({ sidebarRight: true });
+  await flush();
+  const controller = f.services.sidebarRight;
+  const pluginOpen = controller.openResource;
+  let laterCalls = 0;
+  const later = (...args) => { laterCalls++; pluginOpen(...args); };
+  controller.openResource = later;
+  f.dispose();
+  assert.equal(controller.openResource, later);
+  const address = addressFor('s1', '', '/mnt/d/x.txt');
+  controller.openResource(address);
+  assert.equal(f.opened.at(-1)[1], address);
+  f.reapply();
+  await flush();
+  controller.openResource(address);
+  assert.equal(f.opened.at(-1)[1], 'dsh-resource://file/session/s1/D:/x.txt');
+  assert.equal(laterCalls, 2);
+  f.dispose();
+  assert.equal(controller.openResource, later);
+});
+
+
+test('reference world requires the source preset in the healthy host roster, not a prefix', async () => {
+  const f = fixture({ sidebarRight: true });
+  f.summary.cwd = 'D:/projects/demo';
+  f.summary.blank = false;
+  await flush();
+  const address = addressFor('s1', f.summary.cwd, '/mnt/d/projects/demo/report.md');
+  for (const preset of ['standard', 'wsl-invented', undefined, null]) {
+    f.setPreset(preset);
+    f.services.sidebarRight.openResource(address);
+    assert.equal(f.opened.at(-1)[1], address, String(preset));
+  }
+  f.setPreset('wsl-standard');
+  f.services.sidebarRight.openResource(address);
+  assert.equal(f.opened.at(-1)[1], 'dsh-resource://file/session/s1/report.md');
+  f.summary.cwd = '/projects/demo';
+  f.services.sidebarRight.openResource(address);
+  assert.equal(f.opened.at(-1)[1], address, 'a native POSIX workspace is not a Windows-host boundary');
+  f.dispose();
+  const broken = fixture({ sidebarRight: true, roster: [{ id: 'wsl-standard', broken: 'failed' }] });
+  broken.summary.cwd = 'D:/projects/demo';
+  broken.summary.blank = false;
+  broken.setPreset('wsl-standard');
+  await flush();
+  broken.services.sidebarRight.openResource(address);
+  assert.equal(broken.opened.at(-1)[1], address);
+  broken.dispose();
+});
+
+test('a real ordinary file has one address for metadata, contents, native and Linux references', async t => {
+  const { default: path } = await import('node:path');
+  const { parseSessionFileAddress, fileAddressFor, sessionFileAddress } = await import('../src/client/references.ts');
+  // On WSL use an actual standard drvfs mount; on Windows use a drive temp dir.
+  // No directory is ever presented as a document. This is a boundary fixture,
+  // not a browser/GUI or a replacement workspaceFiles backend.
+  const base = process.platform === 'win32' ? (await import('node:os')).tmpdir() : '/mnt/d';
+  if (!fs.existsSync(base)) { t.skip('requires Windows or the standard /mnt/d mount'); return; }
+  const dir = fs.mkdtempSync(path.join(base, 'dsh-preview-regression-'));
+  try {
+    const nativeCwd = process.platform === 'win32' ? dir : dir.replace(/^\/mnt\/([a-z])/, (_, drive) => `${drive.toUpperCase()}:`).replaceAll('/', '\\');
+    const linuxCwd = process.platform === 'win32' ? dir.replace(/^([A-Za-z]):/, (_, drive) => `/mnt/${drive.toLowerCase()}`).replaceAll('\\', '/') : dir;
+    const name = '报告 #100%.md';
+    const file = path.join(dir, name);
+    fs.writeFileSync(file, '# preview regression: ordinary file\n');
+    const f = fixture({ sidebarRight: true });
+    f.summary.cwd = nativeCwd;
+    f.summary.blank = false;
+    f.setPreset('wsl-standard');
+    await flush();
+    const options = { params: { line: 3, column: 2 }, revealIfOpened: true };
+    const address = sessionFileAddress('s1', `${linuxCwd}/${name}`);
+    f.services.sidebarRight.openResource(address, options);
+    f.services.sidebarRight.openResourceIn('other-tab-session', address, options);
+    const expected = fileAddressFor('s1', nativeCwd, `${nativeCwd}/${name}`);
+    assert.equal(f.opened[0][1], expected);
+    assert.equal(f.opened[1][2], expected);
+    assert.equal(f.opened[0][2], options);
+    assert.equal(f.opened[1][3], options);
+    // The resource address is the common input to metadata and content readers.
+    // Resolve exactly as a Windows host does, then access that real file here.
+    const paths = f.opened.map(call => {
+      const parsed = parseSessionFileAddress(call[call[0] === 'openResource' ? 1 : 2]);
+      assert.equal(parsed.sessionId, 's1');
+      const absolute = path.win32.resolve(nativeCwd, parsed.path);
+      return process.platform === 'win32' ? absolute : absolute.replace(/^([A-Za-z]):/, (_, drive) => `/mnt/${drive.toLowerCase()}`).replaceAll('\\', '/');
+    });
+    assert.equal(paths[0], paths[1]);
+    assert.ok(fs.statSync(paths[0]).isFile());
+    assert.equal(fs.readFileSync(paths[1], 'utf8'), fs.readFileSync(file, 'utf8'));
+    f.services.sidebarRight.openResource(expected);
+    assert.equal(f.opened.at(-1)[1], expected, 'native spelling reuses the same content identity');
+    f.dispose();
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+test('Windows cwd + WSL mode: internal absolute links follow the source execution binding', async () => {
+  const f = fixture({ sidebarRight: true, referenceBindings: {
+    explicit: { status: 'bound', distro: 'Ubuntu-20.04' },
+    defaultSelected: { status: 'bound', distro: 'Debian' },
+    conflict: { status: 'ambiguous' },
+  } });
+  await flush();
+  for (const id of ['explicit', 'defaultSelected', 'missing', 'conflict', 'windows']) {
+    f.state.byId[id] = { blank: false, cwd: 'D:/projects/demo', projectionValues: { agentPreset: id === 'windows' ? 'standard' : 'wsl-standard' } };
+  }
+  const linux = '/root/project/tsdown.config.ts';
+  for (const [id, distro] of [['explicit', 'Ubuntu-20.04'], ['defaultSelected', 'Debian']]) {
+    const address = addressFor(id, 'D:/projects/demo', linux);
+    const options = { params: { line: 3 }, revealIfOpened: true };
+    f.services.sidebarRight.openResource(address, options);
+    f.services.sidebarRight.openResourceIn('s1', address, options);
+    await flush();
+    const expected = `dsh-resource://file/session/${id}///wsl.localhost/${distro}${linux}`;
+    assert.equal(f.opened.at(-2)[1], expected);
+    assert.equal(f.opened.at(-1)[2], expected);
+    assert.equal(f.opened.at(-1)[3], options);
+  }
+  for (const id of ['missing', 'conflict', 'windows']) {
+    f.opened.length = 0;
+    const address = addressFor(id, 'D:/projects/demo', linux);
+    f.services.sidebarRight.openResource(address);
+    await flush();
+    if (id === 'windows') assert.equal(f.opened.at(-1)[1], address);
+    else assert.equal(f.opened.length, 0, `${id}: unresolved Linux paths never reach Windows`);
+  }
+  assert.ok(!f.calls.some(call => call[0] === 'referenceSession' && call[1] === 'windows'));
+  f.dispose();
+});
+
+
+test('new Host unknown/ambiguous bindings override workspace hints; no late open after dispose', async () => {
+  for (const binding of [{ status: 'unknown' }, { status: 'ambiguous' }, { status: 'bound', distro: '../wrong' }]) {
+    const f = fixture({ sidebarRight: true, referenceBindings: { s1: binding } });
+    await flush();
+    const address = addressFor('s1', f.summary.cwd, '/root/same.md');
+    f.services.sidebarRight.openResource(address);
+    await flush();
+    assert.equal(f.opened.length, 0, JSON.stringify(binding));
+    assert.ok(f.diagnostics.some(([, row]) => row.stage === 'unavailable'));
+    f.dispose();
+  }
+  let resolveBinding;
+  const pendingBinding = new Promise(resolve => { resolveBinding = resolve; });
+  const f = fixture({ sidebarRight: true, referenceBindings: { s1: pendingBinding } });
+  await flush();
+  f.services.sidebarRight.openResource(addressFor('s1', f.summary.cwd, '/root/same.md'));
+  f.dispose();
+  resolveBinding({ status: 'bound', distro: 'Ubuntu-20.04' });
+  await flush();
+  assert.equal(f.opened.length, 0, 'an unmounted hook must not open after the Host replies');
+});
+
+test('a changed source session while binding is loading does not use stale coordinates', async () => {
+  let resolveBinding;
+  const f = fixture({ sidebarRight: true, referenceBindings: { s1: new Promise(resolve => { resolveBinding = resolve; }) } });
+  await flush();
+  const address = addressFor('s1', f.summary.cwd, '/root/same.md');
+  f.services.sidebarRight.openResourceIn('target', address, { params: { line: 2 } });
+  f.setPreset('standard');
+  resolveBinding({ status: 'bound', distro: 'Ubuntu-20.04' });
+  await flush();
+  assert.equal(f.opened.length, 0, 'a stale source does not dispatch an unresolved path');
+  f.dispose();
+});
+
+
+test('fresh Windows WSL session: first internal link waits for its source summary, then opens once', async () => {
+  const f = fixture({ sidebarRight: true, referenceBindings: { fresh: { status: 'bound', distro: 'Ubuntu-20.04' } } });
+  await flush();
+  const path = '/root/project/tsdown.config.ts';
+  const address = addressFor('fresh', 'D:/projects/demo', path);
+  f.services.sidebarRight.openResourceIn('s1', address, { params: { line: 1 } });
+  await flush();
+  assert.equal(f.opened.length, 0, 'never send a root-relative Linux path while the summary is absent');
+  f.state.byId.fresh = { blank: false, cwd: 'D:/projects/demo', projectionValues: {} };
+  f.emit(); await flush();
+  assert.equal(f.opened.length, 0, 'cwd alone does not establish execution world');
+  f.state.byId.fresh.projectionValues.agentPreset = 'wsl-standard';
+  f.emit(); await flush();
+  assert.deepEqual(f.opened, [['openResourceIn', 's1', `dsh-resource://file/session/fresh///wsl.localhost/Ubuntu-20.04${path}`, { params: { line: 1 } }]]);
+  const rows = f.diagnostics.map(([, row]) => row).filter(row => row.sourceSessionId === 'fresh');
+  assert.ok(rows.some(row => row.stage === 'summary-pending'));
+  assert.ok(rows.some(row => row.stage === 'mode-pending'));
+  const handoff = rows.find(row => row.stage === 'handoff');
+  assert.equal(handoff.path, `//wsl.localhost/Ubuntu-20.04${path}`);
+  for (const row of rows) for (const key of Object.keys(row)) {
+    assert.ok(['sourceSessionId', 'stage', 'path', 'cwd', 'preset', 'distro', 'method'].includes(key));
+  }
+  f.dispose();
+});
+
+
+test('first click waits for world readiness without an extra click or tool call', async () => {
+  let resolveBinding;
+  const f = fixture({ sidebarRight: true, referenceBindings: { cold: new Promise(resolve => { resolveBinding = resolve; }) } });
+  await flush();
+  f.state.byId.cold = { blank: false, cwd: 'D:/projects/demo', projectionValues: { agentPreset: 'wsl-standard' } };
+  const path = '/root/project/tsdown.config.ts';
+  f.services.sidebarRight.openResource(addressFor('cold', 'D:/projects/demo', path), { params: { line: 1 }, diagnosticSentinel: 'do-not-log-options' });
+  await flush();
+  assert.equal(f.opened.length, 0);
+  resolveBinding({ status: 'bound', distro: 'Ubuntu-20.04' });
+  await flush();
+  assert.equal(f.opened.length, 1);
+  assert.equal(f.opened[0][1], `dsh-resource://file/session/cold///wsl.localhost/Ubuntu-20.04${path}`);
+  assert.ok(!JSON.stringify(f.diagnostics).includes('do-not-log-options'));
+  f.dispose();
+});
+
+test('unmount cancels a first-click summary subscription', async () => {
+  const f = fixture({ sidebarRight: true });
+  await flush();
+  f.services.sidebarRight.openResource(addressFor('missing-summary', 'D:/projects/demo', '/root/a.md'));
+  await flush();
+  assert.equal(f.opened.length, 0);
+  f.dispose();
+  f.state.byId['missing-summary'] = { blank: false, cwd: 'D:/projects/demo', projectionValues: { agentPreset: 'wsl-standard' } };
+  f.emit(); await flush();
+  assert.equal(f.opened.length, 0);
+});
+
+
+// Source-mode controls: restored and fresh sessions must follow their own
+// recorded preset, independent of the visible session or session age.
+test('same-instance comparison: recorded preset, not session age, controls Linux reference translation', async () => {
+  const { fileAddressFor, parseSessionFileAddress } = await import('../src/client/references.ts');
+  const { win32 } = await import('node:path');
+  const cwd = 'D:/projects/demo';
+  const internal = '/root/project/tsdown.config.ts';
+  const drive = '/mnt/d/projects/demo/report.md';
+  const f = fixture({ sidebarRight: true, referenceBindings: {
+    'historical-wsl': { status: 'bound', distro: 'Ubuntu-20.04' },
+    'fresh-wsl': { status: 'bound', distro: 'Ubuntu-20.04' },
+  } });
+  await flush();
+  const snapshots = [
+    ['historical-wsl', ['wsl-standard'], true],
+    ['fresh-standard', [], false],
+    // Cross-control: changing age alone does not account for the reported split.
+    ['fresh-wsl', ['wsl-standard'], true],
+    ['historical-standard', [], false],
+  ];
+  for (const [id, selections, wsl] of snapshots) {
+    const header = { agentPreset: 'standard' };
+    const preset = selections.reduce((_state, selected) => selected, header.agentPreset);
+    f.state.byId[id] = { blank: false, cwd, projectionValues: { agentPreset: preset } };
+    for (const path of [internal, drive]) {
+      f.opened.length = 0;
+      const original = fileAddressFor(id, cwd, path);
+      f.services.sidebarRight.openResourceIn('s1', original, { params: { line: 1 } });
+      await flush();
+      const finalAddress = f.opened[0][2];
+      const expectedPath = path === internal
+        ? `//wsl.localhost/Ubuntu-20.04${internal}`
+        : 'report.md';
+      assert.equal(finalAddress, wsl ? fileAddressFor(id, cwd, expectedPath) : original);
+      const final = parseSessionFileAddress(finalAddress);
+      assert.equal(final.sessionId, id, 'visible/target session must never become source');
+      assert.equal(win32.resolve(cwd, final.path), win32.resolve(cwd, wsl ? expectedPath : path));
+    }
+    for (const path of [
+      `//wsl.localhost/Ubuntu-20.04${internal}`,
+      `\\\\wsl.localhost\\Ubuntu-20.04\\root\\workspace\\dsh-superagent-prototype\\tsdown.config.ts`,
+      `${cwd}/report.md`,
+      './report.md',
+    ]) {
+      f.opened.length = 0;
+      const original = fileAddressFor(id, cwd, path);
+      f.services.sidebarRight.openResource(original);
+      assert.equal(f.opened[0][1], original, 'native, UNC and relative addresses do not change');
+    }
+  }
+  assert.ok(!f.calls.some(call => call[0] === 'referenceSession' && ['fresh-standard', 'historical-standard'].includes(call[1])),
+    'native mode must not acquire a WSL binding simply because a link looks Linux');
   f.dispose();
 });

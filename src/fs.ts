@@ -49,6 +49,7 @@ import {
   windowsToMntPath,
 } from './shared/paths.ts'
 import { defaultDistroSync } from './shared/wsl.ts'
+import { inReferenceExecution, observeReferenceDistro, ownsReferenceWorld } from './shared/reference-world.ts'
 
 /** Plugin config. `cwd`/`distro` are optional because UNC workdirs carry both. */
 export interface Config {
@@ -103,8 +104,26 @@ export class WslFileSystem extends LocalFileSystem {
     // `diffBasisMaxBytes` and stores the resolved shape.
     super(ctx, config)
     this.distro = config.distro
+    // The composed WSL world is ready before a new agent can produce links.
+    // Use this provider's own selector (including its cached execution default),
+    // not a separate reference-time guess. Scoped dispatch prevents another
+    // preset's world from contributing a distribution for this session.
+    const initialize = (agent: { session: { id: string; header: { cwd?: string } } }): undefined => {
+      if (!ownsReferenceWorld(ctx, agent, this)) return undefined
+      try { observeReferenceDistro(this.distroFor(agent.session.header.cwd), agent.session.id, 'fs-world-ready') } catch {
+        // A provider with no resolvable coordinate remains unknown.
+      }
+      return undefined
+    }
+    ctx.on('agent/created', ({ agent }) => initialize(agent))
+    // Choosing WSL in an already-created blank Windows session recomposes its
+    // world without another agent/created. The committed selection is post-mount.
+    ctx.on('agent-preset/selected', sessionId => {
+      const agent = ctx.get('agents')?.get(sessionId)
+      if (agent !== undefined) initialize(agent)
+    })
     ctx.on('tools/execute', (exec: ToolDispatchExecution, next: () => Promise<ToolExecutionResult>) => (
-      this.executionCwd.run(exec.agent?.session.header.cwd, next)
+      inReferenceExecution(exec.agent?.session.id, () => this.executionCwd.run(exec.agent?.session.header.cwd, next))
     ))
     // The 9P/drvfs substrate has no hard links and no Win32 security semantics:
     // replace the atomic-publication boundaries the parent's fsio defaults to.
@@ -157,6 +176,14 @@ export class WslFileSystem extends LocalFileSystem {
 
   /** Translate a model/plugin path into Windows-side coordinates. */
   private translate(path: string, cwd?: string): Translated {
+    const translated = this.translatePath(path, cwd)
+    const target = parseWslUnc(translated.input)
+      ?? (windowsToMntPath(translated.input) === null ? parseWslUnc(translated.cwd) : null)
+    if (target !== null) observeReferenceDistro(target.distro)
+    return translated
+  }
+
+  private translatePath(path: string, cwd?: string): Translated {
     const unc = parseWslUnc(path)
     if (unc !== null) {
       return { input: joinUnc(unc.distro, unc.linuxPath), cwd: this.cwdOr(cwd) }

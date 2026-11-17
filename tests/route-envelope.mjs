@@ -178,6 +178,25 @@ try {
   assert(allowed.status === 200 && allowed.envelope?.ok === true,
     'a real loopback request with a loopback Host is answered (the fence is not blanket-403)')
 
+  // A separate built provider entry must publish to the same store as the
+  // built HTTP entry. This catches accidentally duplicated code-split state.
+  const { Context } = await import('@deepseek-ai/cordis')
+  const { WslFileSystem } = await import(pathToFileURL(join(repo, 'lib', 'fs.js')).href)
+  for (const [id, distro] of [['route-ubuntu', 'Ubuntu-20.04'], ['route-debian', 'Debian']]) {
+    const context = new Context()
+    context.provide('agentPresets', { serviceFor: (_agent, name) => context.get(name) })
+    await context.plugin(WslFileSystem, { distro })
+    const firstRequest = post({ method: 'referenceSession', params: { sessionId: id, wait: true } })
+    await context.serial('agent/created', { agent: { session: { id, header: { cwd: 'D:/projects/demo' } } }, source: 'create' })
+    const answer = await firstRequest
+    assert(answer.envelope?.ok && answer.envelope.value.status === 'bound' && answer.envelope.value.distro === distro,
+      `built fs selection reaches built route under its source session: ${id}`)
+  }
+  const missingBinding = await post({ method: 'referenceSession', params: { sessionId: 'never-executed' } })
+  assert(missingBinding.envelope?.value?.status === 'unknown', 'a missing execution is not mapped to the current default')
+  const badBinding = await post({ method: 'referenceSession', params: {} })
+  assert(badBinding.envelope?.ok === false, 'referenceSession validates its source identity')
+
   const foreignPeer = await post({ method: 'describe' }, {
     headers: { 'x-test-non-loopback-peer': '1' },
   })

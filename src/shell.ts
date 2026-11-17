@@ -42,6 +42,7 @@ import {
 } from './shared/paths.ts'
 import { getWorkspaceUsername } from './shared/wsl-credentials.ts'
 import { defaultDistroSync } from './shared/wsl.ts'
+import { observeReferenceDistro } from './shared/reference-world.ts'
 
 /**
  * Model-friendly environment overrides (same set `dsh-bash-local` hardcodes):
@@ -287,6 +288,7 @@ export class WslShellExecutor extends ShellExecutor {
       this.config.loginShell ? '-lc' : '-c',
       command,
     ]
+    observeReferenceDistro(distro, spec.dshEnv?.DSH_SESSION_ID)
     return { distro, linuxCwd, windowsCwd, env, argv }
   }
 
