@@ -41,6 +41,7 @@ import { probePersistentShellReadiness } from './host/pty-readiness.ts'
 import { applyRunCodeGuard } from './host/wsl-run-code-guard.ts'
 import { PROBE_CONFIG, buildSessionSpec } from './host/wsl-bash-tool.ts'
 import { probeWslBashSession, type WslBashSpawnHost } from './host/wsl-bash-session.ts'
+import { defaultResolver, hostFamilyVersion } from './host/host-version.ts'
 import { hostLacksSubagentGate, isWslVariantId, transformPresetForWsl, unquoteScalar, variantIdFor, withoutSubagentDelegation } from './host/variants.ts'
 import { WslSkillsProvider, type WslSkillsRegistryFace } from './host/wsl-skills.ts'
 
@@ -723,37 +724,6 @@ function describeResolvedCopy(specifier: string): string {
 }
 
 /**
- * The host family's release, when it can be named.
- *
- * The variant generator needs the *family* release, and `dsh-tools` is a peer whose release
- * moves in lockstep with the umbrella, so its manifest is the family's. Same walk as
- * {@link describeResolvedCopy}: resolve the entry, then read the manifest above it — a manifest
- * at the package root names the package, and the walk stops there rather than trusting whatever
- * a hoisted parent claims.
- * @returns the version string, or undefined when nothing resolvable names itself.
- */
-function hostFamilyVersion(): string | undefined {
-  const resolve = (import.meta as ImportMeta & { resolve?: (specifier: string) => string }).resolve
-  if (typeof resolve !== 'function') return undefined
-  try {
-    let dir = dirname(fileURLToPath(resolve.call(import.meta, '@deepseek-ai/dsh-tools')))
-    for (let depth = 0; depth < 8; depth += 1) {
-      const manifestPath = join(dir, 'package.json')
-      if (existsSync(manifestPath)) {
-        const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as { name?: string; version?: string }
-        if (manifest.name === '@deepseek-ai/dsh-tools') return manifest.version
-      }
-      const parent = dirname(dir)
-      if (parent === dir) return undefined
-      dir = parent
-    }
-  } catch {
-    return undefined
-  }
-  return undefined
-}
-
-/**
  * Build the entry-list dialect from the engine namespace that will parse with it.
  *
  * `@deepseek-ai/cordis-plugin-include` exports an `entryListSchema` precisely so
@@ -1034,7 +1004,18 @@ async function materializeVariants(
   // delegation row is one more live `tool-subagent` composition, and at six — the three shipped
   // presets plus this generator's three variants — Desktop session creation fails outright. The
   // flag is read once per boot: the family release does not move under a running plugin.
-  const dropSubagentDelegation = hostLacksSubagentGate(hostFamilyVersion())
+  //
+  // Issue #143: the predicate is keyed to the release that removed the defect, so a host that
+  // carries the fix keeps the copied delegation row and WSL sessions regain `subagent` and
+  // `list_subagent_models`. On DSH Desktop the probe can only answer by reading `app.asar`; when
+  // it cannot, the flag stays true and the behaviour is exactly what 0.7.13 shipped.
+  const familyVersion = hostFamilyVersion({ resolve: defaultResolver() })
+  const dropSubagentDelegation = hostLacksSubagentGate(familyVersion)
+  if (dropSubagentDelegation) {
+    console.log(`dsh-wsl-workspace: host ${familyVersion ?? 'unidentified host'}; WSL variants drop their copied delegation row (upstream gate absent, see #60)`)
+  } else {
+    console.log(`dsh-wsl-workspace: host ${familyVersion}; WSL variants keep their copied delegation row (upstream gate present, see #143)`)
+  }
   for (const preset of sources) {
     const variantId = variantIdFor(preset.id)
     try {
