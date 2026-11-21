@@ -6,7 +6,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { hostLacksSubagentGate, isWslVariantId, transformPresetForWsl, variantIdFor } from '../src/host/variants.ts'
+import { compareReleases, hostLacksSubagentGate, isWslVariantId, transformPresetForWsl, variantIdFor } from '../src/host/variants.ts'
 
 const SHELL = 'D:/plugin/lib/shell.js'
 const FS = 'D:/plugin/lib/fs.js'
@@ -687,9 +687,31 @@ test('a group that merely nests the package name is not mistaken for the delegat
   assert.ok(out.includes('- id: some-group'), 'a top-level group was dropped for a name nested deeper than a row key sits')
 })
 
-test('hostLacksSubagentGate covers the current compat window and fails closed', () => {
+test('hostLacksSubagentGate is keyed to the release that removed the defect, and fails closed', () => {
+  // Releases that still carry the ungated `agent/created` install path (measured: 0.2.1-rc.5 has
+  // all four removed identifiers; see SUBAGENT_GATE_RELEASE).
   assert.equal(hostLacksSubagentGate('0.2.0-rc.1'), true)
   assert.equal(hostLacksSubagentGate('0.2.1-rc.2'), true)
-  assert.equal(hostLacksSubagentGate(undefined), true, 'an unreadable host version must strip, not brick sessions')
+  assert.equal(hostLacksSubagentGate('0.2.1-rc.5'), true)
+  assert.equal(hostLacksSubagentGate('0.2.2-alpha.1'), true, 'one prerelease before the fix')
+  // The fix, and every release after it.
+  assert.equal(hostLacksSubagentGate('0.2.2-alpha.2'), false, 'the release that removed the defect')
+  assert.equal(hostLacksSubagentGate('0.2.2-rc.1'), false)
+  assert.equal(hostLacksSubagentGate('0.2.2-rc.5'), false)
   assert.equal(hostLacksSubagentGate('0.3.0'), false, 'a future family with the gate keeps its delegation row')
+  // Fail-closed: an unreadable host keeps the historical, session-safe behaviour.
+  assert.equal(hostLacksSubagentGate(undefined), true, 'an unreadable host version must strip, not brick sessions')
+  // A prerelease still sorts before its own release, so the boundary is not just a string prefix.
+  assert.equal(hostLacksSubagentGate('0.2.2-rc.1'), false)
+  assert.equal(hostLacksSubagentGate('0.2.2'), false)
+})
+
+test('compareReleases orders the family’s releases the way the gate boundary needs', () => {
+  assert.ok(compareReleases('0.2.1-rc.5', '0.2.2-alpha.2') < 0)
+  assert.ok(compareReleases('0.2.2-alpha.2', '0.2.2-alpha.3') < 0)
+  assert.ok(compareReleases('0.2.2-rc.1', '0.2.2-rc.5') < 0)
+  assert.ok(compareReleases('0.2.2-rc.5', '0.2.2') < 0, 'a prerelease sorts before its own release')
+  assert.ok(compareReleases('0.2.10', '0.2.9') > 0, 'numeric comparison, not string comparison')
+  assert.equal(compareReleases('0.2.2-rc.1', '0.2.2-rc.1'), 0, 'equal releases compare equal')
+  assert.equal(compareReleases('v0.2.2-rc.1', '0.2.2-rc.1'), 0, 'a leading v is not a difference')
 })

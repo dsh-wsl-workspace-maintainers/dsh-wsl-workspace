@@ -4,6 +4,11 @@
 
 > **这是一份只追加的历史，不是一组链接。** 较早条目点到的仓库内文件（`src/…`、`tests/…`、`docs/…`）与维护者本机上的读数文件，都是"当时量到了什么"的记录；它们以及本包之外的任何路径都**不随包发布**。本包发布的是 `lib/`、两份 README、`TESTING.md`、两份 CHANGELOG 与 `docs/driving.*`。
 
+## Unreleased
+
+- **在已修复的上游宿主上，WSL 变体重新保留 `subagent` 委派行（#143）。** 自 0.7.13 起，变体生成器会丢掉复制来的委派行，因为 `@deepseek-ai/dsh-tool-subagent` 当年从一条不带 composition 门的 `agent/created` 监听里安装自己，并以 **Agent 对象身份**去重——六个同时存活的组合会让每次新建 Desktop 会话都失败于 `tool "subagent" is already registered in this scope`（issue #60）。上游在 `764a51d5` 删掉了整条路径，`0.2.2-alpha.2` 及之后的宿主每个组合只注册一次、且落在该预设自己的作用域里，因此这个丢弃行为已成为纯粹的损失：WSL 会话一直没有 `subagent` 与 `list_subagent_models`，却换不到任何安全收益。`hostLacksSubagentGate` 现在以该版本为界，而不再是"任何 `0.2.x`"，凡是带有该修复的宿主都会保留委派行。谓词仍然失败即关闭：无法识别版本的宿主沿用 0.7.13 的行为。
+- **宿主版本现在可以从打包的 Desktop 里读到了。** 原来的探测解析 `@deepseek-ai/dsh-tools` 再向上找 manifest，只有在宿主闭包位于插件解析器可遍历的文件系统上时才成立。DSH Desktop 的宿主住在 `app.asar` 里，解析直接抛 `ERR_MODULE_NOT_FOUND`，探测于是在每个 Desktop 上都返回 `undefined`——也就是说，只收窄谓词在那里什么也修不好。新增的第二条路径用普通 `node:fs` 直接读归档容器（pickle 头、JSON 目录、4 字节对齐的数据基址），并在存在可解析的磁盘副本时优先用它。已在本机随包发布的 Desktop 归档上验证：读出 `0.2.2-rc.5`，门判定为存在。
+
 ## 0.7.13 — 2026-11-04
 
 - 取消调用时先核对会话令牌并停止 Linux Bash，再终止 Windows 启动器。WSL1 上原先的顺序可能先打断前台子进程，使 Bash 继续执行下一条命令。

@@ -323,7 +323,28 @@ const jsRow = standard.plugins.find(row => row.id === 'data-export')
 assert(jsRow !== undefined, 'a kept row survives the transform')
 assert(typeof jsRow.disabled === 'object' && jsRow.disabled.__jsExpr === "process.platform === 'win32'",
   'a !!js disabled expression round-trips as an expression node')
-assert(!standard.plugins.some(row => row.id === 'delegation'), '#132 drops the whole group, including its dependent tools')
+// The delegation group is the one row whose survival depends on the host release: a host that
+// still carries the ungated `agent/created` install path must not receive a second composition
+// (#60), and a host that carries the fix must keep the row or the session silently loses
+// `subagent` (#143). Which branch this run takes is therefore a property of the closure the
+// checkout resolved — `ci/pinned-deps.json` pins `0.2.2-rc.1`, which has the gate — so assert the
+// invariant that holds either way: the group is dropped WHOLE or kept WHOLE, never partially.
+// A partial drop is the #132 failure, and it is the shape that actually reached a user.
+const delegationRows = standard.plugins.filter(row => row.id === 'delegation')
+const delegationMembers = delegationRows[0]?.config?.map(row => row.id) ?? []
+if (delegationRows.length === 0) {
+  console.log('ok: #60 the delegation group is dropped whole on a host without the registration gate')
+} else {
+  assert(delegationRows.length === 1, '#60 the delegation group is declared exactly once')
+  // Every dependent row the source carried must still be there: removing only the `subagent`
+  // rows would leave `tool-subagent-control` and `workflow-ptc` mounted without the service
+  // they need, which is an inactive group rather than a clean drop.
+  assert(delegationMembers.includes('tool-subagent-control'),
+    `#132 a kept group keeps its dependent tools (got ${JSON.stringify(delegationMembers)})`)
+  assert(delegationMembers.includes('tool-subagent-fork'),
+    `#143 a gated host keeps the delegation rows, so WSL sessions have subagent (got ${JSON.stringify(delegationMembers)})`)
+  console.log('ok: #143 the delegation group survives whole on a host that carries the registration gate')
+}
 const keptExample = standard.plugins.find(row => row.id === 'keep-delegation-example')
 assert(keptExample?.config.name === '@deepseek-ai/dsh-tool-subagent', '#132 keeps ordinary config and prompt data')
 assert(keptExample?.config.text === "name: '@deepseek-ai/dsh-tool-subagent'", '#132 keeps the literal example')

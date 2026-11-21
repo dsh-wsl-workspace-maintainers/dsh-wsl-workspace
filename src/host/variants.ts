@@ -644,28 +644,95 @@ export function isWslVariantId(id: string): boolean {
 }
 
 /**
+ * The first host family release whose `tool-subagent` carries the registration gate.
+ *
+ * `@deepseek-ai/dsh-tool-subagent` used to install itself from a bare
+ * `ctx.on('agent/created', …)` with no `belongsToComposition` gate on that path, and to dedupe
+ * `scopedInstalls` by **Agent object identity**, so one live copy of the delegation row per
+ * preset was one more composition: at six (three shipped presets plus this generator's three
+ * variants) every new Desktop session failed with `tool "subagent" is already registered in
+ * this scope` (issue #60; deepseek-ai/deepseek-harness discussion #6751).
+ *
+ * Upstream removed that whole path in commit `764a51d5` ("refactor(subagent): expose model
+ * selection only on settings-owning tools", 2026-10-12, +353/−2380). The rewrite deletes the
+ * `agent/created` listener, `scopedInstalls`, `installing`, `belongsToComposition` and
+ * `installScoped`: `apply()` now registers one definition per composition, and every preset
+ * mounts under its own registry-owned `createScope()`, so the tool registry's per-scope
+ * `ToolLayer` is the only dedupe that is still needed.
+ *
+ * Measured by unpacking each published `@deepseek-ai/dsh-tool-subagent` `lib/index.js` and
+ * counting the four removed identifiers — 0.2.1-rc.5 still carries all four, 0.2.2-alpha.2 and
+ * every later 0.2.2 release carry none. The umbrella `@deepseek-ai/dsh` publishes in lockstep
+ * with it, so the family version is a sound discriminator at this boundary.
+ */
+export const SUBAGENT_GATE_RELEASE = '0.2.2-alpha.2'
+
+/**
+ * Compare two release strings by the family's ordering rules (numeric core, then prerelease
+ * identifiers, a prerelease sorting before its own release).
+ *
+ * Deliberately not semver's full grammar: the host family only ever publishes
+ * `<major>.<minor>.<patch>` with optional dot-separated `[alpha|rc].<n>` identifiers, and a
+ * dependency-free parse keeps the pure-node test bucket free of a package it does not declare.
+ * @param left - a release string.
+ * @param right - a release string.
+ * @returns negative, zero or positive as `left` sorts before, with or after `right`.
+ */
+export function compareReleases(left: string, right: string): number {
+  const parse = (value: string): { core: number[], pre: string[] } => {
+    const [core = '', pre = ''] = value.trim().replace(/^v/, '').split('-', 2)
+    return {
+      // A missing or non-numeric component reads as 0 so a malformed string still compares
+      // instead of throwing inside a boot path.
+      core: core.split('.').map(part => {
+        const n = Number.parseInt(part, 10)
+        return Number.isFinite(n) ? n : 0
+      }),
+      pre: pre === '' ? [] : pre.split('.'),
+    }
+  }
+  const a = parse(left)
+  const b = parse(right)
+  for (let i = 0; i < Math.max(a.core.length, b.core.length); i += 1) {
+    const diff = (a.core[i] ?? 0) - (b.core[i] ?? 0)
+    if (diff !== 0) return diff
+  }
+  // An absent prerelease sorts AFTER any prerelease at the same core version.
+  if (a.pre.length === 0 && b.pre.length === 0) return 0
+  if (a.pre.length === 0) return 1
+  if (b.pre.length === 0) return -1
+  for (let i = 0; i < Math.max(a.pre.length, b.pre.length); i += 1) {
+    const x = a.pre[i]
+    const y = b.pre[i]
+    if (x === undefined) return -1
+    if (y === undefined) return 1
+    const nx = Number.parseInt(x, 10)
+    const ny = Number.parseInt(y, 10)
+    const xNumeric = Number.isFinite(nx) && String(nx) === x
+    const yNumeric = Number.isFinite(ny) && String(ny) === y
+    if (xNumeric && yNumeric && nx !== ny) return nx - ny
+    // Numeric identifiers sort before alphanumeric ones.
+    if (xNumeric !== yNumeric) return xNumeric ? -1 : 1
+    if (x !== y) return x < y ? -1 : 1
+  }
+  return 0
+}
+
+/**
  * Whether the host family still carries the upstream duplicate-registration defect.
  *
- * `@deepseek-ai/dsh-tool-subagent` mounts once per live copy of the delegation row with no
- * `belongsToComposition` gate on the composition path and dedupes by object identity, so each
- * live copy of the delegation row is one more composition, and at six Desktop session creation
- * fails outright (issue #60; deepseek-ai/deepseek-harness discussion #6751). The package does
- * carry `belongsToComposition` on its standing `modelSelectionSettings` install path (verified
- * in the installed tree at 0.2.1-rc.2, and reported unchanged on 0.2.1-rc.5 in issue #132) —
- * but that gate only scopes the `agents.list()` reconcile loop; a composition that mounts the
- * package is still one more ungated registration. While the window head stays in 0.2.x the
- * predicate therefore says the gate is missing. When a fixed release becomes the window head,
- * narrow this predicate: the delegation row comes back, and with it `subagent` delegation
- * inside WSL sessions.
- *
- * An unreadable version leans the same way (fail-closed): a host this plugin cannot name is
- * more likely to lack the gate than to carry it, and the cost asymmetry is a missing
- * `subagent` tool against a missing session.
+ * The predicate is keyed to the release that removed it ({@link SUBAGENT_GATE_RELEASE}); see
+ * that constant for the measurement. An unreadable version still leans fail-closed — a host
+ * this plugin cannot name is more likely to lack the gate than to carry it, and the cost
+ * asymmetry is a missing `subagent` tool against a missing session — but the probe that feeds
+ * it must therefore be able to read a packaged host (see {@link hostFamilyVersion}), not fall
+ * back to `undefined` on every Desktop install.
  * @param version - the host family's release string, when it could be read.
  * @returns true when the generator must not let the copied delegation row through.
  */
 export function hostLacksSubagentGate(version: string | undefined): boolean {
-  return version === undefined || /^0\.2\./.test(version)
+  if (version === undefined) return true
+  return compareReleases(version, SUBAGENT_GATE_RELEASE) < 0
 }
 
 /** The variant id for one source preset id. */
