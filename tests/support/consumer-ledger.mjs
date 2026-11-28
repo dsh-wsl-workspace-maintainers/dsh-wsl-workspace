@@ -36,6 +36,17 @@ import { transformPresetForWsl } from '../../src/host/variants.ts'
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const HOST_ROOT = join(repoRoot, 'ci', 'deps', 'node_modules', '@deepseek-ai')
 
+/** The host release whose closure this ledger scans, never the root-first dev tree. */
+export function closureRelease () {
+  const manifest = join(HOST_ROOT, 'dsh', 'package.json')
+  if (!existsSync(manifest)) return undefined
+  try {
+    return JSON.parse(readFileSync(manifest, 'utf8')).version
+  } catch {
+    return undefined
+  }
+}
+
 /** Bundle outputs above this size are skipped: they are vendored toolchains, not service consumers. */
 const MAX_SOURCE_BYTES = 3_000_000
 
