@@ -139,10 +139,22 @@ curl -s -X POST http://127.0.0.1:3981/wsl-workspace/api \
 `describe` returns `{ version, releases, route, loopbackOnly, methods, installProof, driving }`.
 `methods` is the authoritative table (`name`, `mutates`, `params`, `returns`); it is
 generated from the same constant the dispatcher reads, and a gate fails the build if the
-two disagree. The ten methods are:
+two disagree. The eleven methods are:
 
 `listDistros`, `listDir`, `check`, `registerWindows`, `listWorkspaces`, `removeWorkspace`,
-`listWorkspaceRecords`, `setUser`, `variantStatus`, `describe`.
+`listWorkspaceRecords`, `setUser`, `variantStatus`, `describe`, `wslConnectionCheck`.
+The Add WSL workspace dialog shows a **WSL connection** indicator. After a distribution
+is selected, it runs one fixed, read-only command inside that distribution as the selected
+Linux user (blank means the distribution default). Green means that command completed
+successfully. Changing the distribution or user clears the previous result and checks again;
+**Check** retries. No DeepSeek account request or model task is made, and no DSH installation
+inside WSL is required. This does not verify headless/subagent tool routing or file writes.
+
+`wslConnectionCheck` takes `{ distro, username? }` and requires
+`Content-Type: application/json` in addition to the loopback fence. It returns
+`{ status, distro, username?, reason? }`; status is `connected` or `failed`, and a failure
+reason is `timeout`, `unavailable` (no WSL executable), or `connection-failed`.
+The command deadline is twelve seconds; no caller-supplied shell command is accepted.
 
 Examples (read-only first):
 

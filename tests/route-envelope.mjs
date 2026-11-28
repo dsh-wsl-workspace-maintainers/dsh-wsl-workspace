@@ -286,6 +286,17 @@ try {
   assert(runtime?.version === manifest?.version,
     `describe reports package.json's version (runtime ${runtime?.version} vs manifest ${manifest?.version})`)
 
+  const connectionForm = await post({ method: 'wslConnectionCheck', params: { distro: 'Ubuntu' } })
+  assert(connectionForm.status === 403,
+    'the WSL connection probe rejects form-compatible non-JSON requests')
+  const connectionHeaders = { 'content-type': 'application/json' }
+  const invalidConnection = await post({ method: 'wslConnectionCheck', params: { distro: '../Ubuntu' } }, { headers: connectionHeaders })
+  assert(invalidConnection.envelope?.ok === false && /distro/.test(invalidConnection.envelope.error),
+    'the connection probe validates the distribution before running a command')
+  const invalidConnectionUser = await post({ method: 'wslConnectionCheck', params: { distro: 'Ubuntu', username: 123 } }, { headers: connectionHeaders })
+  assert(invalidConnectionUser.envelope?.ok === false && /username/.test(invalidConnectionUser.envelope.error),
+    'the connection probe refuses non-string usernames')
+
   // ── 7. the headers the code sets ────────────────────────────────────────
   for (const [label, answer] of [
     ['200 ok', allowed],

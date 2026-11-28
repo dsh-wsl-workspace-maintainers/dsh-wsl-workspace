@@ -86,6 +86,7 @@ const flush = () => new Promise(resolve => setTimeout(resolve, 0))
  */
 function mount(scenario, { wide = true } = {}) {
   const calls = []
+  const requests = []
   // The plugin keeps two pieces of module state — the per-session opt-out list
   // (in session storage) and the notice on screen. Both outlive one test's root,
   // so a mount that inherited them would not be describing a fresh page.
@@ -97,6 +98,7 @@ function mount(scenario, { wide = true } = {}) {
   globalThis.fetch = async (_url, init) => {
     const { method } = JSON.parse(init.body)
     calls.push(method)
+    requests.push({ method, params: paramsOf(init) })
     // A function answer receives the call's params, so a state can make one distribution's listing fail
     // while another's succeeds — the shape a distro switch needs.
     const raw = scenario[method]
@@ -212,6 +214,7 @@ function mount(scenario, { wide = true } = {}) {
     face,
     zh: () => dictionaries.zh ?? {},
     calls,
+    requests,
     act,
     seats,
     selectCalls,
@@ -268,6 +271,17 @@ function mount(scenario, { wide = true } = {}) {
       await act(flush)
       return element
     },
+    /** Use the native setter so React observes text input rather than only the DOM value. */
+    async input(selector, value) {
+      const element = container.querySelector(selector)
+      assert.ok(element !== null, `nothing matches ${selector}`)
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(element, value)
+        element.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
+      })
+      await act(flush)
+      return element
+    },
     async escape() {
       await act(async () => {
         dom.window.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape' }))
@@ -294,6 +308,7 @@ function healthy(overrides = {}) {
     listDistros: ['Ubuntu-24.04'],
     listDir: { path: '/', parent: null, entries: [{ name: 'home', kind: 'directory' }] },
     describe: { version: '0.7.8', releases: [] },
+    wslConnectionCheck: ({ distro, username }) => ({ status: 'connected', distro, ...(username ? { username } : {}) }),
     ...overrides,
   }
 }
@@ -303,6 +318,127 @@ async function open(client) {
   await client.render()
   await client.click('.dww-action')
 }
+
+/** Hold one HTTP response so a test can settle it after the selected target changes. */
+function deferredReply() {
+  let settle
+  const promise = new Promise(resolve => { settle = resolve })
+  return {
+    promise,
+    release(value) { settle({ ok: true, status: 200, json: async () => ({ ok: true, value }) }) },
+  }
+}
+
+const connectionCalls = client => client.requests.filter(request => request.method === 'wslConnectionCheck')
+const connectionState = client => client.container.querySelector('.dww-connection-chip')?.getAttribute('data-state')
+
+test('the WSL light waits for a selected distribution and only becomes green after its command check answers', async () => {
+  const distributions = deferredReply()
+  const check = deferredReply()
+  const client = mount(healthy({ listDistros: distributions.promise, wslConnectionCheck: check.promise }))
+  try {
+    await open(client)
+    assert.equal(connectionCalls(client).length, 0, 'there is no target to check while the distribution list is pending')
+    assert.notEqual(connectionState(client), 'connected')
+    distributions.release(['Ubuntu-24.04'])
+    await client.act(flush)
+    assert.deepEqual(connectionCalls(client).map(call => call.params), [{ distro: 'Ubuntu-24.04' }])
+    assert.equal(connectionState(client), 'checking', 'pending command execution is never a success')
+    await client.click('.dww-connection-chip')
+    assert.match(client.container.querySelector('.dww-connection-status').textContent, /检查/)
+    assert.equal(client.container.querySelectorAll('[download]').length, 0, 'the connection panel does not download account overlays')
+    assert.ok(!client.calls.some(name => /^headlessAuth/.test(name)), 'WSL connectivity does not query the DeepSeek account')
+    check.release({ status: 'connected', distro: 'Ubuntu-24.04' })
+    await client.act(flush)
+    assert.equal(connectionState(client), 'connected')
+    assert.match(client.container.querySelector('.dww-connection-status').textContent, /WSL/)
+    assert.equal(connectionCalls(client).length, 1, 'opening the panel does not perform a second check')
+  } finally { await client.unmount() }
+})
+
+test('WSL connection failures have readable reasons and Check makes a fresh request', async () => {
+  for (const reason of ['timeout', 'unavailable', 'connection-failed']) {
+    const scenario = healthy({ wslConnectionCheck: { status: 'failed', reason, distro: 'Ubuntu-24.04' } })
+    const client = mount(scenario)
+    try {
+      await open(client)
+      await client.click('.dww-connection-chip')
+      assert.equal(connectionState(client), 'failed', reason)
+      const status = client.container.querySelector('.dww-connection-status').textContent.trim()
+      assert.notEqual(status, '', `${reason} must carry a sentence`)
+      assert.doesNotMatch(status, /connection\.status\./, 'a translation key is not a failure message')
+      if (reason === 'timeout') assert.match(status, /超时/)
+      if (reason === 'unavailable') assert.match(status, /不可用|无法|未安装|不可访问/)
+      scenario.wslConnectionCheck = { status: 'connected', distro: 'Ubuntu-24.04' }
+      await client.click('.dww-connection-check')
+      assert.equal(connectionCalls(client).length, 2, 'Check must contact the host again')
+      assert.equal(connectionState(client), 'connected', 'a successful retry replaces the failure')
+    } finally { await client.unmount() }
+  }
+})
+
+test('switching distributions invalidates the old WSL check and ignores its late success', async () => {
+  const first = deferredReply()
+  const second = deferredReply()
+  const client = mount(healthy({
+    listDistros: ['Ubuntu-24.04', 'Debian'],
+    wslConnectionCheck: params => params.distro === 'Debian' ? second.promise : first.promise,
+  }))
+  try {
+    await open(client)
+    await client.select('.dww-select', 'Debian')
+    assert.notEqual(connectionState(client), 'connected', 'the previous target cannot supply a green state')
+    assert.deepEqual(connectionCalls(client).map(call => call.params.distro), ['Ubuntu-24.04', 'Debian'])
+    first.release({ status: 'connected', distro: 'Ubuntu-24.04' })
+    await client.act(flush)
+    assert.equal(connectionState(client), 'checking', 'a late result for Ubuntu cannot mark Debian as connected')
+    second.release({ status: 'failed', reason: 'connection-failed', distro: 'Debian' })
+    await client.act(flush)
+    assert.equal(connectionState(client), 'failed')
+  } finally { await client.unmount() }
+})
+
+test('editing the Linux user retires a green WSL result and ignores the prior user response', { timeout: 10_000 }, async () => {
+  const alice = deferredReply()
+  const bob = deferredReply()
+  const client = mount(healthy({ wslConnectionCheck: ({ distro, username }) => (
+    username === 'alice' ? alice.promise : username === 'bob' ? bob.promise : { status: 'connected', distro }
+  ) }))
+  const debounce = () => client.act(() => new Promise(resolve => setTimeout(resolve, 400)))
+  try {
+    await open(client)
+    assert.equal(connectionState(client), 'connected')
+    await client.input('#dww-username', 'alice')
+    assert.notEqual(connectionState(client), 'connected', 'typing a different user immediately retires the default user result')
+    await debounce()
+    assert.equal(connectionCalls(client).at(-1).params.username, 'alice')
+    await client.input('#dww-username', 'bob')
+    assert.notEqual(connectionState(client), 'connected')
+    await debounce()
+    assert.equal(connectionCalls(client).at(-1).params.username, 'bob')
+    alice.release({ status: 'connected', distro: 'Ubuntu-24.04', username: 'alice' })
+    await client.act(flush)
+    assert.equal(connectionState(client), 'checking', 'Alice cannot turn Bob green')
+    bob.release({ status: 'connected', distro: 'Ubuntu-24.04', username: 'bob' })
+    await client.act(flush)
+    assert.equal(connectionState(client), 'connected')
+  } finally { await client.unmount() }
+})
+
+test('reopening the WSL dialog checks its connection again instead of retaining an earlier green state', async () => {
+  const scenario = healthy()
+  const client = mount(scenario)
+  try {
+    await open(client)
+    assert.equal(connectionState(client), 'connected')
+    await client.escape()
+    assert.equal(client.container.querySelector('.dww-card'), null)
+    scenario.wslConnectionCheck = { status: 'failed', reason: 'connection-failed', distro: 'Ubuntu-24.04' }
+    await client.click('.dww-action')
+    assert.equal(connectionCalls(client).length, 2)
+    assert.equal(connectionState(client), 'failed', 'the new open uses its own answer')
+  } finally { await client.unmount() }
+})
 
 test('a healthy install opens the dialog and draws no error row at all', { timeout: 10_000 }, async () => {
   // #99: the row rendered on every healthy open because `undefined !== null`. The assertion is on

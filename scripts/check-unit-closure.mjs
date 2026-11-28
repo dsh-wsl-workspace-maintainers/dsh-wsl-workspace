@@ -11,8 +11,9 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const here = dirname(new URL(import.meta.url).pathname).replace(/^\/([A-Za-z]:)/, '$1')
+const here = dirname(fileURLToPath(import.meta.url))
 const root = resolve(here, '..')
 const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8').replace(/^﻿/, ''))
 const installed = new Set([...Object.keys(pkg.dependencies ?? {}), ...Object.keys(pkg.devDependencies ?? {})])
