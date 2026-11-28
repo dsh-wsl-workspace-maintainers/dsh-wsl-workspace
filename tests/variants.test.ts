@@ -6,7 +6,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { hostLacksSubagentGate, isWslVariantId, transformPresetForWsl, variantIdFor } from '../src/host/variants.ts'
+import { compareReleases, hostLacksSubagentGate, isWslVariantId, transformPresetForWsl, variantIdFor, withoutSubagentDelegation } from '../src/host/variants.ts'
 
 const SHELL = 'D:/plugin/lib/shell.js'
 const FS = 'D:/plugin/lib/fs.js'
@@ -670,7 +670,7 @@ test('on a gate-less host the delegation row is dropped instead of duplicated', 
   assert.ok(out.includes('- id: wsl-world'), 'the world group is gone')
 })
 
-test('a group that merely nests the package name is not mistaken for the delegation row', () => {
+test('a group that nests the package name is dropped whole on a gate-less host', () => {
   const source = `- id: some-group
   name: cordis:group
   group: true
@@ -684,12 +684,95 @@ test('a group that merely nests the package name is not mistaken for the delegat
     text: You are a coding agent.
 `
   const out = transformPresetForWsl(source, SHELL, FS, undefined, undefined, undefined, undefined, { dropSubagentDelegation: true })
-  assert.ok(out.includes('- id: some-group'), 'a top-level group was dropped for a name nested deeper than a row key sits')
+  assert.ok(!out.includes('- id: some-group'), 'the nested delegation mount leaked into a gate-less variant')
+  assert.ok(out.includes("name: '@deepseek-ai/dsh-persona'"), 'the drop took a neighbouring row with it')
 })
 
-test('hostLacksSubagentGate covers the current compat window and fails closed', () => {
+test('nested delegation is dropped when name precedes id and config carries an anchor', () => {
+  const source = `- id: some-group
+  name: cordis:group
+  group: true
+  config: &rows
+      - name: '@deepseek-ai/dsh-tool-subagent'
+        id: nested
+
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+`
+  const out = transformPresetForWsl(source, SHELL, FS, undefined, undefined, undefined, undefined, { dropSubagentDelegation: true })
+  assert.ok(!out.includes('- id: some-group'), 'key order or a config anchor hid the nested delegation mount')
+  assert.ok(out.includes("name: '@deepseek-ai/dsh-persona'"), 'the drop took a neighbouring row with it')
+})
+
+test('ordinary plugin config arrays inside a loader group are not treated as mounts', () => {
+  const source = `- id: some-group
+  name: cordis:group
+  group: true
+  config:
+      - id: ordinary
+        name: '@me/ordinary'
+        config:
+          - name: '@deepseek-ai/dsh-tool-subagent'
+            value: data
+`
+  const out = transformPresetForWsl(source, SHELL, FS, undefined, undefined, undefined, undefined, { dropSubagentDelegation: true })
+  assert.ok(out.includes('- id: some-group'), 'an ordinary config array was mistaken for a loader child row')
+})
+
+test('ordinary config that mentions the package name is not treated as a mount', () => {
+  const source = `- id: ordinary
+  name: '@me/ordinary'
+  config:
+    name: '@deepseek-ai/dsh-tool-subagent'
+    text: |
+      name: '@deepseek-ai/dsh-tool-subagent'
+`
+  const out = transformPresetForWsl(source, SHELL, FS, undefined, undefined, undefined, undefined, { dropSubagentDelegation: true })
+  assert.ok(out.includes('- id: ordinary'), 'ordinary config was dropped for a package-name mention')
+})
+
+test('withoutSubagentDelegation drops nested groups whole and preserves ordinary config', () => {
+  const rows = [
+    { id: 'ordinary', name: '@me/ordinary', config: { name: '@deepseek-ai/dsh-tool-subagent' } },
+    { id: 'delegation', name: 'cordis:group', group: true, config: [
+      { id: 'subagent', name: '@deepseek-ai/dsh-tool-subagent' },
+      { id: 'control', name: '@deepseek-ai/dsh-tool-subagent-control' },
+    ] },
+    { id: 'top', name: '@deepseek-ai/dsh-tool-subagent' },
+  ]
+  assert.deepEqual(withoutSubagentDelegation(rows), [rows[0]])
+})
+
+test('hostLacksSubagentGate is keyed to the release that removed the defect, and fails closed', () => {
+  // Releases that still carry the ungated `agent/created` install path (measured: 0.2.1-rc.5 has
+  // all four removed identifiers; see SUBAGENT_GATE_RELEASE).
   assert.equal(hostLacksSubagentGate('0.2.0-rc.1'), true)
   assert.equal(hostLacksSubagentGate('0.2.1-rc.2'), true)
-  assert.equal(hostLacksSubagentGate(undefined), true, 'an unreadable host version must strip, not brick sessions')
+  assert.equal(hostLacksSubagentGate('0.2.1-rc.5'), true)
+  assert.equal(hostLacksSubagentGate('0.2.2-alpha.1'), true, 'one prerelease before the fix')
+  assert.equal(hostLacksSubagentGate('0.2.2-alpha.1+build.7'), true, 'build metadata does not move a prerelease past the fix')
+  // The fix, and every release after it.
+  assert.equal(hostLacksSubagentGate('0.2.2-alpha.2'), false, 'the release that removed the defect')
+  assert.equal(hostLacksSubagentGate('0.2.2-rc.1'), false)
+  assert.equal(hostLacksSubagentGate('0.2.2-rc.5'), false)
   assert.equal(hostLacksSubagentGate('0.3.0'), false, 'a future family with the gate keeps its delegation row')
+  // Fail-closed: an unreadable host keeps the historical, session-safe behaviour.
+  assert.equal(hostLacksSubagentGate(undefined), true, 'an unreadable host version must strip, not brick sessions')
+  assert.equal(hostLacksSubagentGate('garbage'), true, 'a malformed host version must fail closed')
+  assert.equal(hostLacksSubagentGate(123 as unknown as string), true, 'a non-string runtime version must fail closed')
+  // A prerelease still sorts before its own release, so the boundary is not just a string prefix.
+  assert.equal(hostLacksSubagentGate('0.2.2-rc.1'), false)
+  assert.equal(hostLacksSubagentGate('0.2.2'), false)
+})
+
+test('compareReleases orders the family’s releases the way the gate boundary needs', () => {
+  assert.ok(compareReleases('0.2.1-rc.5', '0.2.2-alpha.2') < 0)
+  assert.ok(compareReleases('0.2.2-alpha.2', '0.2.2-alpha.3') < 0)
+  assert.ok(compareReleases('0.2.2-rc.1', '0.2.2-rc.5') < 0)
+  assert.ok(compareReleases('0.2.2-rc.5', '0.2.2') < 0, 'a prerelease sorts before its own release')
+  assert.ok(compareReleases('0.2.10', '0.2.9') > 0, 'numeric comparison, not string comparison')
+  assert.equal(compareReleases('0.2.2-rc.1', '0.2.2-rc.1'), 0, 'equal releases compare equal')
+  assert.equal(compareReleases('v0.2.2-rc.1', '0.2.2-rc.1'), 0, 'a leading v is not a difference')
+  assert.ok(compareReleases('0.2.2-alpha.1+build.7', '0.2.2-alpha.2') < 0, 'build metadata is ignored')
+  assert.equal(compareReleases('0.2.2-rc.1+build.7', '0.2.2-rc.1'), 0, 'equal cores compare equal despite build metadata')
 })
