@@ -41,45 +41,80 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { derivedConsumers, harnessMentions, isolatedServices, mentionShapes } from './support/consumer-ledger.mjs'
+import { closureRelease, derivedConsumers, harnessMentions, isolatedServices, mentionShapes } from './support/consumer-ledger.mjs'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const LEDGER = join(repoRoot, 'docs', 'CONSUMER-COVERAGE.md')
 
 /**
- * Rows that are not `已调用` as of 2026-11-07: 43 of 53. The ten covered pairs are `shell` x
- * `dsh-tool-bash` (`scripts/compatibility/bash-parity-real.mjs`), `fs` x `dsh-tool-fs`
- * (`tests/support/realm-probe.mjs`, the #54 arms), the five pairs the 0.2.1-rc.2 bump
- * derived (`fs` x `dsh-experimental-worktree`, `fs` x `dsh-working-directory`, `fs` x
- * `dsh-workspace-changes`, `sandbox` x `dsh-experimental-worktree`, `terminals` x
- * `dsh-tool-terminal`), each answered by a call in `tests/support/rc2-consumers.mjs`, and the three
- * the 0.2.2-rc.1 bump derived (`fs` x `dsh-experimental-client-ui-forge`, `sandbox` x
- * `dsh-experimental-client-ui-forge`, `shell` x `dsh-experimental-forge-session`), answered in
- * `tests/support/optional-bundle-consumers.mjs`. The last one
- * needs its emitter (`dsh-tool-fs`) to load, which needs the peer `@deepseek-ai/dsh-attachment` that npm
- * skips under `legacy-peer-deps`; pinning that peer unmasked a real type mismatch in
- * `src/host/wsl-image-tool.ts` (the gate read 209 -> 210), so the mismatch was fixed first and the pin
- * landed second. A tree without the peer prints a named SKIP instead of a red.
+ * Uncovered-row ceilings by host release. The stable 0.2.2-rc.5 window has 56 pairs and 43 uncovered;
+ * 0.2.3-alpha.2 adds four ACP/SDK/Timeline/PTC-executor pairs, three of which still need extra
+ * environments, so its ceiling is 47. Rows may declare `since <version> —` in their evidence cell:
+ * they are documented ahead of the pin but do not make the stable closure look stale.
  *
- * Lower this number by covering a row; never raise it without a named reason in the PR — the point of
- * the ceiling is that a host upgrade adding a consumer becomes a red frame, not a silent new row.
- *
- * THE NUMBER WENT UP EARLIER TODAY AND THE REASON WAS NAMED (PR #92): pinning the host to 0.2.1-rc.2
- * derived those five pairs and dropped two others (`shell` x `dsh-hooks-claude-code`, `shell` x
- * `dsh-hooks-codex` — gone from the release), 43 + 5 - 2 = 46. The maintainer authorised that raise on
- * the condition that the five exits stay in the table; this frame is the condition being paid, and the
- * rows carry what each call answered rather than a bare "done" — including the two answers that say the
- * pair never reaches our provider at all in the shape the product mounts it.
- *
- * THE NUMBER WENT UP AGAIN AND THE REASON WAS NAMED (#138, 2026-11-07): pinning the host to 0.2.2-rc.1
- * derived five pairs from three opt-in experimental bundles the umbrella newly pulls, 41 + 5 = 46, and
- * `tests/support/optional-bundle-consumers.mjs` covered three of them the same day (46 - 3 = 43). The
- * maintainer authorised the 41 -> 43 raise on the condition that the two uncovered exits stay in the
- * table: `fs` x `dsh-experimental-liveshare` (its consumer only runs after a share publishes to a live
- * Relay) and `shell` x `dsh-experimental-liveshare` (a derivation false positive — the only match is a
- * JSDoc comment; the package injects `connection`, never `shell`). Covering either lowers the number.
+ * The ten pairs covered before the 0.2.2-rc.1 bump remain covered, and that bump's three optional-bundle
+ * calls keep the stable ceiling at 43. Lower a ceiling when a row gains a real call; raise it only with
+ * a named host upgrade and an explicit exit for every newly uncovered row.
  */
-const NOT_COVERED_CEILING = 43
+const NOT_COVERED_CEILINGS = [
+  { since: '0.2.2-rc.5', value: 43 },
+  { since: '0.2.3-alpha.2', value: 47 },
+]
+
+function compareVersions (left, right) {
+  const split = value => {
+    const at = value.indexOf('-')
+    return at === -1
+      ? { core: value.split('.').map(Number), pre: [] }
+      : { core: value.slice(0, at).split('.').map(Number), pre: value.slice(at + 1).split('.') }
+  }
+  const a = split(left)
+  const b = split(right)
+  for (let i = 0; i < Math.max(a.core.length, b.core.length); i += 1) {
+    const diff = (a.core[i] ?? 0) - (b.core[i] ?? 0)
+    if (diff !== 0) return diff
+  }
+  if (a.pre.length === 0 && b.pre.length === 0) return 0
+  if (a.pre.length === 0) return 1
+  if (b.pre.length === 0) return -1
+  for (let i = 0; i < Math.max(a.pre.length, b.pre.length); i += 1) {
+    const x = a.pre[i]
+    const y = b.pre[i]
+    if (x === undefined) return -1
+    if (y === undefined) return 1
+    const xn = /^\d+$/.test(x)
+    const yn = /^\d+$/.test(y)
+    if (xn !== yn) return xn ? -1 : 1
+    if (xn && yn && Number(x) !== Number(y)) return Number(x) - Number(y)
+    if (x !== y) return x < y ? -1 : 1
+  }
+  return 0
+}
+
+test('version ordering compares numeric prerelease identifiers numerically', () => {
+  assert.ok(compareVersions('0.2.3-alpha.10', '0.2.3-alpha.2') > 0)
+  assert.ok(compareVersions('0.2.2-rc.10', '0.2.2-rc.5') > 0)
+  assert.ok(compareVersions('0.2.3-alpha.2', '0.2.3-alpha.10') < 0)
+})
+
+test('a future since cannot hide a consumer present in the current closure', () => {
+  const current = derived[0]
+  const futureCurrent = { ...current, status: '未挂载', evidence: 'since 99.0.0 — `-`' }
+  assert.equal(rowApplicable(futureCurrent), true)
+  assert.equal(rowApplicable({ ...futureCurrent, pkg: 'dsh-not-in-closure' }), false)
+})
+
+const hostRelease = closureRelease() ?? '0.0.0'
+const sinceOf = row => /^since (\S+) — /.exec(row.evidence)?.[1]
+const rowApplicable = (row) => {
+  const since = sinceOf(row)
+  if (since === undefined || compareVersions(hostRelease, since) >= 0) return true
+  return derived.some(consumer => keyOf(consumer) === keyOf(row))
+}
+const applicableRows = () => rows.filter(rowApplicable)
+const notCoveredCeiling = () => NOT_COVERED_CEILINGS
+  .filter(entry => compareVersions(hostRelease, entry.since) >= 0)
+  .at(-1)?.value ?? 43
 
 /** Parse the ledger's table body: rows whose first cell is a backticked service name. */
 function ledgerRows () {
@@ -137,7 +172,7 @@ test('the recall controls hold: each pair we were bitten by is found by two inde
 test('every pair the code asks for has a ledger row, and no row is left behind', () => {
   const documented = new Set(rows.map(keyOf))
   const missing = derived.filter(row => !documented.has(keyOf(row))).map(keyOf)
-  const stale = rows.filter(row => !new Set(derived.map(keyOf)).has(keyOf(row))).map(keyOf)
+  const stale = applicableRows().filter(row => !new Set(derived.map(keyOf)).has(keyOf(row))).map(keyOf)
   assert.deepEqual(missing, [],
     `${missing.length} host consumer(s) reach across a realm we cut and have no row: ${missing.join(' | ')}. `
     + 'Look at each one before writing it down — that look is the coverage this repository was missing.')
@@ -180,11 +215,13 @@ test('each row\'s status is supported by its own evidence', () => {
 })
 
 test('the uncovered count sits at its ceiling, so a new consumer cannot enter quietly', () => {
-  const uncovered = rows.filter(row => row.status !== '已调用').length
-  assert.ok(uncovered <= NOT_COVERED_CEILING,
-    `${uncovered} of ${rows.length} consumer pairs have never been executed, above the ceiling of `
-    + `${NOT_COVERED_CEILING}. A host upgrade added a consumer: probe it first, then decide what it costs.`)
-  assert.equal(uncovered, NOT_COVERED_CEILING,
-    `${uncovered} uncovered of ${rows.length}, and this file still says ${NOT_COVERED_CEILING} — `
+  const applicable = applicableRows()
+  const uncovered = applicable.filter(row => row.status !== '已调用').length
+  const ceiling = notCoveredCeiling()
+  assert.ok(uncovered <= ceiling,
+    `${uncovered} of ${applicable.length} applicable consumer pairs have never been executed, above the ceiling of `
+    + `${ceiling} for host ${hostRelease}. A host upgrade added a consumer: probe it first, then decide what it costs.`)
+  assert.equal(uncovered, ceiling,
+    `${uncovered} uncovered of ${applicable.length} applicable rows for host ${hostRelease}, and the table still says ${ceiling} — `
     + 'a row got covered (lower the ceiling) or the table and the derivation disagree.')
 })

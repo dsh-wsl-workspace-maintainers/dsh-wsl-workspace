@@ -16,6 +16,11 @@
 // the `wsl-world` isolate this plugin generates, so the live question is the rc.2 one: which provider
 // does each consumer already hold, and what does its consuming path do when it runs.
 //
+// The 0.2.3-alpha.2 drift added two more bundles worth calling here: the optional terminal panel mounts
+// its own `terminals` isolate at the profile level, and the Office rows consume the root `fs` lazily. The
+// office arm substitutes the converter and workspaceFiles authorization boundaries; the tool/kit
+// filesystem authorization and deferred reads are the real package code.
+//
 // Two readings are deliberately weaker than a full feature run, and say so:
 //   · forge-session's shell consumer is a tools/result listener; with the distribution unavailable
 //     (HCS ERROR_NO_SYSTEM_RESOURCES on this machine, 2026-11-07) a real WSL bash result cannot be
@@ -27,7 +32,7 @@
 // The mechanical traps are rc2-consumers': one boot per arm, a real Session, the realm positive
 // control, and mountedRow refusing a copy from another release.
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { repoRoot, hostFile, mountedRow, mountedPath, canonicalUrl, inactiveDetail } from './host-closure.mjs'
@@ -70,6 +75,7 @@ const profileBoot = hostFile('@deepseek-ai/dsh', { subpath: ['lib', 'profile-boo
 const presetFile = hostFile('@deepseek-ai/dsh-web-app', { subpath: ['presets', 'standard.patch.yml'] })
 if (profileBoot === null || presetFile === null) {
   add('closure', false, 'the @deepseek-ai/dsh profile-boot entry or the shipped standard preset is absent — run `node ci/install-pinned.mjs`')
+  rmSync(SCRATCH, { recursive: true, force: true })
   report()
   process.exit(0)
 }
@@ -118,6 +124,8 @@ function scratchRepo (tag) {
   return repo.replaceAll('\\', '/')
 }
 const FORGE_REPO = scratchRepo('forge')
+const OFFICE_FILE = join(FORGE_REPO, 'probe.docx')
+writeFileSync(OFFICE_FILE, Buffer.from('PK\u0003\u0004office-consumer-probe'))
 
 /** The profile-level rows every arm shares, with the sandbox policy the arm needs. */
 function profileRows (mode, workspaceRoot) {
@@ -339,4 +347,99 @@ await arm('liveshare', [
     + 'shell x dsh-experimental-liveshare is a derivation false positive: the only match is a JSDoc comment (`ctx.shell`\'s job, :3266); the package\'s real inject is ["connection"] (:7324) and it never consumes shell.')
 })
 
+// ── arm 3: the optional terminal panel, in the bundle's own terminals isolate ──
+await arm('terminal-panel', [
+  ...row('typert', '@deepseek-ai/dsh-typert-registry'),
+  ...row('working-directory', '@deepseek-ai/dsh-working-directory'),
+  ...row('terminal-controller', '@deepseek-ai/dsh-api-terminal-controller'),
+  '    - id: optional-persistent-terminals',
+  '      name: cordis:group',
+  '      group: true',
+  '      isolate:',
+  '        terminals: true',
+  '      config:',
+  '        - id: optional-terminal-registry',
+  `          name: '${mountedPath('@deepseek-ai/dsh-terminal')}'`,
+  '        - id: optional-terminal-panel',
+  `          name: '${mountedPath('@deepseek-ai/dsh-terminal-panel')}'`,
+  '        - id: optional-tool-terminal',
+  `          name: '${mountedPath('@deepseek-ai/dsh-tool-terminal')}'`,
+], async (ctx, loader) => {
+  const registry = entryOf(loader, 'optional-terminal-registry')
+  const terminals = registry?.ctx?.get('terminals', false)
+  if (terminals === undefined) {
+    add('terminal-panel-backend', false, `no terminals service in the bundle isolate — the optional bundle did not activate: ${await inactiveDetail(ctx, loader) || '(all entries report active)'}`)
+    return
+  }
+  try {
+    const backends = await within(Promise.resolve(terminals.listBackends()), 10_000, 'terminals.listBackends')
+    const names = backends.map(backend => typeof backend === 'string' ? backend : backend?.name)
+    add('terminal-panel-backend', names.includes('shell'),
+      `the panel registered its backend at boot: ${JSON.stringify(backends)}`)
+  } catch (error) {
+    add('terminal-panel-backend', false, `listBackends threw: ${String(error?.message ?? error).slice(0, 180)}`)
+  }
+})
+
+// ── arm 4: Office kit and tool, with only the converter boundary substituted ──
+await arm('office', [
+  ...row('typert', '@deepseek-ai/dsh-typert-registry'),
+  ...row('agent', '@deepseek-ai/dsh-agent'),
+  ...row('working-directory', '@deepseek-ai/dsh-working-directory'),
+  ...row('office-kit', '@deepseek-ai/dsh-office-kit'),
+  '      config:',
+  `        outputDirectory: "${join(SCRATCH, 'office-output').replaceAll('\\', '/')}"`,
+  ...row('tool-office', '@deepseek-ai/dsh-tool-office'),
+], async (ctx) => {
+  const kit = ctx.get('officeKit', false)
+  if (kit === undefined) {
+    add('office-kit-render-fs', false, 'no officeKit service — the row did not activate')
+    add('office-tool-convert-fs', false, 'no officeKit service — the tool cannot run')
+    return
+  }
+  const fs = ctx.get('fs')
+  const target = await fs.resolve(OFFICE_FILE)
+  const info = await fs.stat(target)
+  const absolutePath = fs.processPath(target)
+  ctx.provide('workspaceFiles', {
+    readBytes: async () => ({ absolutePath, version: info.version }),
+    stat: async () => ({ absolutePath, version: info.version, bytes: info.size }),
+  })
+
+  let kitBytes = 0
+  kit.convert = async (request, signal) => {
+    const read = await request.source.read(signal, 1024)
+    kitBytes += read.bytes.byteLength
+    return { pdf: Buffer.from('%PDF'), missingFonts: [], generation: kit.generation }
+  }
+  const rendered = await within(kit.renderFile(
+    { sessionId: agent.session.id, workspaceRoot: FORGE_REPO },
+    OFFICE_FILE,
+    'foreground',
+    AbortSignal.timeout(10_000),
+  ), 15_000, 'officeKit.renderFile')
+  add('office-kit-render-fs', kitBytes > 0 && rendered.bytes === 4,
+    `renderFile consumed ${kitBytes} source byte(s) through the root fs; converter boundary was substituted`)
+
+  let toolBytes = 0
+  kit.convertTo = async (request, signal) => {
+    const read = await request.source.read(signal, 1024)
+    toolBytes += read.bytes.byteLength
+    return { path: join(kit.outputDirectory, 'probe.pdf'), bytes: 4, missingFonts: [] }
+  }
+  ctx.emit('tools/result', { name: 'skill', agent, arguments: { name: 'office' } }, { isError: false })
+  const tool = ctx.tools.get('office_convert')
+  if (tool === undefined) {
+    add('office-tool-convert-fs', false, 'office_convert was not registered after the Office skill marker')
+    return
+  }
+  const converted = await within(tool.execute({ input: 'probe.docx', format: 'pdf' }, {
+    agent,
+    signal: AbortSignal.timeout(10_000),
+  }), 15_000, 'office_convert')
+  add('office-tool-convert-fs', toolBytes > 0 && converted.file !== undefined,
+    `office_convert consumed ${toolBytes} source byte(s) through resolve/stat/readByteRange/readBytes; converter boundary was substituted`)
+})
+
+rmSync(SCRATCH, { recursive: true, force: true })
 report()
