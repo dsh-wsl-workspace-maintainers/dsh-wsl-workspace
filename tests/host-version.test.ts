@@ -126,19 +126,19 @@ test('archiveCandidates derives the packaged host locations without duplicates',
   // Electron's own answer comes first, and the executable derivation repeats it — deduped.
   assert.deepEqual(
     archiveCandidates({ resourcesPath: '/app/resources', execPath: '/app/DeepSeek Harness.exe', platform: 'win32' }),
-    ['/app/resources/app.asar'],
+    [join('/app/resources', 'app.asar')],
     'the two derivations name the same archive, so it must appear once',
   )
   // With only an executable, the resources directory is derived beside it.
   assert.deepEqual(
     archiveCandidates({ execPath: '/opt/app/DeepSeek Harness.exe', platform: 'win32' }),
-    ['/opt/app/resources/app.asar'],
+    [join('/opt/app', 'resources', 'app.asar')],
   )
   // A macOS bundle keeps its resources one level up from Contents/MacOS.
   const mac = archiveCandidates({ execPath: '/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness', platform: 'darwin' })
-  assert.equal(mac[0], '/Applications/DeepSeek Harness.app/Contents/MacOS/resources/app.asar')
+  assert.equal(mac[0], join('/Applications/DeepSeek Harness.app/Contents/MacOS', 'resources', 'app.asar'))
   assert.ok(
-    mac.includes('/Applications/DeepSeek Harness.app/Contents/Resources/app.asar'),
+    mac.includes(join('/Applications/DeepSeek Harness.app/Contents', 'Resources', 'app.asar')),
     `the macOS Resources shape is missing (got ${JSON.stringify(mac)})`,
   )
   // A host with neither fact names nothing rather than guessing.
@@ -159,6 +159,7 @@ test('hostFamilyVersion reads a packaged host through its archive when nothing r
       resourcesPath: resources,
       execPath: join(dir, 'DeepSeek Harness.exe'),
       platform: 'win32',
+      electron: true,
     })
     assert.equal(version, '0.2.2-rc.5')
   })
@@ -184,6 +185,84 @@ test('hostFamilyVersion prefers a resolved copy over the archive', () => {
   })
 })
 
+test('hostFamilyVersion prefers the Electron archive over a profile-local copy', () => {
+  withTempDir((dir) => {
+    const packageDir = join(dir, 'node_modules', FAMILY)
+    mkdirSync(packageDir, { recursive: true })
+    writeFileSync(join(packageDir, 'package.json'), familyManifest('0.2.1-rc.2'))
+    const resources = join(dir, 'resources')
+    mkdirSync(resources, { recursive: true })
+    writeArchive(join(resources, 'app.asar'), {
+      [`dsh/node_modules/${FAMILY}/package.json`]: familyManifest('0.2.2-rc.5'),
+    })
+    const version = hostFamilyVersion({
+      resolve: () => join(packageDir, 'lib', 'index.js'),
+      resourcesPath: resources,
+      execPath: join(dir, 'DeepSeek Harness.exe'),
+      platform: 'win32',
+      electron: true,
+    })
+    assert.equal(version, '0.2.2-rc.5', 'the running Desktop archive must win over a stale profile copy')
+  })
+})
+
+test('hostFamilyVersion fails closed when an Electron archive exists but is unreadable', () => {
+  withTempDir((dir) => {
+    const packageDir = join(dir, 'node_modules', FAMILY)
+    mkdirSync(packageDir, { recursive: true })
+    writeFileSync(join(packageDir, 'package.json'), familyManifest('0.2.2-rc.5'))
+    const resources = join(dir, 'resources')
+    mkdirSync(resources, { recursive: true })
+    writeFileSync(join(resources, 'app.asar'), 'not an archive')
+    const version = hostFamilyVersion({
+      resolve: () => join(packageDir, 'lib', 'index.js'),
+      resourcesPath: resources,
+      execPath: join(dir, 'DeepSeek Harness.exe'),
+      platform: 'win32',
+      electron: true,
+    })
+    assert.equal(version, undefined, 'a profile-local copy must not override an unreadable running archive')
+  })
+})
+
+test('hostFamilyVersion does not fall through a malformed authoritative Electron archive', () => {
+  withTempDir((dir) => {
+    const badResources = join(dir, 'bad-resources')
+    const goodResources = join(dir, 'app', 'resources')
+    mkdirSync(badResources, { recursive: true })
+    mkdirSync(goodResources, { recursive: true })
+    writeFileSync(join(badResources, 'app.asar'), 'not an archive')
+    writeArchive(join(goodResources, 'app.asar'), {
+      [`dsh/node_modules/${FAMILY}/package.json`]: familyManifest('0.2.2-rc.5'),
+    })
+    const version = hostFamilyVersion({
+      resourcesPath: badResources,
+      execPath: join(dir, 'app', 'DeepSeek Harness.exe'),
+      platform: 'win32',
+      electron: true,
+    })
+    assert.equal(version, undefined, 'the first existing archive is authoritative even when malformed')
+  })
+})
+
+test('hostFamilyVersion falls back to resolve on Electron when no archive exists', () => {
+  withTempDir((dir) => {
+    const packageDir = join(dir, 'node_modules', FAMILY)
+    mkdirSync(packageDir, { recursive: true })
+    writeFileSync(join(packageDir, 'package.json'), familyManifest('0.2.2-rc.5'))
+    const resources = join(dir, 'resources')
+    mkdirSync(resources, { recursive: true })
+    const version = hostFamilyVersion({
+      resolve: () => join(packageDir, 'lib', 'index.js'),
+      resourcesPath: resources,
+      execPath: join(dir, 'DeepSeek Harness.exe'),
+      platform: 'win32',
+      electron: true,
+    })
+    assert.equal(version, '0.2.2-rc.5')
+  })
+})
+
 test('hostFamilyVersion returns undefined when neither strategy names the family', () => {
   withTempDir((dir) => {
     // A resolver that finds nothing, and no archive anywhere.
@@ -193,6 +272,17 @@ test('hostFamilyVersion returns undefined when neither strategy names the family
       platform: 'win32',
     })
     assert.equal(version, undefined, 'an unidentified host must stay unidentified rather than guess')
+  })
+})
+
+test('hostFamilyVersion ignores a non-string archive version', () => {
+  withTempDir((dir) => {
+    const resources = join(dir, 'resources')
+    mkdirSync(resources, { recursive: true })
+    writeArchive(join(resources, 'app.asar'), {
+      [`dsh/node_modules/${FAMILY}/package.json`]: JSON.stringify({ name: FAMILY, version: 123 }),
+    })
+    assert.equal(hostFamilyVersion({ resourcesPath: resources, electron: true }), undefined)
   })
 })
 

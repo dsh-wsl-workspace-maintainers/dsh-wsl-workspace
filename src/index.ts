@@ -1012,16 +1012,16 @@ async function materializeVariants(
   // presets plus this generator's three variants — Desktop session creation fails outright. The
   // flag is read once per boot: the family release does not move under a running plugin.
   //
-  // Issue #143: the predicate is keyed to the release that removed the defect, so a host that
+  // Issue #144: the predicate is keyed to the release that removed the defect, so a host that
   // carries the fix keeps the copied delegation row and WSL sessions regain `subagent` and
-  // `list_subagent_models`. On DSH Desktop the probe can only answer by reading `app.asar`; when
+  // `list_subagent_models`. On DSH Desktop the probe reads the running `app.asar` first; when
   // it cannot, the flag stays true and the behaviour is exactly what 0.7.13 shipped.
-  const familyVersion = hostFamilyVersion({ resolve: defaultResolver() })
+  const familyVersion = hostFamilyVersion({ resolve: defaultResolver(), electron: isElectronHost() })
   const dropSubagentDelegation = hostLacksSubagentGate(familyVersion)
   if (dropSubagentDelegation) {
     console.log(`dsh-wsl-workspace: host ${familyVersion ?? 'unidentified host'}; WSL variants drop their copied delegation row (upstream gate absent, see #60)`)
   } else {
-    console.log(`dsh-wsl-workspace: host ${familyVersion}; WSL variants keep their copied delegation row (upstream gate present, see #143)`)
+    console.log(`dsh-wsl-workspace: host ${familyVersion}; WSL variants keep their copied delegation row (upstream gate present, see #144)`)
   }
   for (const preset of sources) {
     const variantId = variantIdFor(preset.id)

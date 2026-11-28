@@ -11,11 +11,13 @@
  * predicate is fail-closed, `undefined` reads as "the gate is missing" — which is why narrowing
  * the predicate alone would still have stripped the delegation row from every Desktop session.
  *
- * Two strategies, in order:
+ * Strategy order depends on the host:
  *
- *  1. **Resolve and walk.** Correct and cheap where it works (`dsh web`, a dev tree, any profile
- *     whose closure is on disk). Unchanged from the pre-existing behaviour.
- *  2. **Read the packaged archive.** A DSH Desktop ships its host at
+ *  1. **Electron/Desktop reads the packaged archive first.** The running executable's `app.asar`
+ *     is authoritative; a profile-local `dsh-tools` copy may belong to another host release.
+ *  2. **Plain node resolves and walks.** Correct and cheap where it works (`dsh web`, a dev tree,
+ *     any profile whose closure is on disk). Unchanged from the pre-existing behaviour.
+ *  3. **Packaged archive fallback.** A DSH Desktop ships its host at
  *     `<resources>/app.asar/dsh/node_modules/@deepseek-ai/dsh-tools`. The archive is a
  *     small header (a pickle: two lengths, then a JSON directory) followed by the file data at
  *     a 4-byte-aligned offset, so one manifest can be read with plain `node:fs` and two small
@@ -84,8 +86,10 @@ export function readArchiveMember(archive: string, member: string): string | und
     if (entry.files !== undefined || entry.unpacked === true) return undefined
     const size = Number(entry.size)
     const offset = Number(entry.offset)
-    if (!Number.isFinite(size) || !Number.isFinite(offset) || size <= 0) return undefined
+    if (!Number.isSafeInteger(size) || !Number.isSafeInteger(offset) || size <= 0 || offset < 0) return undefined
     const start = align4(PICKLE_HEADER_BYTES + directorySize) + offset
+    const fileSize = statSync(archive).size
+    if (!Number.isSafeInteger(start) || start < 0 || start > fileSize || size > fileSize - start) return undefined
     const bytes = Buffer.alloc(size)
     if (readSync(fd, bytes, 0, size, start) < size) return undefined
     return bytes.toString('utf8')
@@ -141,7 +145,7 @@ function versionFromResolvedEntry(entry: string): string | undefined {
     const manifestPath = join(dir, 'package.json')
     if (existsSync(manifestPath)) {
       const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as { name?: string, version?: string }
-      if (manifest.name === FAMILY_PACKAGE) return manifest.version
+      if (manifest.name === FAMILY_PACKAGE && typeof manifest.version === 'string') return manifest.version
     }
     const parent = dirname(dir)
     if (parent === dir) return undefined
@@ -160,6 +164,8 @@ export interface HostVersionProbe {
   execPath?: string | undefined
   /** `process.platform`, for the macOS bundle shape. */
   platform?: string | undefined
+  /** Whether the running host is Electron/Desktop, whose archive is authoritative. */
+  electron?: boolean | undefined
 }
 
 /**
@@ -169,6 +175,34 @@ export interface HostVersionProbe {
  * @returns the version string, or `undefined` when neither strategy names it.
  */
 export function hostFamilyVersion(probe: HostVersionProbe = {}): string | undefined {
+  const archives = archiveCandidates({
+    resourcesPath: probe.resourcesPath ?? (process as { resourcesPath?: string }).resourcesPath,
+    execPath: probe.execPath ?? process.execPath,
+    platform: probe.platform ?? process.platform,
+  })
+  const versionFromArchive = (archive: string): string | undefined => {
+    for (const member of ARCHIVE_MEMBER_CANDIDATES) {
+      const text = readArchiveMember(archive, member)
+      if (text === undefined) continue
+      try {
+        const manifest = JSON.parse(text) as { name?: unknown, version?: unknown }
+        if (manifest.name === FAMILY_PACKAGE && typeof manifest.version === 'string') return manifest.version
+      } catch {
+        // A member that is not JSON is not this package; try the next spelling.
+      }
+    }
+    return undefined
+  }
+
+  if (probe.electron === true) {
+    for (const archive of archives) {
+      if (!existsSync(archive)) continue
+      // The first existing candidate is authoritative; a malformed archive must not be
+      // overridden by a profile copy or a lower-priority candidate.
+      return versionFromArchive(archive)
+    }
+  }
+
   if (probe.resolve !== undefined) {
     try {
       const resolved = probe.resolve(FAMILY_PACKAGE)
@@ -178,21 +212,9 @@ export function hostFamilyVersion(probe: HostVersionProbe = {}): string | undefi
       // Not on this host's filesystem: fall through to the packaged archive.
     }
   }
-  for (const archive of archiveCandidates({
-    resourcesPath: probe.resourcesPath ?? (process as { resourcesPath?: string }).resourcesPath,
-    execPath: probe.execPath ?? process.execPath,
-    platform: probe.platform ?? process.platform,
-  })) {
-    for (const member of ARCHIVE_MEMBER_CANDIDATES) {
-      const text = readArchiveMember(archive, member)
-      if (text === undefined) continue
-      try {
-        const manifest = JSON.parse(text) as { name?: string, version?: string }
-        if (manifest.name === FAMILY_PACKAGE && manifest.version !== undefined) return manifest.version
-      } catch {
-        // A member that is not JSON is not this package; try the next spelling.
-      }
-    }
+  for (const archive of archives) {
+    const version = versionFromArchive(archive)
+    if (version !== undefined) return version
   }
   return undefined
 }

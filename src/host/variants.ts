@@ -514,14 +514,41 @@ function appendPersona(lines: readonly string[], span: { start: number; end: num
 }
 
 /**
- * The filesystem channel on older hosts keeps the original top-level match.
- * Declaration hosts prune parsed entries before registering them.
+ * Drop the complete top-level entry carrying a delegation mount. The filesystem channel predates
+ * parsed declarations, so it walks loader-group `config:` rows by indentation; prompts and ordinary
+ * plugin config can mention the package name without mounting it.
  */
 function mountsSubagentDelegation(block: readonly string[]): boolean {
-  return block.some((line) => {
-    const match = /^  name: (.+)$/.exec(line)
-    return match !== null && unquoteScalar((match[1] ?? '').trim()) === SUBAGENT_DELEGATION_PACKAGE
-  })
+  const topName = block.map(line => /^  name: (.+)$/.exec(line)).find(match => match !== null)?.[1]
+  if (topName !== undefined && unquoteScalar(topName.trim()) === SUBAGENT_DELEGATION_PACKAGE) return true
+  const isGroup = topName !== undefined && unquoteScalar(topName.trim()) === 'cordis:group'
+    || block.some(line => /^  group: true\s*$/.test(line))
+  if (!isGroup) return false
+
+  let inConfig = false
+  let rowIndent = -1
+  for (const line of block) {
+    if (/^  config:\s*$/.test(line)) {
+      inConfig = true
+      rowIndent = -1
+      continue
+    }
+    if (!inConfig || line.trim() === '') continue
+    const indent = /^ */.exec(line)?.[0].length ?? 0
+    if (indent <= 2) {
+      inConfig = false
+      continue
+    }
+    const item = /^(\s*)-\s+id:/.exec(line)
+    if (item !== null) {
+      rowIndent = item[1]?.length ?? 0
+      continue
+    }
+    if (rowIndent < 0 || indent !== rowIndent + 2) continue
+    const match = /^\s*name: (.+)$/.exec(line)
+    if (match !== null && unquoteScalar((match[1] ?? '').trim()) === SUBAGENT_DELEGATION_PACKAGE) return true
+  }
+  return false
 }
 
 /**
@@ -680,7 +707,7 @@ export const SUBAGENT_GATE_RELEASE = '0.2.2-alpha.2'
  */
 export function compareReleases(left: string, right: string): number {
   const parse = (value: string): { core: number[], pre: string[] } => {
-    const [core = '', pre = ''] = value.trim().replace(/^v/, '').split('-', 2)
+    const [core = '', pre = ''] = (value.trim().replace(/^v/, '').split('+')[0] ?? '').split('-', 2)
     return {
       // A missing or non-numeric component reads as 0 so a malformed string still compares
       // instead of throwing inside a boot path.
@@ -731,7 +758,7 @@ export function compareReleases(left: string, right: string): number {
  * @returns true when the generator must not let the copied delegation row through.
  */
 export function hostLacksSubagentGate(version: string | undefined): boolean {
-  if (version === undefined) return true
+  if (typeof version !== 'string' || !/^\d+\.\d+\.\d+(?:-(?:alpha|rc)\.\d+)?(?:\+[\w.-]+)?$/.test(version)) return true
   return compareReleases(version, SUBAGENT_GATE_RELEASE) < 0
 }
 
