@@ -519,36 +519,62 @@ function appendPersona(lines: readonly string[], span: { start: number; end: num
  * plugin config can mention the package name without mounting it.
  */
 function mountsSubagentDelegation(block: readonly string[]): boolean {
-  const topName = block.map(line => /^  name: (.+)$/.exec(line)).find(match => match !== null)?.[1]
-  if (topName !== undefined && unquoteScalar(topName.trim()) === SUBAGENT_DELEGATION_PACKAGE) return true
-  const isGroup = topName !== undefined && unquoteScalar(topName.trim()) === 'cordis:group'
-    || block.some(line => /^  group: true\s*$/.test(line))
+  const scalarAt = (lines: readonly string[], indent: number, key: string): string | undefined => {
+    const prefix = `${' '.repeat(indent)}${key}:`
+    for (const line of lines) {
+      if (!line.startsWith(prefix)) continue
+      return unquoteScalar(line.slice(prefix.length).trim())
+    }
+    return undefined
+  }
+  const topName = scalarAt(block, 2, 'name')
+  if (topName === SUBAGENT_DELEGATION_PACKAGE) return true
+  const isGroup = topName === 'cordis:group' || scalarAt(block, 2, 'group') === 'true'
   if (!isGroup) return false
 
-  let inConfig = false
-  let rowIndent = -1
-  for (const line of block) {
-    if (/^  config:\s*$/.test(line)) {
-      inConfig = true
-      rowIndent = -1
-      continue
+  const groupConfigMounts = (lines: readonly string[], configIndent: number): boolean => {
+    const configPrefix = `${' '.repeat(configIndent)}config:`
+    const configIndex = lines.findIndex((line) => {
+      if (!line.startsWith(configPrefix)) return false
+      const rest = line.slice(configPrefix.length).trim()
+      return rest === '' || /^&[^\s#]+(?:\s+#.*)?$/.test(rest)
+    })
+    // An aliased group config cannot be proven safe by this text-only path; drop it rather than
+    // risk carrying a live delegation mount into a gate-less host.
+    if (configIndex < 0) return lines.some(line => line.startsWith(`${configPrefix} *`))
+
+    let cursor = configIndex + 1
+    while (cursor < lines.length && lines[cursor]?.trim() === '') cursor += 1
+    const first = /^( *)- /.exec(lines[cursor] ?? '')
+    if (first === null) return false
+    const rowIndent = first[1]?.length ?? 0
+    let rowStart = cursor
+    while (rowStart < lines.length) {
+      let rowEnd = rowStart + 1
+      while (rowEnd < lines.length) {
+        const line = lines[rowEnd] ?? ''
+        if (line.trim() === '') {
+          rowEnd += 1
+          continue
+        }
+        const indent = /^ */.exec(line)?.[0].length ?? 0
+        if (indent < rowIndent || (indent === rowIndent && /^\s*-\s/.test(line))) break
+        rowEnd += 1
+      }
+      const row = lines.slice(rowStart, rowEnd)
+      const firstLine = row[0] ?? ''
+      const inlineName = /^\s*-\s+name:\s*(.+)$/.exec(firstLine)?.[1]
+      const rowName = inlineName === undefined ? scalarAt(row, rowIndent + 2, 'name') : unquoteScalar(inlineName.trim())
+      const rowGroup = rowName === 'cordis:group' || scalarAt(row, rowIndent + 2, 'group') === 'true'
+        || /^\s*-\s+group:\s*true\s*$/.test(firstLine)
+      if (rowName === SUBAGENT_DELEGATION_PACKAGE) return true
+      if (rowGroup && groupConfigMounts(row, rowIndent + 2)) return true
+      rowStart = rowEnd
     }
-    if (!inConfig || line.trim() === '') continue
-    const indent = /^ */.exec(line)?.[0].length ?? 0
-    if (indent <= 2) {
-      inConfig = false
-      continue
-    }
-    const item = /^(\s*)-\s+id:/.exec(line)
-    if (item !== null) {
-      rowIndent = item[1]?.length ?? 0
-      continue
-    }
-    if (rowIndent < 0 || indent !== rowIndent + 2) continue
-    const match = /^\s*name: (.+)$/.exec(line)
-    if (match !== null && unquoteScalar((match[1] ?? '').trim()) === SUBAGENT_DELEGATION_PACKAGE) return true
+    return false
   }
-  return false
+
+  return groupConfigMounts(block, 2)
 }
 
 /**

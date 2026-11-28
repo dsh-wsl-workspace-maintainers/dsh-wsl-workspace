@@ -688,6 +688,37 @@ test('a group that nests the package name is dropped whole on a gate-less host',
   assert.ok(out.includes("name: '@deepseek-ai/dsh-persona'"), 'the drop took a neighbouring row with it')
 })
 
+test('nested delegation is dropped when name precedes id and config carries an anchor', () => {
+  const source = `- id: some-group
+  name: cordis:group
+  group: true
+  config: &rows
+      - name: '@deepseek-ai/dsh-tool-subagent'
+        id: nested
+
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+`
+  const out = transformPresetForWsl(source, SHELL, FS, undefined, undefined, undefined, undefined, { dropSubagentDelegation: true })
+  assert.ok(!out.includes('- id: some-group'), 'key order or a config anchor hid the nested delegation mount')
+  assert.ok(out.includes("name: '@deepseek-ai/dsh-persona'"), 'the drop took a neighbouring row with it')
+})
+
+test('ordinary plugin config arrays inside a loader group are not treated as mounts', () => {
+  const source = `- id: some-group
+  name: cordis:group
+  group: true
+  config:
+      - id: ordinary
+        name: '@me/ordinary'
+        config:
+          - name: '@deepseek-ai/dsh-tool-subagent'
+            value: data
+`
+  const out = transformPresetForWsl(source, SHELL, FS, undefined, undefined, undefined, undefined, { dropSubagentDelegation: true })
+  assert.ok(out.includes('- id: some-group'), 'an ordinary config array was mistaken for a loader child row')
+})
+
 test('ordinary config that mentions the package name is not treated as a mount', () => {
   const source = `- id: ordinary
   name: '@me/ordinary'
